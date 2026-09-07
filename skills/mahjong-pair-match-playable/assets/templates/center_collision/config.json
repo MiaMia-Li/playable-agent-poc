@@ -1,0 +1,8 @@
+{
+  "mode": "center_collision",
+  "label": "中心碰撞",
+  "successTarget": 4,
+  "scorePerMatch": 500,
+  "pairKeys": ["眼睛", "蛇", "月亮", "火"],
+  "guideKey": "眼睛"
+}

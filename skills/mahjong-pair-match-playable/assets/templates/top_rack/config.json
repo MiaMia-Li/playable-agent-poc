@@ -1,0 +1,10 @@
+{
+  "mode": "top_rack",
+  "label": "上方牌架",
+  "successTarget": 4,
+  "scorePerMatch": 280,
+  "initialScore": 240,
+  "pairKeys": ["蛇", "月亮", "火", "眼睛"],
+  "rackSlots": 4,
+  "guideKey": "蛇"
+}
