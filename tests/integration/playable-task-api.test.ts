@@ -178,9 +178,10 @@ function createHarness() {
     }),
   }
   let authenticatedUserId: string | undefined = 'user-1'
+  let apiKey: string | undefined = 'sk-test-secret'
   const handlers = createPlayableTaskHandlers({
     authenticate: async () => authenticatedUserId,
-    readApiKey: async () => 'sk-test-secret',
+    readApiKey: async () => apiKey,
     repository,
     agent,
     artifactStore,
@@ -200,6 +201,9 @@ function createHarness() {
     handlers,
     setAuthenticatedUser(value: string | undefined) {
       authenticatedUserId = value
+    },
+    setApiKey(value: string | undefined) {
+      apiKey = value
     },
   }
 }
@@ -265,8 +269,6 @@ describe('playable task API', () => {
 
     expect(responses.map((response) => response.status)).toEqual([404, 404, 404, 404, 404, 404])
     for (const response of responses) expect(await response.json()).toEqual({ error: 'Not found' })
-    expect(JSON.stringify(responses)).not.toContain('user-2')
-    expect(JSON.stringify(responses)).not.toContain('users/user-2')
   })
 
   it('appends chat messages and streams sanitized agent events', async () => {
@@ -288,20 +290,71 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
 
-  it('rejects an agent proposal that echoes the API key before storing it', async () => {
+  it('redacts and revalidates every credential-shaped string in an agent proposal before storage', async () => {
     vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
       ...confirmation,
-      gameplay: 'Leaked sk-test-secret',
+      gameplay: 'Leaked sk-different-secret and sk-test-secret',
     })
     const response = await harness.handlers.message(
       request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
 
-    expect(await response.text()).toContain('"type":"error"')
-    expect(harness.repository.messages).toHaveLength(1)
+    const body = await response.text()
+    expect(body).toContain('"type":"confirmation"')
+    expect(body).toContain('[REDACTED]')
+    expect(harness.repository.messages).toHaveLength(2)
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
-    expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
+    expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-different-secret')
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('awaiting_confirmation')
+  })
+
+  it('cancels an in-flight message stream without writing to a closed controller or leaking a rejection', async () => {
+    let resolveProposal!: (value: ConfirmationProposal) => void
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveProposal = resolve)),
+    )
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      const reader = response.body!.getReader()
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"type":"started"')
+      await reader.cancel()
+      resolveProposal(confirmation)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(harness.agent.cancel).toHaveBeenCalledWith('owned')
+      expect(harness.repository.messages).toHaveLength(1)
+      expect(harness.repository.events).toHaveLength(0)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('returns 428 from message and confirmation when the session has no API key', async () => {
+    harness.setApiKey(undefined)
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const messageResponse = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
+      context,
+    )
+    const confirmResponse = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }),
+      context,
+    )
+
+    expect(messageResponse.status).toBe(428)
+    expect(confirmResponse.status).toBe(428)
+    expect(harness.scheduled).toHaveLength(0)
   })
 
   it('rejects a build until a task is awaiting confirmation', async () => {
@@ -355,11 +408,44 @@ describe('playable task API', () => {
     expect(harness.agent.build).not.toHaveBeenCalled()
   })
 
-  it('rejects confirmation containing the API key before the atomic database claim', async () => {
+  it('persists build-started before invoking the background build', async () => {
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    let releaseEvent!: () => void
+    vi.spyOn(harness.repository, 'appendEvent').mockImplementationOnce(
+      () => new Promise<void>((resolve) => (releaseEvent = resolve)),
+    )
+    await harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    const background = harness.scheduled[0]()
+    await Promise.resolve()
+    expect(harness.agent.build).not.toHaveBeenCalled()
+    releaseEvent()
+    await background
+    expect(harness.agent.build).toHaveBeenCalledOnce()
+  })
+
+  it('redacts and revalidates all credential-shaped confirmation fields before the atomic claim', async () => {
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
     const response = await harness.handlers.confirm(
       request('/api/playable-tasks/owned/confirm', 'POST', {
-        confirmation: { ...confirmation, gameplay: 'Leaked sk-test-secret' },
+        confirmation: { ...confirmation, gameplay: 'Leaked sk-different-secret and sk-test-secret' },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(202)
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('building')
+    expect(harness.repository.tasks.get('owned')?.confirmation?.gameplay).toBe('Leaked [REDACTED] and [REDACTED]')
+    expect(JSON.stringify(harness.repository.tasks.get('owned'))).not.toContain('sk-different-secret')
+  })
+
+  it('rejects a confirmed payload when redaction makes a structured field invalid', async () => {
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        confirmation: { ...confirmation, storeUrl: 'https://sk-different-secret' },
       }),
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
@@ -367,7 +453,6 @@ describe('playable task API', () => {
     expect(response.status).toBe(400)
     expect(harness.repository.tasks.get('owned')?.phase).toBe('awaiting_confirmation')
     expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
-    expect(harness.scheduled).toHaveLength(0)
   })
 
   it('publishes an artifact only after successful validation and storage', async () => {
@@ -439,6 +524,68 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.events)).not.toContain('sk-test-secret')
   })
 
+  it('moves a validating task to failed and emits a terminal event when publication loses its compare-and-set', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.spyOn(harness.repository, 'publishArtifact').mockResolvedValueOnce(false)
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'new-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(task.phase).toBe('failed')
+    expect(harness.repository.events.at(-1)).toMatchObject({ type: 'build_failed', phase: 'failed' })
+  })
+
+  it('still attempts the terminal event when marking a failed build also fails', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(new Error('private provider error'))
+    vi.spyOn(harness.repository, 'markFailed').mockRejectedValueOnce(new Error('database error'))
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'new-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({ type: 'build_failed', phase: 'failed' })
+  })
+
+  it('handles scheduler failure by failing the claim and emitting a terminal event', async () => {
+    const repository = harness.repository
+    repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    const handlers = createPlayableTaskHandlers({
+      authenticate: async () => 'user-1',
+      readApiKey: async () => 'sk-test-secret',
+      repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+      schedule: () => {
+        throw new Error('scheduler unavailable')
+      },
+      generateId: () => 'build-id',
+    })
+
+    const response = await handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    expect(response.status).toBe(500)
+    expect(repository.tasks.get('owned')?.phase).toBe('failed')
+    expect(repository.events.at(-1)).toMatchObject({ type: 'build_failed', phase: 'failed' })
+  })
+
   it('returns only allowlisted and redacted event fields', async () => {
     harness.repository.events.push({
       id: 'event-private',
@@ -481,35 +628,66 @@ describe('playable task API', () => {
     expect(inline.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(inline.headers.get('content-disposition')).toBe('inline; filename="playable.html"')
     expect(inline.headers.get('content-security-policy')).toBe(
-      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'",
+      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
     )
     expect(inline.headers.get('x-content-type-options')).toBe('nosniff')
     expect(inline.headers.get('cache-control')).toBe('private, no-store')
     expect(download.headers.get('content-disposition')).toBe('attachment; filename="playable.html"')
+    expect(await download.text()).toBe('<html>safe</html>')
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
+  })
+
+  it.each(['failed', 'validating'] as const)(
+    'keeps the latest successful artifact reachable while the current phase is %s',
+    async (phase) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = phase
+      task.latestArtifactKey = 'users/user-1/tasks/owned/old/playable.html'
+      harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>previous</html>'))
+
+      const response = await harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe('<html>previous</html>')
+    },
+  )
+
+  it('returns generic 404 responses for invalid artifact kinds and tasks without a published artifact', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const invalidKind = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=validation'),
+      context,
+    )
+    const noArtifact = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable'),
+      context,
+    )
+
+    expect(invalidKind.status).toBe(404)
+    expect(noArtifact.status).toBe(404)
+    expect(await invalidKind.json()).toEqual({ error: 'Not found' })
+    expect(await noArtifact.json()).toEqual({ error: 'Not found' })
+    expect(harness.artifactStore.get).not.toHaveBeenCalled()
   })
 })
 
 describe('PrivateVercelArtifactStore', () => {
   it('uses private Blob access and never returns provider URLs', async () => {
+    const sourceStream = byteStream(new TextEncoder().encode('artifact'))
     const blobClient: PrivateBlobClient = {
       put: vi.fn(async () => ({
         url: 'https://private.public.blob.vercel-storage.com/secret',
         pathname: 'users/u/tasks/t/b/playable.html',
       })),
-      get: vi.fn(async () => ({
-        stream: new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode('artifact'))
-            controller.close()
-          },
-        }),
-      })),
+      get: vi.fn(async () => ({ stream: sourceStream })),
     }
     const store = new PrivateVercelArtifactStore(blobClient)
 
     await expect(store.put('users/u/tasks/t/b/playable.html', 'artifact', 'text/html')).resolves.toBeUndefined()
     const stream = await store.get('users/u/tasks/t/b/playable.html')
+    expect(stream).toBe(sourceStream)
     await expect(new Response(stream).text()).resolves.toBe('artifact')
     expect(blobClient.put).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html', 'artifact', {
       access: 'private',

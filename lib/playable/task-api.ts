@@ -69,7 +69,7 @@ interface ConfirmedBuildDependencies {
 }
 
 const PREVIEW_CSP =
-  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ error }, { status })
@@ -92,8 +92,20 @@ function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
 }
 
-function containsSecret(value: string, secret: string): boolean {
-  return secret.length > 0 && value.includes(secret)
+function sanitizeConfirmation(value: ConfirmationProposal, secrets: readonly string[] = []): ConfirmationProposal {
+  return confirmationProposalSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+async function recordBuildFailure(repository: PlayableTaskRepository, taskId: string): Promise<void> {
+  await Promise.allSettled([
+    repository.markFailed(taskId),
+    repository.appendEvent({
+      taskId,
+      type: 'build_failed',
+      phase: 'failed',
+      message: 'Playable build failed',
+    }),
+  ])
 }
 
 function eventJson(event: PlayableEventRecord) {
@@ -113,20 +125,18 @@ function artifactPrefix(task: PlayableTaskRecord, buildId: string): string {
 export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies): Promise<void> {
   const { task, apiKey, buildId, repository, agent, artifactStore } = dependencies
   if (!task.confirmation) {
-    await repository.markFailed(task.id)
+    await recordBuildFailure(repository, task.id)
     return
   }
 
   try {
-    if (containsSecret(JSON.stringify(task.confirmation), apiKey)) {
-      throw new Error('Confirmation contains a credential')
-    }
+    const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [apiKey])
     const result = await agent.build({
       taskId: task.id,
       apiKey,
-      confirmation: task.confirmation,
+      confirmation: sanitizedConfirmation,
     })
-    if (containsSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
+    if (redactSecrets(result.html, [apiKey]) !== result.html) throw new Error('Artifact contains a credential')
     const validating = await repository.compareAndSetPhase(task.id, 'building', 'validating')
     if (!validating) return
 
@@ -136,7 +146,11 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       behavior: result.validation.behavior,
       bytes: result.validation.bytes,
     }
-    await artifactStore.put(`${prefix}/confirmed-config.json`, JSON.stringify(task.confirmation), 'application/json')
+    await artifactStore.put(
+      `${prefix}/confirmed-config.json`,
+      JSON.stringify(sanitizedConfirmation),
+      'application/json',
+    )
     await artifactStore.put(
       `${prefix}/asset-manifest.json`,
       JSON.stringify({ assets: [], entrypoint: 'playable.html' }),
@@ -146,21 +160,20 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
 
     const published = await repository.publishArtifact(task.id, 'validating', playableKey, validationReport)
-    if (!published) return
-    await repository.appendEvent({
-      taskId: task.id,
-      type: 'build_ready',
-      phase: 'ready',
-      message: 'Playable build is ready',
-    })
+    if (!published) {
+      await recordBuildFailure(repository, task.id)
+      return
+    }
+    await repository
+      .appendEvent({
+        taskId: task.id,
+        type: 'build_ready',
+        phase: 'ready',
+        message: 'Playable build is ready',
+      })
+      .catch(() => undefined)
   } catch {
-    await repository.markFailed(task.id)
-    await repository.appendEvent({
-      taskId: task.id,
-      type: 'build_failed',
-      phase: 'failed',
-      message: 'Playable build failed',
-    })
+    await recordBuildFailure(repository, task.id)
   }
 }
 
@@ -193,21 +206,40 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const message = body.message.trim()
 
       const encoder = new TextEncoder()
+      let cancelled = false
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          void (async () => {
+          const enqueue = (event: unknown): boolean => {
+            if (cancelled) return false
+            try {
+              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`))
+              return true
+            } catch {
+              cancelled = true
+              return false
+            }
+          }
+          const close = () => {
+            if (cancelled) return
+            try {
+              controller.close()
+            } catch {
+              cancelled = true
+            }
+          }
+          const processing = (async () => {
             const prompt = safeString(message, [apiKey])
             try {
               await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
-              controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'started' })}\n`))
+              if (!enqueue({ type: 'started' })) return
               const proposal = await dependencies.agent.proposeConfirmation({
                 taskId: access.task.id,
                 prompt,
                 apiKey,
               })
-              const validated = confirmationProposalSchema.parse(proposal)
+              if (cancelled) return
+              const validated = sanitizeConfirmation(confirmationProposalSchema.parse(proposal), [apiKey])
               const serialized = JSON.stringify(validated)
-              if (containsSecret(serialized, apiKey)) throw new Error('Proposal contains a credential')
               await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
               const transitioned = await dependencies.repository.setAwaitingConfirmation(access.task.id, access.userId)
               if (!transitioned) throw new Error('Task phase conflict')
@@ -217,17 +249,18 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 phase: 'awaiting_confirmation',
                 message: 'Confirmation is ready',
               })
-              controller.enqueue(
-                encoder.encode(`${JSON.stringify({ type: 'confirmation', confirmation: validated })}\n`),
-              )
+              enqueue({ type: 'confirmation', confirmation: validated })
             } catch {
-              controller.enqueue(
-                encoder.encode(`${JSON.stringify({ type: 'error', message: 'Unable to prepare confirmation' })}\n`),
-              )
+              enqueue({ type: 'error', message: 'Unable to prepare confirmation' })
             } finally {
-              controller.close()
+              close()
             }
           })()
+          void processing.catch(() => undefined)
+        },
+        async cancel() {
+          cancelled = true
+          await dependencies.agent.cancel(access.task.id).catch(() => undefined)
         },
       })
       return new Response(stream, {
@@ -247,31 +280,39 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!parsed.success) return jsonError(400, 'Invalid confirmation')
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(428, 'OpenAI key required')
-      if (containsSecret(JSON.stringify(parsed.data), apiKey)) {
+      let sanitized: ConfirmationProposal
+      try {
+        sanitized = sanitizeConfirmation(parsed.data, [apiKey])
+      } catch {
         return jsonError(400, 'Invalid confirmation')
       }
 
-      const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, parsed.data)
+      const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, sanitized)
       if (!claimed) return jsonError(409, 'Task phase conflict')
       const buildId = dependencies.generateId()
-      dependencies.schedule(() => {
-        void dependencies.repository
-          .appendEvent({
-            taskId: claimed.id,
-            type: 'build_started',
-            phase: 'building',
-            message: 'Playable build started',
+      try {
+        dependencies.schedule(async () => {
+          await dependencies.repository
+            .appendEvent({
+              taskId: claimed.id,
+              type: 'build_started',
+              phase: 'building',
+              message: 'Playable build started',
+            })
+            .catch(() => undefined)
+          return runConfirmedBuild({
+            task: claimed,
+            apiKey,
+            buildId,
+            repository: dependencies.repository,
+            agent: dependencies.agent,
+            artifactStore: dependencies.artifactStore,
           })
-          .catch(() => undefined)
-        return runConfirmedBuild({
-          task: claimed,
-          apiKey,
-          buildId,
-          repository: dependencies.repository,
-          agent: dependencies.agent,
-          artifactStore: dependencies.artifactStore,
         })
-      })
+      } catch {
+        await recordBuildFailure(dependencies.repository, claimed.id)
+        return jsonError(500, 'Unable to schedule build')
+      }
       return Response.json({ task: { id: claimed.id, phase: 'building' } }, { status: 202 })
     },
 
@@ -287,7 +328,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (access instanceof Response) return access
       const url = new URL(request.url)
       if (url.searchParams.get('kind') !== 'playable') return jsonError(404, 'Not found')
-      if (access.task.phase !== 'ready' || !access.task.latestArtifactKey) return jsonError(404, 'Not found')
+      if (!access.task.latestArtifactKey) return jsonError(404, 'Not found')
       const artifact = await dependencies.artifactStore.get(access.task.latestArtifactKey)
       if (!artifact) return jsonError(404, 'Not found')
 

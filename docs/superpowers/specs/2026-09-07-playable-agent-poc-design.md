@@ -239,6 +239,10 @@ draft
 
 iframe 使用独立源或严格 sandbox 属性，不允许生成内容访问父页面身份、Cookie 和应用 API。下载由服务端校验任务所有权后返回。
 
+### 2026-09-07 Preview 隔离修订（已批准）
+
+用户明确批准 Preview 以隔离优先：内联 HTML 响应必须通过 CSP 使用 `sandbox allow-scripts`，只允许脚本执行，不授予 `allow-same-origin`、`allow-forms` 或任何顶层导航能力；同时设置 `form-action 'none'`、`base-uri 'none'` 和 `frame-ancestors 'self'`。该修订刻意接受部分依赖同源身份或表单提交的试玩能力不可用，以防生成内容读取应用身份、提交表单或导航父页面。下载的最终 HTML 字节不得因 Preview 隔离策略而改写。
+
 ## 10. 数据流
 
 1. 用户登录并输入 API Key。

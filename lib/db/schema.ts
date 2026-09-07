@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, jsonb, boolean, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, integer, jsonb, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
 import { confirmationProposalSchema, playableTaskPhaseSchema } from '@/lib/playable/schemas'
 import { playableModeIds } from '@/lib/playable/types'
@@ -405,16 +405,22 @@ export const selectTaskMessageSchema = z.object({
 export type TaskMessage = z.infer<typeof selectTaskMessageSchema>
 export type InsertTaskMessage = z.infer<typeof insertTaskMessageSchema>
 
-export const playableTaskEvents = pgTable('playable_task_events', {
-  id: text('id').primaryKey(),
-  taskId: text('task_id')
-    .notNull()
-    .references(() => tasks.id, { onDelete: 'cascade' }),
-  type: text('type').notNull(),
-  phase: text('phase'),
-  message: text('message'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-})
+export const playableTaskEvents = pgTable(
+  'playable_task_events',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    phase: text('phase'),
+    message: text('message'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    taskCreatedIndex: index('playable_task_events_task_created_idx').on(table.taskId, table.createdAt),
+  }),
+)
 
 // Settings table - key-value pairs for overriding environment variables per user
 export const settings = pgTable(

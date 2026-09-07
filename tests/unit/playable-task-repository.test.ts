@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SQL } from 'drizzle-orm'
-import { PgDialect } from 'drizzle-orm/pg-core'
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import { playableTaskEvents } from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
   mode: 'center_collision',
@@ -94,5 +95,15 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
         latestArtifactKey: 'users/user-1/tasks/task-1/build/playable.html',
       }),
     )
+  })
+})
+
+describe('playable task event storage', () => {
+  it('indexes task and creation time for ordered task event reads', () => {
+    const index = getTableConfig(playableTaskEvents).indexes.find(
+      (candidate) => candidate.config.name === 'playable_task_events_task_created_idx',
+    )
+
+    expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'created_at'])
   })
 })

@@ -594,10 +594,12 @@ Use a compare-and-set update on phase so two confirmation requests cannot start 
 For inline HTML Preview, set:
 
 ```text
-Content-Security-Policy: default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'
+Content-Security-Policy: default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'
 X-Content-Type-Options: nosniff
 Cache-Control: private, no-store
 ```
+
+Approved amendment (2026-09-07): prioritize Preview isolation. CSP sandboxing permits scripts but deliberately omits same-origin, forms, and top-navigation capabilities. `form-action`, `base-uri`, and `frame-ancestors` add defense in depth. This applies at the authenticated Preview response boundary and must not rewrite downloaded final HTML bytes.
 
 - [ ] **Step 5: Verify and commit**
 
