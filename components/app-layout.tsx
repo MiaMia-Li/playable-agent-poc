@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { getSidebarWidth, setSidebarWidth, getSidebarOpen, setSidebarOpen } from '@/lib/utils/cookies'
 import { nanoid } from 'nanoid'
 import { ConnectorsProvider } from '@/components/connectors-provider'
+import { usePathname } from 'next/navigation'
 
 interface AppLayoutProps {
   children: React.ReactNode
@@ -92,6 +93,8 @@ function SidebarLoader({ width }: { width: number }) {
 }
 
 export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, initialIsMobile }: AppLayoutProps) {
+  const pathname = usePathname()
+  const isPlayablePath = pathname === '/' || pathname === '/tasks' || pathname.startsWith('/tasks/')
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoading, setIsLoading] = useState(true)
   // Initialize sidebar state based on user agent and preferences
@@ -146,17 +149,19 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
 
   // Fetch tasks on component mount
   useEffect(() => {
+    if (isPlayablePath) return
     fetchTasks()
-  }, [])
+  }, [isPlayablePath])
 
   // Poll for task updates every 5 seconds
   useEffect(() => {
+    if (isPlayablePath) return
     const interval = setInterval(() => {
       fetchTasks()
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [])
+  }, [isPlayablePath])
 
   const toggleSidebar = useCallback(() => {
     updateSidebarOpen(!isSidebarOpen)
@@ -179,6 +184,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
   }, [isSidebarOpen])
 
   useEffect(() => {
+    if (isPlayablePath) return
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault()
@@ -188,7 +194,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [toggleSidebar])
+  }, [isPlayablePath, toggleSidebar])
 
   const fetchTasks = async () => {
     try {
@@ -317,52 +323,62 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
           suppressHydrationWarning
         >
           {/* Backdrop - Mobile Only */}
-          {isSidebarOpen && <div className="lg:hidden fixed inset-0 bg-black/50 z-30" onClick={closeSidebar} />}
+          {!isPlayablePath && isSidebarOpen && (
+            <div className="lg:hidden fixed inset-0 bg-black/50 z-30" onClick={closeSidebar} />
+          )}
 
           {/* Sidebar */}
-          <div
-            className={`
+          {!isPlayablePath && (
+            <div
+              className={`
             fixed inset-y-0 left-0 z-40
             ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}
             ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
             ${isSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}
           `}
-            style={{
-              width: `${sidebarWidth}px`,
-            }}
-          >
-            <div
-              className="h-full overflow-hidden"
               style={{
                 width: `${sidebarWidth}px`,
               }}
             >
-              {isLoading ? <SidebarLoader width={sidebarWidth} /> : <TaskSidebar tasks={tasks} width={sidebarWidth} />}
+              <div
+                className="h-full overflow-hidden"
+                style={{
+                  width: `${sidebarWidth}px`,
+                }}
+              >
+                {isLoading ? (
+                  <SidebarLoader width={sidebarWidth} />
+                ) : (
+                  <TaskSidebar tasks={tasks} width={sidebarWidth} />
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Resize Handle - Desktop Only, when sidebar is open */}
-          <div
-            className={`
+          {!isPlayablePath && (
+            <div
+              className={`
             hidden lg:block fixed inset-y-0 cursor-col-resize group z-50 hover:bg-primary/20
             ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}
             ${isSidebarOpen ? 'w-1 opacity-100' : 'w-0 opacity-0'}
           `}
-            onMouseDown={isSidebarOpen ? handleMouseDown : undefined}
-            style={{
-              // Position it right after the sidebar
-              left: isSidebarOpen ? `${sidebarWidth}px` : '0px',
-            }}
-          >
-            <div className="absolute inset-0 w-2 -ml-0.5" />
-            <div className="absolute inset-y-0 left-0 w-0.5 bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity" />
-          </div>
+              onMouseDown={isSidebarOpen ? handleMouseDown : undefined}
+              style={{
+                // Position it right after the sidebar
+                left: isSidebarOpen ? `${sidebarWidth}px` : '0px',
+              }}
+            >
+              <div className="absolute inset-0 w-2 -ml-0.5" />
+              <div className="absolute inset-y-0 left-0 w-0.5 bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+          )}
 
           {/* Main Content */}
           <div
             className={`flex-1 overflow-auto flex flex-col ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}`}
             style={{
-              marginLeft: isDesktop && isSidebarOpen ? `${sidebarWidth + 4}px` : '0px',
+              marginLeft: !isPlayablePath && isDesktop && isSidebarOpen ? `${sidebarWidth + 4}px` : '0px',
             }}
           >
             {children}

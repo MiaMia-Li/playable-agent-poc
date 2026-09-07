@@ -155,6 +155,34 @@
       "when": 1769207400000,
       "tag": "0021_lovely_lizard",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788766171125,
+      "tag": "0022_playable_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788768535061,
+      "tag": "0023_playable_task_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788769537008,
+      "tag": "0024_index_playable_task_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788771828838,
+      "tag": "0025_playable_task_assets",
+      "breakpoints": true
     }
   ]
 }

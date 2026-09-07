@@ -1,0 +1,10 @@
+{
+  "mode": "gravity_fill",
+  "label": "下落补位",
+  "successTarget": 4,
+  "scorePerMatch": 500,
+  "pairKeys": ["眼睛", "蛇", "月亮", "火"],
+  "columns": 7,
+  "rows": 9,
+  "guideKey": "眼睛"
+}

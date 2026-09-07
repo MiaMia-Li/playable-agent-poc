@@ -1,0 +1,1 @@
+CREATE INDEX "playable_task_events_task_created_idx" ON "playable_task_events" USING btree ("task_id","created_at");

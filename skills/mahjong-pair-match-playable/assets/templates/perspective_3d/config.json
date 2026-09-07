@@ -1,0 +1,11 @@
+{
+  "mode": "perspective_3d",
+  "label": "3D纵深",
+  "successTarget": 4,
+  "scorePerMatch": 408,
+  "pairKeys": ["眼睛", "蛇", "月亮", "火"],
+  "columns": 7,
+  "rows": 7,
+  "stackDepth": 18,
+  "guideKey": "眼睛"
+}

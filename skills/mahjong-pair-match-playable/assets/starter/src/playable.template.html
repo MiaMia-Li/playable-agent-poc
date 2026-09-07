@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#071b18">
+  <title>Mahjong Match Playable</title>
+  <style>
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#07110f;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Arial,"PingFang SC",sans-serif}body{display:grid;place-items:center}.stage{position:relative;width:min(100vw,56.25vh);height:min(177.778vw,100vh);overflow:hidden;background:#075b45;box-shadow:0 0 45px #000c}canvas{display:block;width:100%;height:100%;touch-action:none}.loading{position:absolute;inset:0;z-index:8;display:grid;place-items:center;background:radial-gradient(circle at 50% 42%,#168566,#063b32 68%,#021b18);color:#ffe27b;font-weight:900;letter-spacing:.08em;transition:opacity .25s}.loading.hide{opacity:0;pointer-events:none}.end-card{position:absolute;inset:0;z-index:5;overflow:hidden;background:#06462d;opacity:0;pointer-events:none;transition:opacity .2s}.end-card.show{opacity:1;pointer-events:auto}.end-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scale(1.04)}.end-card.show .end-bg{animation:endZoom .8s ease-out forwards}.end-icon-wrap{position:absolute;left:27%;top:15%;width:46%;aspect-ratio:1;padding:2%;border-radius:22%;background:linear-gradient(145deg,#fff88c,#e4a514 48%,#76510a);box-shadow:0 10px 20px #0018;opacity:0}.end-icon{width:100%;height:100%;object-fit:cover;border-radius:18%}.end-title{position:absolute;left:5%;top:39%;width:90%;height:24%;object-fit:contain;opacity:0}.end-cta{position:absolute;left:15%;top:64%;width:70%;height:14%;border:0;padding:0;background:transparent;opacity:0;filter:drop-shadow(0 7px 5px #0019)}.end-cta img{width:100%;height:100%}.end-cta span{position:absolute;inset:0;display:grid;place-items:center;padding-bottom:2%;color:#fff;font-size:23px;font-weight:900;text-shadow:0 3px #16813a}.end-card.show .end-icon-wrap{animation:pop .45s .08s cubic-bezier(.2,.9,.3,1.2) forwards}.end-card.show .end-title{animation:pop .35s .42s ease-out forwards}.end-card.show .end-cta{animation:pop .35s .65s ease-out forwards,pulse 1.5s 1.2s ease-in-out infinite}.disclaimer{position:absolute;z-index:7;left:5px;right:5px;bottom:max(3px,env(safe-area-inset-bottom));padding:3px 5px;border-radius:4px;background:#001c;color:#fff;font-size:7px;line-height:1.25;text-align:center;direction:rtl;pointer-events:none}.toast{position:absolute;z-index:9;left:50%;bottom:48px;transform:translate(-50%,12px);padding:8px 12px;border-radius:9px;background:#001d;color:#fff;font-size:12px;opacity:0;transition:.2s;white-space:nowrap}.toast.show{opacity:1;transform:translate(-50%,0)}@keyframes pop{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}@keyframes pulse{50%{transform:scale(1.04);filter:drop-shadow(0 7px 5px #0019) drop-shadow(0 0 11px #ffe75ca0)}}@keyframes endZoom{to{transform:scale(1)}}
+  </style>
+</head>
+<body>
+  <main class="stage" aria-label="Mahjong pair match playable ad">
+    <canvas id="game" width="360" height="640" aria-label="点击两个相同的麻将完成配对"></canvas>
+    <div class="loading" id="loading">LOADING…</div>
+    <section class="end-card" id="endCard" aria-label="游戏完成">
+      <img class="end-bg" id="endBg" alt=""><div class="end-icon-wrap"><img class="end-icon" id="endIcon" alt=""></div>
+      <img class="end-title" id="endTitle" alt="Domino Cafe">
+      <button class="end-cta" id="cta" type="button" aria-label="前往应用商店"><img id="endButton" alt=""><span lang="ar" dir="rtl">تحميل سريع</span></button>
+    </section>
+    <div class="disclaimer" lang="ar" dir="rtl">هذه ليست لعبة قمار وليس بها أي وسيلة للفوز بأي مكافآت مالية أو جوائز ذات قيمة مالية بأي شكل من الأشكال. القمار ممنوع منعا باتا</div>
+    <div class="toast" id="toast">商店链接将在投放环境中打开</div>
+  </main>
+  <script>
+  (()=>{
+    "use strict";
+    const ASSETS=__ASSETS__,CONFIG=__CONFIG__,W=360,H=640;
+    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),lerp=(a,b,t)=>a+(b-a)*t,ease=t=>1-Math.pow(1-t,3);
+    const seeded=(()=>{let s=16411;return()=>{s=s*16807%2147483647;return(s-1)/2147483646}})();
+
+    class AudioService{
+      constructor(src){this.src=src;this.unlocked=false;this.muted=true;this.parentMuted=false;this.bgm=null;this.instances=new Set}
+      unlock(){if(this.unlocked)return;this.unlocked=true;this.muted=this.parentMuted;this.bgm=new Audio(this.src.bgm);this.bgm.loop=true;this.bgm.volume=.18;this.bgm.muted=this.muted;this.instances.add(this.bgm);if(!this.muted)this.bgm.play().catch(()=>{})}
+      play(name,volume=.7){if(!this.unlocked||this.muted||!this.src[name])return;const a=new Audio(this.src[name]);a.volume=volume;a.muted=this.muted;this.instances.add(a);if(typeof a.addEventListener==="function")a.addEventListener("ended",()=>this.instances.delete(a),{once:true});a.play().catch(()=>{})}
+      setMuted(value){this.parentMuted=value;this.muted=value;this.instances.forEach(audio=>audio.muted=value);if(this.bgm&&!value)this.bgm.play().catch(()=>{});return this.muted}
+      toggle(){return this.setMuted(!this.muted)}
+    }
+
+    class MahjongGame{
+      constructor(canvas,images,audio){
+        this.canvas=canvas;this.ctx=canvas.getContext("2d");this.images=images;this.audio=audio;this.mode=CONFIG.mode;
+        this.tiles=[];this.selected=null;this.rack=[];this.cavities=[];this.particles=[];this.score=0;this.matches=0;this.interactions=0;
+        this.locked=false;this.endAt=0;this.ended=false;this.resolveAt=0;this.pending=null;this.last=performance.now();this.nextId=1;
+        this.errorPulse=0;this.startedAt=performance.now();this.handTarget=null;this.build();this.bind();requestAnimationFrame(t=>this.frame(t));
+      }
+      add(key,x,y,w,h,extra={}){const tile={id:this.nextId++,key,x,y,w,h,state:"board",selectable:true,errorUntil:0,selected:false,...extra};this.tiles.push(tile);return tile}
+      build(){
+        if(this.mode==="top_rack")this.buildTopRack();
+        else if(this.mode==="gravity_fill")this.buildGravity();
+        else if(this.mode==="perspective_3d")this.buildPerspective();
+        else this.buildCenter();
+      }
+      buildCenter(){
+        const keys=CONFIG.tileKeys;for(let r=0;r<7;r++)for(let c=0;c<6;c++){const key=keys[(r*6+c)%keys.length];this.add(key,38+c*57+(r%2)*7,155+r*61,49,62,{selectable:false,alpha:.72,z:r*6+c})}
+        const pos=[[[66,197],[292,480]],[[67,493],[286,205]],[[76,353],[287,351]],[[161,203],[196,500]]];
+        CONFIG.pairKeys.forEach((key,i)=>pos[i].forEach(([x,y])=>this.add(key,x,y,60,76,{z:100+i})));
+        this.handTarget=this.tiles.find(t=>t.key===CONFIG.guideKey&&t.selectable);
+      }
+      buildTopRack(){
+        const keys=CONFIG.tileKeys;for(let r=0;r<7;r++)for(let c=0;c<6;c++){const key=keys[(r*5+c*2)%keys.length],x=47+c*54+(r%2)*8,y=185+r*54;this.add(key,x,y,47,59,{homeX:x,homeY:y,z:r*6+c})}
+        const pos=[[[65,222],[292,510]],[[58,521],[288,216]],[[78,361],[281,366]],[[156,258],[203,485]]];
+        const preloadKey=CONFIG.preloadRackKey||null;
+        CONFIG.pairKeys.forEach((key,i)=>pos[i].forEach(([x,y],j)=>{if(preloadKey&&key===preloadKey&&j===0)return;this.add(key,x,y,57,72,{z:120+i,homeX:x,homeY:y})}));
+        this.score=CONFIG.initialScore||0;
+        if(preloadKey){const preloadX=this.rackSlotX(0),preload=this.add(preloadKey,preloadX,111,57,72,{state:"rack",fromX:preloadX,fromY:111,rackX:preloadX,rackY:111,moveStart:0,moveDuration:1,rackIndex:0,z:200});this.rack.push(preload)}
+        this.handTarget=this.tiles.find(t=>t.key===CONFIG.guideKey&&t.selectable&&t.state==="board");
+      }
+      buildGravity(){
+        const cols=CONFIG.columns,rows=CONFIG.rows,keys=CONFIG.tileKeys;this.grid={cols,rows,left:23,top:89,cw:45,ch:56};
+        for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const key=keys[(r*3+c*5)%keys.length];this.add(key,this.gx(c),this.gy(r),42,53,{col:c,row:r,targetY:this.gy(r)})}
+        const pos=[[[1,3],[5,7]],[[0,6],[6,2]],[[2,5],[4,1]],[[1,8],[5,4]]];
+        CONFIG.pairKeys.forEach((key,i)=>pos[i].forEach(([c,r])=>this.at(c,r).key=key));
+        this.handTarget=this.at(pos[0][0][0],pos[0][0][1]);
+      }
+      buildPerspective(){
+        const keys=CONFIG.tileKeys;this.perspective={left:29,top:130,cw:43,ch:45,depth:CONFIG.stackDepth};
+        const cells=[];for(let r=0;r<7;r++)for(let c=0;c<7;c++)if(!(r>=2&&r<=4&&c>=2&&c<=4))cells.push([c,r]);
+        cells.forEach(([c,r],i)=>{const x=this.px(c,r),y=this.py(c,r);this.add(keys[(i*4+r)%keys.length],x,y,40,43,{col:c,row:r,baseX:x,baseY:y,layer:0,depth:CONFIG.stackDepth,gold:true,z:r*7+c})});
+        const pos=[[[0,0],[6,6]],[[6,0],[0,6]],[[2,0],[4,6]],[[0,3],[6,3]]];
+        CONFIG.pairKeys.forEach((key,i)=>pos[i].forEach(([c,r])=>this.at(c,r).key=key));
+        this.handTarget=this.at(pos[0][0][0],pos[0][0][1]);
+      }
+      gx(c){return this.grid.left+c*this.grid.cw+this.grid.cw/2}gy(r){return this.grid.top+r*this.grid.ch+this.grid.ch/2}
+      px(c,r){const k=(r-3)*1.3;return this.perspective.left+c*this.perspective.cw+this.perspective.cw/2+k}
+      py(c,r){return this.perspective.top+r*this.perspective.ch+this.perspective.ch/2}
+      rackSlotX(i){return 116+i*43}
+      at(c,r){return this.tiles.find(t=>t.state==="board"&&t.col===c&&t.row===r)}
+      bind(){
+        this.canvas.addEventListener("pointerdown",e=>{e.preventDefault();this.audio.unlock();const p=this.pointer(e);if(p.x>320&&p.y<72){this.audio.toggle();return}if(this.locked||this.ended)return;const tile=[...this.tiles].sort((a,b)=>(b.z||0)-(a.z||0)).find(t=>t.state==="board"&&t.selectable&&this.hit(t,p));if(!tile)return;this.interactions++;this.audio.play("click",.55);if(this.mode==="top_rack")this.pickForRack(tile);else this.choosePair(tile)}, {passive:false});
+      }
+      pointer(e){const r=this.canvas.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+      hit(t,p){return Math.abs(p.x-t.x)<=t.w*.56&&Math.abs(p.y-t.y)<=t.h*.56}
+      choosePair(tile){
+        if(!this.selected){this.selected=tile;tile.selected=true;tile.selectedAt=performance.now();return}
+        if(this.selected===tile)return;const a=this.selected,b=tile;a.selected=false;this.selected=null;
+        if(a.key!==b.key){const until=performance.now()+470;a.errorUntil=until;b.errorUntil=until;this.audio.play("error",.8);this.locked=true;setTimeout(()=>{if(!this.ended)this.locked=false},460);return}
+        this.startMatch(a,b);
+      }
+      startMatch(a,b){
+        this.locked=true;const now=performance.now();a.state=b.state="matching";this.pending={a,b,start:now,duration:this.mode==="center_collision"?440:300};this.resolveAt=now+this.pending.duration;
+      }
+      pickForRack(tile){
+        if(this.rack.length>=CONFIG.rackSlots)return;this.locked=true;const now=performance.now(),slot=this.rack.length;
+        tile.state="rack";tile.fromX=tile.x;tile.fromY=tile.y;tile.rackX=this.rackSlotX(slot);tile.rackY=111;tile.moveStart=now;tile.moveDuration=310;tile.rackIndex=slot;this.rack.push(tile);
+        const mate=this.rack.slice(0,-1).find(t=>t.key===tile.key&&t.state==="rack");
+        if(mate){this.pending={a:mate,b:tile,start:now+300,duration:300,kind:"rack"};this.resolveAt=now+620}
+        else if(this.rack.length>=CONFIG.rackSlots){this.resolveAt=now+650;this.pending={kind:"rackReset"}}
+        else setTimeout(()=>{if(!this.ended&&!this.pending)this.locked=false},330);
+      }
+      resolveMatch(now){
+        const p=this.pending;if(!p)return;this.pending=null;this.resolveAt=0;
+        if(p.kind==="rackReset"){const returning=[...this.rack];this.rack=[];returning.forEach(t=>{t.state="board";t.errorUntil=now+450;t.x=t.homeX;t.y=t.homeY});this.audio.play("error",.8);this.locked=false;return}
+        p.a.state=p.b.state="removed";if(p.kind==="rack"){this.rack=this.rack.filter(t=>t!==p.a&&t!==p.b);this.rack.forEach((t,i)=>{t.rackIndex=i;t.rackX=this.rackSlotX(i);t.rackY=111})}
+        const burstX=p.kind==="rack"?180:(p.a.x+p.b.x)/2,burstY=p.kind==="rack"?111:(p.a.y+p.b.y)/2;this.spawnBurst(burstX,burstY,p.a.key);this.audio.play("match",.78);this.matches++;this.score+=CONFIG.scorePerMatch;
+        if(this.mode==="gravity_fill")this.collapseGravity(now);
+        else if(this.mode==="perspective_3d")this.revealDepth(p.a,p.b,now);
+        if(this.matches>=CONFIG.successTarget){this.endAt=now+900;this.locked=true}else this.locked=false;
+      }
+      collapseGravity(now){
+        const {cols,rows}=this.grid,keys=CONFIG.tileKeys;
+        for(let c=0;c<cols;c++){
+          const live=this.tiles.filter(t=>t.col===c&&t.state==="board").sort((a,b)=>b.row-a.row);let target=rows-1;
+          live.forEach(t=>{t.fromY=t.y;t.row=target;t.targetY=this.gy(target);t.fallStart=now;t.fallDuration=360;target--});
+          while(target>=0){const key=keys[Math.floor(seeded()*keys.length)],t=this.add(key,this.gx(c),this.gy(target-3),42,53,{col:c,row:target,targetY:this.gy(target),fromY:this.gy(target-3),fallStart:now+80,fallDuration:430});target--}
+        }
+      }
+      revealDepth(a,b,now){
+        const keys=CONFIG.tileKeys;[a,b].forEach(old=>{if(old.depth<=1)return;const layer=(old.layer||0)+1,baseX=old.baseX??old.x,baseY=old.baseY??old.y,inset=Math.min(layer*3,11),drop=Math.min(layer*5,16);this.cavities.push({col:old.col,row:old.row,x:baseX,y:baseY,layer,w:old.layer?40:old.w,h:old.layer?43:old.h});this.add(keys[Math.floor(seeded()*keys.length)],baseX,baseY+drop,Math.max(27,40-inset),Math.max(31,43-inset),{col:old.col,row:old.row,baseX,baseY,layer,depth:old.depth-1,gold:true,z:(old.z||0)+layer*.01,revealAt:now+100})});
+      }
+      spawnBurst(x,y,key){for(let i=0;i<24;i++){const a=Math.PI*2*i/24+(seeded()-.5)*.35,s=70+seeded()*180;this.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-45,life:.75+seeded()*.4,size:2+seeded()*6,color:i%3===0?"#ffd55c":i%3===1?"#fff7d0":"#28a368"})}}
+      update(now,dt){
+        if(this.resolveAt&&now>=this.resolveAt)this.resolveMatch(now);
+        this.tiles.forEach(t=>{if(t.fallStart&&now>=t.fallStart){const q=clamp((now-t.fallStart)/t.fallDuration,0,1);t.y=lerp(t.fromY,t.targetY,ease(q));if(q===1)t.fallStart=0}});
+        this.particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=260*dt;p.life-=dt});this.particles=this.particles.filter(p=>p.life>0);
+        if(this.endAt&&now>=this.endAt&&!this.ended)this.showEndCard();
+      }
+      showEndCard(){this.ended=true;this.locked=true;document.getElementById("endCard").classList.add("show")}
+      frame(now){const dt=Math.min(.034,(now-this.last)/1000);this.last=now;this.update(now,dt);this.draw(now);requestAnimationFrame(t=>this.frame(t))}
+      draw(now){
+        const c=this.ctx;c.clearRect(0,0,W,H);this.drawBackground(c);this.drawHud(c,now);
+        if(this.mode==="top_rack")this.drawRack(c,now);if(this.mode==="perspective_3d"){this.drawPerspectiveBody(c,now);this.drawPerspectiveCavities(c)}
+        this.tiles.filter(t=>t.state!=="removed"&&(!t.revealAt||now>=t.revealAt)).sort((a,b)=>(a.z||0)-(b.z||0)).forEach(t=>this.drawTile(c,t,now));
+        this.drawParticles(c);this.drawGuide(c,now);
+      }
+      drawBackground(c){
+        if(this.mode==="perspective_3d"){const g=c.createRadialGradient(180,300,20,180,300,380);g.addColorStop(0,"#302517");g.addColorStop(.55,"#11100d");g.addColorStop(1,"#030403");c.fillStyle=g;c.fillRect(0,0,W,H);return}
+        if(this.mode==="gravity_fill"){const g=c.createLinearGradient(0,0,0,H);g.addColorStop(0,"#d5f7dd");g.addColorStop(1,"#86cf9c");c.fillStyle=g;c.fillRect(0,0,W,H);c.fillStyle="#ffffff33";for(let i=0;i<18;i++){c.beginPath();c.arc((i*83)%360,(i*137)%640,18+(i%3)*9,0,Math.PI*2);c.fill()}return}
+        c.fillStyle="#067b58";c.fillRect(0,0,W,H);const g=c.createRadialGradient(180,360,40,180,360,330);g.addColorStop(0,"#19a47655");g.addColorStop(1,"#003d3488");c.fillStyle=g;c.fillRect(0,0,W,H);
+      }
+      drawHud(c,now){
+        c.save();c.textAlign="center";c.textBaseline="middle";
+        if(this.mode==="perspective_3d"){c.shadowColor="#ffad25";c.shadowBlur=16;c.fillStyle="#ffe176";c.font="900 30px Arial";c.fillText(String(this.score),180,67)}
+        else if(this.mode==="gravity_fill"){c.fillStyle="#083c31";c.font="900 23px Arial";c.fillText(`${CONFIG.label}  ${this.matches}/${CONFIG.successTarget}`,180,36)}
+        else{c.fillStyle="#fff1a1";c.font="900 18px Arial";c.fillText("MAHJONG",95,42);c.font="900 22px Arial";c.fillText(String(this.score),190,42)}
+        c.fillStyle=this.audio.muted?"#ffd364":"#fff4b0";c.font="18px Arial";c.fillText(this.audio.muted?"×":"♪",338,43);c.restore();
+      }
+      drawRack(c,now){
+        c.save();c.translate(180,111);c.fillStyle="#482318";c.strokeStyle="#9c542c";c.lineWidth=5;c.beginPath();c.roundRect(-85,-32,170,64,9);c.fill();c.stroke();for(let i=1;i<4;i++){c.strokeStyle="#6d3825";c.lineWidth=2;c.beginPath();c.moveTo(-85+i*42.5,-29);c.lineTo(-85+i*42.5,29);c.stroke()}c.restore();
+      }
+      drawPerspectiveBody(c,now){
+        const p=this.perspective,step=8;c.save();for(let d=p.depth;d>=1;d--){const y=d*step,shade=34+Math.min(d,14)*4;c.fillStyle=`rgb(${shade+78},${shade+42},${Math.max(18,shade-7)})`;c.strokeStyle="#3a210d";c.lineWidth=1;for(let col=0;col<7;col++){const x=this.px(col,6)-20;c.fillRect(x,this.py(col,6)+20+y,40,step);c.strokeRect(x,this.py(col,6)+20+y,40,step)}for(let row=0;row<7;row++){for(const side of [0,6]){const edge=this.px(side,row)+(side?20:-20),y0=this.py(side,row)-21.5+y;c.beginPath();c.moveTo(edge,y0);c.lineTo(edge+(side?6:-6),y0+4);c.lineTo(edge+(side?6:-6),y0+47);c.lineTo(edge,y0+43);c.closePath();c.fill();c.stroke()}}}c.restore();
+      }
+      drawPerspectiveCavities(c){
+        const latest=new Map();this.cavities.forEach(v=>latest.set(`${v.col}:${v.row}`,v));latest.forEach(v=>{const d=Math.min(11,5+v.layer*2),w=v.w||40,h=v.h||43;c.save();c.translate(v.x,v.y);c.fillStyle="#1b0e05";c.fillRect(-w/2,-h/2,w,h);c.fillStyle="#6d3a11";c.beginPath();c.moveTo(-w/2,-h/2);c.lineTo(w/2,-h/2);c.lineTo(w/2-d,-h/2+d);c.lineTo(-w/2+d,-h/2+d);c.closePath();c.fill();c.fillStyle="#4b280d";c.beginPath();c.moveTo(-w/2,-h/2);c.lineTo(-w/2+d,-h/2+d);c.lineTo(-w/2+d,h/2);c.lineTo(-w/2,h/2);c.closePath();c.fill();c.fillStyle="#8a4a14";c.beginPath();c.moveTo(w/2,-h/2);c.lineTo(w/2-d,-h/2+d);c.lineTo(w/2-d,h/2);c.lineTo(w/2,h/2);c.closePath();c.fill();c.strokeStyle="#d69830";c.lineWidth=1;c.strokeRect(-w/2+.5,-h/2+.5,w-1,h-1);c.restore()})
+      }
+      currentPos(t,now){
+        if(t.state==="matching"&&this.pending){const q=ease(clamp((now-this.pending.start)/this.pending.duration,0,1));if(this.pending.kind==="rack")return{x:lerp(t.rackX,180,q),y:lerp(t.rackY,112,q),scale:1+Math.sin(q*Math.PI)*.18};if(this.mode==="center_collision")return{x:lerp(t.x,180,q),y:lerp(t.y,326,q),scale:1+Math.sin(q*Math.PI)*.16};return{x:t.x,y:t.y,scale:1+Math.sin(q*Math.PI)*.12}}
+        if(t.state==="rack"){const q=ease(clamp((now-t.moveStart)/t.moveDuration,0,1));return{x:lerp(t.fromX,t.rackX,q),y:lerp(t.fromY,t.rackY,q),scale:lerp(1,.7,q)}}
+        return{x:t.x,y:t.y,scale:1};
+      }
+      drawTile(c,t,now){
+        const pos=this.currentPos(t,now),lift=t.selected?ease(clamp((now-(t.selectedAt||now))/150,0,1)):0,img=this.images.tiles[t.key];
+        c.save();c.globalAlpha=t.alpha??1;c.translate(pos.x,pos.y-lift*7);c.scale(pos.scale*(1+lift*.04),pos.scale*(1+lift*.04));if(this.mode!=="top_rack"&&!(this.mode==="perspective_3d"&&t.layer>0)){c.shadowColor="#001b";c.shadowBlur=t.selected?14:5;c.shadowOffsetY=t.selected?8:4}
+        if(this.mode==="gravity_fill"){c.fillStyle="#f7fff4";c.strokeStyle="#4ba777";c.lineWidth=2;c.beginPath();c.roundRect(-t.w/2,-t.h/2,t.w,t.h,7);c.fill();c.stroke()}
+        c.drawImage(img,-t.w/2,-t.h/2,t.w,t.h);
+        if(t.gold&&!t.layer){c.strokeStyle="#9a681f";c.lineWidth=2;c.strokeRect(-t.w/2,-t.h/2,t.w,t.h)}
+        if(t.selected){if(!(this.mode==="perspective_3d"&&t.layer>0)){c.fillStyle="#00d94f45";c.fillRect(-t.w/2,-t.h/2,t.w,t.h)}c.strokeStyle="#36ff7d";c.lineWidth=3;c.strokeRect(-t.w/2+1,-t.h/2+1,t.w-2,t.h-2)}
+        if(now<t.errorUntil){c.fillStyle="#ff264c55";c.fillRect(-t.w/2,-t.h/2,t.w,t.h);c.strokeStyle="#ff334e";c.lineWidth=4;c.strokeRect(-t.w/2,-t.h/2,t.w,t.h)}c.restore();
+      }
+      drawParticles(c){this.particles.forEach(p=>{c.save();c.globalAlpha=clamp(p.life*1.4,0,1);c.fillStyle=p.color;c.translate(p.x,p.y);c.rotate(p.life*5);c.fillRect(-p.size/2,-p.size/2,p.size,p.size);c.restore()})}
+      drawGuide(c,now){
+        if(this.interactions||!this.handTarget||now-this.startedAt>3600)return;const t=this.handTarget,pulse=.92+Math.sin(now/150)*.06;
+        c.save();c.globalAlpha=clamp((3600-(now-this.startedAt))/600,0,1);c.translate(t.x+5,t.y+9);c.scale(pulse,pulse);c.drawImage(this.images.hand,0,0,61,65);c.restore();c.save();c.textAlign="center";c.fillStyle="#fff";c.strokeStyle="#183d32";c.lineWidth=4;c.font="900 17px Arial";const label=this.mode==="top_rack"?"选择相同麻将放入牌架":this.mode==="gravity_fill"?"配对麻将，牌面自动下落":"点击两张相同麻将";c.strokeText(label,180,this.mode==="perspective_3d"?114:74);c.fillText(label,180,this.mode==="perspective_3d"?114:74);c.restore();
+      }
+      snapshot(){return{mode:this.mode,score:this.score,matches:this.matches,ended:this.ended,interactions:this.interactions,rack:this.rack.map(t=>t.key),live:this.tiles.filter(t=>t.state!=="removed").length}}
+    }
+
+    async function loadImages(){const loaded={tiles:{}};const entries=[["background",ASSETS.background],["hand",ASSETS.hand],...Object.entries(ASSETS.tiles).map(([k,v])=>["tile:"+k,v])];await Promise.all(entries.map(([key,src])=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{if(key.startsWith("tile:"))loaded.tiles[key.slice(5)]=img;else loaded[key]=img;resolve()};img.onerror=reject;img.src=src})));return loaded}
+    function toast(){const el=document.getElementById("toast");el.classList.add("show");setTimeout(()=>el.classList.remove("show"),1700)}
+    function openStore(){const game=window.__PLAYABLE__;if(!game||game.interactions<1){toast();return}try{if(window.mraid&&typeof window.mraid.open==="function"&&CONFIG.storeUrl){window.mraid.open(CONFIG.storeUrl);return}if(window.PlayableBridge&&typeof window.PlayableBridge.openStore==="function"){window.PlayableBridge.openStore(CONFIG.storeUrl);return}}catch(e){}toast()}
+    window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||!data||data.type!=="playable:set-muted"||typeof data.muted!=="boolean")return;window.__PLAYABLE__?.audio?.setMuted(data.muted)});
+    document.getElementById("cta").addEventListener("click",openStore);
+    loadImages().then(images=>{document.getElementById("endBg").src=ASSETS.endcard.background;document.getElementById("endIcon").src=ASSETS.endcard.icon;document.getElementById("endTitle").src=ASSETS.endcard.title;document.getElementById("endButton").src=ASSETS.endcard.button;document.getElementById("loading").classList.add("hide");window.__PLAYABLE__=new MahjongGame(document.getElementById("game"),images,new AudioService(ASSETS.audio))}).catch(e=>{document.getElementById("loading").textContent="资源加载失败";console.error(e)});
+  })();
+  </script>
+</body>
+</html>
