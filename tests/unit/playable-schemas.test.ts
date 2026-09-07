@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { confirmationProposalSchema, playableTaskPhases } from '@/lib/playable/schemas'
-import { playableModeIds } from '@/lib/playable/types'
 
 const validProposal = {
   mode: 'center_collision',
@@ -44,9 +43,12 @@ describe('confirmation proposal schema', () => {
     ])
   })
 
-  it.each(playableModeIds)('accepts approved mode %s', (mode) => {
-    expect(confirmationProposalSchema.parse({ ...validProposal, mode }).mode).toBe(mode)
-  })
+  it.each(['center_collision', 'top_rack', 'gravity_fill', 'perspective_3d'] as const)(
+    'accepts approved mode %s',
+    (mode) => {
+      expect(confirmationProposalSchema.parse({ ...validProposal, mode }).mode).toBe(mode)
+    },
+  )
 
   it.each(['用户上传', '内置默认', '待上传', '待生成'] as const)('accepts resource status %s', (status) => {
     const proposal = {
@@ -76,9 +78,22 @@ describe('confirmation proposal schema', () => {
     expect(() => confirmationProposalSchema.parse(proposal)).toThrow()
   })
 
-  it('requires an absolute HTTPS store URL without normalizing it', () => {
-    expect(() => confirmationProposalSchema.parse({ ...validProposal, storeUrl: 'http://example.com/app' })).toThrow()
-    expect(() => confirmationProposalSchema.parse({ ...validProposal, storeUrl: '/store/app' })).toThrow()
+  it.each([
+    ['relative', '/store/app'],
+    ['malformed', 'not a url'],
+    ['HTTP', 'http://example.com/app'],
+  ])('returns a Zod failure without throwing for a %s store URL', (_case, storeUrl) => {
+    expect(() => confirmationProposalSchema.safeParse({ ...validProposal, storeUrl })).not.toThrow()
+    expect(confirmationProposalSchema.safeParse({ ...validProposal, storeUrl }).success).toBe(false)
+  })
+
+  it('accepts and preserves a valid HTTPS store URL through safeParse', () => {
+    const result = confirmationProposalSchema.safeParse(validProposal)
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.storeUrl).toBe(validProposal.storeUrl)
+    }
   })
 
   it.each([
@@ -96,15 +111,29 @@ describe('confirmation proposal schema', () => {
     expect(() => confirmationProposalSchema.parse(proposal)).toThrow()
   })
 
-  it('rejects unknown fields at every contract boundary', () => {
-    expect(() => confirmationProposalSchema.parse({ ...validProposal, custom: true })).toThrow()
-    expect(() =>
-      confirmationProposalSchema.parse({
-        ...validProposal,
-        copy: { ...validProposal.copy, subtitle: 'not allowed' },
-      }),
-    ).toThrow()
+  it.each([
+    ['root', { ...validProposal, unknown: true }],
+    ['resources', { ...validProposal, resources: { ...validProposal.resources, unknown: true } }],
+    ['copy', { ...validProposal, copy: { ...validProposal.copy, unknown: true } }],
+    ['delivery', { ...validProposal, delivery: { ...validProposal.delivery, unknown: true } }],
+  ])('rejects unknown keys at the %s boundary', (_boundary, proposal) => {
+    expect(confirmationProposalSchema.safeParse(proposal).success).toBe(false)
   })
+
+  it.each(['tileFaces', 'backgroundBoard', 'animationEffects', 'audio', 'endCard'] as const)(
+    'rejects unknown keys in the %s resource object',
+    (resource) => {
+      const proposal = {
+        ...validProposal,
+        resources: {
+          ...validProposal.resources,
+          [resource]: { ...validProposal.resources[resource], unknown: true },
+        },
+      }
+
+      expect(confirmationProposalSchema.safeParse(proposal).success).toBe(false)
+    },
+  )
 })
 
 describe('playable task phases', () => {

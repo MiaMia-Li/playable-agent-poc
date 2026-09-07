@@ -39,7 +39,7 @@ export const confirmationProposalSchema = z.strictObject({
   storeUrl: z
     .string()
     .url()
-    .refine((value) => new URL(value).protocol === 'https:', 'Store URL must use HTTPS'),
+    .refine((value) => /^https:\/\//i.test(value), 'Store URL must use HTTPS'),
   delivery: z.strictObject({
     network: z.literal('applovin'),
     logicalWidth: z.literal(360),
