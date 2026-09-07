@@ -149,6 +149,17 @@ describe('CodexPlayableAgent', () => {
     expect(harnessMocks.destroy).toHaveBeenCalledOnce()
   })
 
+  it('rejects an empty API key before creating a Codex harness', async () => {
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'task-empty-key',
+        prompt: '中心碰撞',
+        apiKey: '',
+      }),
+    ).rejects.toThrow('API key is required')
+    expect(harnessMocks.createCodex).not.toHaveBeenCalled()
+  })
+
   it('delegates an already validated confirmation to the isolated build runner', async () => {
     const buildResult: BuildResult = {
       html: '<script>window.__PLAYABLE__={}</script>',

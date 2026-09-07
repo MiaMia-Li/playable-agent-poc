@@ -22,10 +22,10 @@ interface SandboxCommandResult {
 
 export interface PlayableSandbox {
   readonly defaultWorkingDirectory: string
-  writeBinaryFile(options: { path: string; content: Uint8Array }): PromiseLike<void>
-  writeTextFile(options: { path: string; content: string }): PromiseLike<void>
-  readBinaryFile(options: { path: string }): PromiseLike<Uint8Array | null>
-  readTextFile(options: { path: string }): PromiseLike<string | null>
+  writeBinaryFile(options: { path: string; content: Uint8Array; abortSignal?: AbortSignal }): PromiseLike<void>
+  writeTextFile(options: { path: string; content: string; abortSignal?: AbortSignal }): PromiseLike<void>
+  readBinaryFile(options: { path: string; abortSignal?: AbortSignal }): PromiseLike<Uint8Array | null>
+  readTextFile(options: { path: string; abortSignal?: AbortSignal }): PromiseLike<string | null>
   run(options: SandboxCommandOptions): PromiseLike<SandboxCommandResult>
   destroy(): PromiseLike<void>
 }
@@ -34,7 +34,7 @@ interface BuildLogger {
   info(message: string): PromiseLike<void>
 }
 
-interface ExecuteAgentInput {
+export interface ExecuteAgentInput {
   authEnvironment: Readonly<Record<'CODEX_API_KEY', string>>
   sandbox: PlayableSandbox
   workspace: string
@@ -43,8 +43,8 @@ interface ExecuteAgentInput {
 }
 
 export interface RunPlayableBuildDependencies {
+  executeAgent: (input: ExecuteAgentInput) => PromiseLike<unknown>
   createSandbox?: (taskId: string, abortSignal?: AbortSignal) => PromiseLike<PlayableSandbox>
-  executeAgent?: (input: ExecuteAgentInput) => PromiseLike<void>
   logger?: BuildLogger
   skillRoot?: string
   abortSignal?: AbortSignal
@@ -59,6 +59,7 @@ async function readSkillFiles(root: string, directory = root): Promise<SkillFile
   const entries = await readdir(directory, { withFileTypes: true })
   const files = await Promise.all(
     entries.map(async (entry): Promise<SkillFile[]> => {
+      if (isFilesystemMetadata(entry.name, entry.isDirectory())) return []
       const absolutePath = path.join(directory, entry.name)
       if (entry.isDirectory()) return readSkillFiles(root, absolutePath)
       if (!entry.isFile()) return []
@@ -68,6 +69,11 @@ async function readSkillFiles(root: string, directory = root): Promise<SkillFile
     }),
   )
   return files.flat().sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+}
+
+function isFilesystemMetadata(name: string, directory: boolean): boolean {
+  if (directory && ['.git', '.svn', '__MACOSX'].includes(name)) return true
+  return name === '.DS_Store' || name === 'Thumbs.db' || name === 'desktop.ini' || name.startsWith('._')
 }
 
 async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
@@ -90,9 +96,17 @@ async function requireSuccessfulCommand(
   if (result.exitCode !== 0) throw new Error(failureMessage)
 }
 
-async function assertMasterUnchanged(sandbox: PlayableSandbox, masterRoot: string, files: SkillFile[]) {
+async function assertMasterUnchanged(
+  sandbox: PlayableSandbox,
+  masterRoot: string,
+  files: SkillFile[],
+  abortSignal?: AbortSignal,
+) {
   for (const file of files) {
-    const copied = await sandbox.readBinaryFile({ path: path.join(masterRoot, file.relativePath) })
+    const copied = await sandbox.readBinaryFile({
+      path: path.join(masterRoot, file.relativePath),
+      abortSignal,
+    })
     if (copied === null || !Buffer.from(copied).equals(Buffer.from(file.content))) {
       throw new Error('Skill master was modified')
     }
@@ -101,11 +115,12 @@ async function assertMasterUnchanged(sandbox: PlayableSandbox, masterRoot: strin
 
 export async function runPlayableBuild(
   input: ConfirmedBuildInput,
-  dependencies: RunPlayableBuildDependencies = {},
+  dependencies: RunPlayableBuildDependencies,
 ): Promise<BuildResult> {
+  if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
+  if (!input.apiKey.trim()) throw new Error('API key is required')
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
-  if (serializedConfirmation.includes(input.apiKey)) throw new Error('Confirmation contains a credential')
 
   dependencies.abortSignal?.throwIfAborted()
   const skillFiles = await readSkillFiles(dependencies.skillRoot ?? DEFAULT_SKILL_ROOT)
@@ -114,13 +129,16 @@ export async function runPlayableBuild(
   const sandboxRoot = sandbox.defaultWorkingDirectory
   const masterRoot = path.join(sandboxRoot, 'skill-master')
   const workspace = path.join(sandboxRoot, 'work')
+  let operationError: unknown
 
   try {
+    if (serializedConfirmation.includes(input.apiKey)) throw new Error('Confirmation contains a credential')
     await dependencies.logger?.info('Preparing isolated playable workspace')
     for (const file of skillFiles) {
       await sandbox.writeBinaryFile({
         path: path.join(masterRoot, file.relativePath),
         content: file.content,
+        abortSignal: dependencies.abortSignal,
       })
     }
     await requireSuccessfulCommand(
@@ -140,17 +158,18 @@ export async function runPlayableBuild(
     await sandbox.writeTextFile({
       path: path.join(workspace, 'confirmed-config.json'),
       content: serializedConfirmation,
+      abortSignal: dependencies.abortSignal,
     })
 
     await dependencies.logger?.info('Running playable agent')
-    await dependencies.executeAgent?.({
+    await dependencies.executeAgent({
       authEnvironment: { CODEX_API_KEY: input.apiKey },
       sandbox,
       workspace,
       taskId: input.taskId,
       abortSignal: dependencies.abortSignal,
     })
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles)
+    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     await dependencies.logger?.info('Building playable artifact')
     await requireSuccessfulCommand(
@@ -178,7 +197,10 @@ export async function runPlayableBuild(
       'Playable validation failed',
     )
 
-    const artifact = await sandbox.readBinaryFile({ path: path.join(workspace, 'output.html') })
+    const artifact = await sandbox.readBinaryFile({
+      path: path.join(workspace, 'output.html'),
+      abortSignal: dependencies.abortSignal,
+    })
     if (artifact === null) throw new Error('Playable artifact is missing')
     if (artifact.byteLength >= MAX_PLAYABLE_BYTES) throw new Error('Playable artifact exceeds size limit')
 
@@ -186,7 +208,7 @@ export async function runPlayableBuild(
     if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
     if (html.includes(input.apiKey)) throw new Error('Playable artifact contains a credential')
 
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles)
+    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
     return {
       html,
       validation: {
@@ -194,7 +216,14 @@ export async function runPlayableBuild(
         bytes: artifact.byteLength,
       },
     }
+  } catch (error) {
+    operationError = error
+    throw error
   } finally {
-    await sandbox.destroy()
+    try {
+      await sandbox.destroy()
+    } catch (destroyError) {
+      if (operationError === undefined) throw new Error('Sandbox cleanup failed', { cause: destroyError })
+    }
   }
 }

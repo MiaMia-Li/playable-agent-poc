@@ -154,6 +154,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
   }
 
   async proposeConfirmation(input: AgentInput): Promise<ConfirmationProposal> {
+    if (!input.apiKey.trim()) throw new Error('API key is required')
     const controller = new AbortController()
     this.activeTasks.set(input.taskId, controller)
     try {
@@ -164,6 +165,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
   }
 
   async build(input: ConfirmedBuildInput): Promise<BuildResult> {
+    if (!input.apiKey.trim()) throw new Error('API key is required')
     confirmationProposalSchema.parse(input.confirmation)
     const controller = new AbortController()
     this.activeTasks.set(input.taskId, controller)
