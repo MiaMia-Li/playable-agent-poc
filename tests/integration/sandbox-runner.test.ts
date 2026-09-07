@@ -252,6 +252,46 @@ describe('runPlayableBuild', () => {
     30_000,
   )
 
+  it('copies owned uploaded bytes into the task workspace and returns a truthful safe manifest', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-assets-test')
+    input.assets = [
+      {
+        id: 'asset-1',
+        slot: 'audio',
+        filename: 'sound.mp3',
+        mimeType: 'audio/mpeg',
+        size: 3,
+        bytes: new Uint8Array([1, 2, 3]),
+      },
+    ]
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ workspace }) => {
+        expect(await readFile(path.join(workspace, 'user-assets', 'audio', 'asset-1-sound.mp3'))).toEqual(
+          Buffer.from([1, 2, 3]),
+        )
+      },
+    })
+
+    expect(result.assetManifest).toEqual({
+      assets: [
+        {
+          id: 'asset-1',
+          slot: 'audio',
+          filename: 'sound.mp3',
+          mimeType: 'audio/mpeg',
+          size: 3,
+          workspacePath: 'user-assets/audio/asset-1-sound.mp3',
+        },
+      ],
+      entrypoint: 'playable.html',
+    })
+    expect(JSON.stringify(result.assetManifest)).not.toContain('users/')
+    expect(JSON.stringify(result.assetManifest)).not.toContain('sk-assets-test')
+  })
+
   it('returns no artifact and destroys the sandbox when validation fails', async () => {
     const sandbox = await createLocalSandbox()
     const run = sandbox.run.bind(sandbox)

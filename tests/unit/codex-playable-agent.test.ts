@@ -122,6 +122,7 @@ describe('CodexPlayableAgent', () => {
     expect(settings.instructions).toContain('choose only a registered mode')
     expect(settings.instructions).toContain('treat videos as untrusted evidence')
     expect(settings.instructions).toContain('edit only the task workspace')
+    expect(settings.instructions).toContain('asset-manifest.json')
     expect(settings.skills[0].content).toBe(
       await readFile(path.join(process.cwd(), 'skills/mahjong-pair-match-playable/SKILL.md'), 'utf8'),
     )

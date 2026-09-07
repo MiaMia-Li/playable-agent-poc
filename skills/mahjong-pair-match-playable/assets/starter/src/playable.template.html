@@ -29,10 +29,11 @@
     const seeded=(()=>{let s=16411;return()=>{s=s*16807%2147483647;return(s-1)/2147483646}})();
 
     class AudioService{
-      constructor(src){this.src=src;this.unlocked=false;this.muted=true;this.bgm=null}
-      unlock(){if(this.unlocked)return;this.unlocked=true;this.muted=false;this.bgm=new Audio(this.src.bgm);this.bgm.loop=true;this.bgm.volume=.18;this.bgm.play().catch(()=>{})}
-      play(name,volume=.7){if(!this.unlocked||this.muted||!this.src[name])return;const a=new Audio(this.src[name]);a.volume=volume;a.play().catch(()=>{})}
-      toggle(){this.muted=!this.muted;if(this.bgm)this.bgm.muted=this.muted;return this.muted}
+      constructor(src){this.src=src;this.unlocked=false;this.muted=true;this.parentMuted=false;this.bgm=null;this.instances=new Set}
+      unlock(){if(this.unlocked)return;this.unlocked=true;this.muted=this.parentMuted;this.bgm=new Audio(this.src.bgm);this.bgm.loop=true;this.bgm.volume=.18;this.bgm.muted=this.muted;this.instances.add(this.bgm);if(!this.muted)this.bgm.play().catch(()=>{})}
+      play(name,volume=.7){if(!this.unlocked||this.muted||!this.src[name])return;const a=new Audio(this.src[name]);a.volume=volume;a.muted=this.muted;this.instances.add(a);if(typeof a.addEventListener==="function")a.addEventListener("ended",()=>this.instances.delete(a),{once:true});a.play().catch(()=>{})}
+      setMuted(value){this.parentMuted=value;this.muted=value;this.instances.forEach(audio=>audio.muted=value);if(this.bgm&&!value)this.bgm.play().catch(()=>{});return this.muted}
+      toggle(){return this.setMuted(!this.muted)}
     }
 
     class MahjongGame{
@@ -187,6 +188,7 @@
     async function loadImages(){const loaded={tiles:{}};const entries=[["background",ASSETS.background],["hand",ASSETS.hand],...Object.entries(ASSETS.tiles).map(([k,v])=>["tile:"+k,v])];await Promise.all(entries.map(([key,src])=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>{if(key.startsWith("tile:"))loaded.tiles[key.slice(5)]=img;else loaded[key]=img;resolve()};img.onerror=reject;img.src=src})));return loaded}
     function toast(){const el=document.getElementById("toast");el.classList.add("show");setTimeout(()=>el.classList.remove("show"),1700)}
     function openStore(){const game=window.__PLAYABLE__;if(!game||game.interactions<1){toast();return}try{if(window.mraid&&typeof window.mraid.open==="function"&&CONFIG.storeUrl){window.mraid.open(CONFIG.storeUrl);return}if(window.PlayableBridge&&typeof window.PlayableBridge.openStore==="function"){window.PlayableBridge.openStore(CONFIG.storeUrl);return}}catch(e){}toast()}
+    window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||!data||data.type!=="playable:set-muted"||typeof data.muted!=="boolean")return;window.__PLAYABLE__?.audio?.setMuted(data.muted)});
     document.getElementById("cta").addEventListener("click",openStore);
     loadImages().then(images=>{document.getElementById("endBg").src=ASSETS.endcard.background;document.getElementById("endIcon").src=ASSETS.endcard.icon;document.getElementById("endTitle").src=ASSETS.endcard.title;document.getElementById("endButton").src=ASSETS.endcard.button;document.getElementById("loading").classList.add("hide");window.__PLAYABLE__=new MahjongGame(document.getElementById("game"),images,new AudioService(ASSETS.audio))}).catch(e=>{document.getElementById("loading").textContent="资源加载失败";console.error(e)});
   })();

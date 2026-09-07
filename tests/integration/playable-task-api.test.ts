@@ -10,6 +10,7 @@ import {
 import { PrivateVercelArtifactStore, type ArtifactStore, type PrivateBlobClient } from '@/lib/playable/artifact-store'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import type { PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
+import type { PlayableAsset } from '@/lib/playable/task-assets'
 
 const confirmation: ConfirmationProposal = {
   mode: 'center_collision',
@@ -56,6 +57,7 @@ class MemoryRepository implements PlayableTaskRepository {
   messages: Array<{ taskId: string; role: 'user' | 'agent'; content: string }> = []
   events: EventRecord[] = []
   latestAssignments: string[] = []
+  assets: PlayableAsset[] = []
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -135,6 +137,18 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async listEvents(taskId: string): Promise<EventRecord[]> {
     return this.events.filter((event) => event.taskId === taskId)
+  }
+
+  async listOwnedTasks(userId: string) {
+    return [...this.tasks.values()].filter((task) => task.userId === userId)
+  }
+
+  async saveAsset(asset: PlayableAsset) {
+    this.assets.push(asset)
+  }
+
+  async listAssets(taskId: string, userId: string) {
+    return this.assets.filter((asset) => asset.taskId === taskId && asset.userId === userId)
   }
 }
 
@@ -227,6 +241,7 @@ describe('playable task API', () => {
     harness.setAuthenticatedUser(undefined)
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
     const responses = await Promise.all([
+      harness.handlers.list(request('/api/playable-tasks')),
       harness.handlers.create(request('/api/playable-tasks', 'POST', { prompt: 'game' })),
       harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', { message: 'hello' }), context),
       harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), context),
@@ -234,7 +249,7 @@ describe('playable task API', () => {
       harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), context),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401])
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401])
   })
 
   it('creates an authenticated task in draft without returning private fields', async () => {
@@ -249,6 +264,24 @@ describe('playable task API', () => {
       prompt: 'Build a mahjong game',
       phase: 'draft',
     })
+  })
+
+  it('returns a projected owned playable task list without raw persistence fields', async () => {
+    const response = await harness.handlers.list(request('/api/playable-tasks'))
+    const body = await response.json()
+
+    expect(body.tasks).toEqual([
+      expect.objectContaining({
+        id: 'owned',
+        prompt: 'Build a game',
+        phase: 'draft',
+        hasArtifact: false,
+        artifactVersion: null,
+      }),
+    ])
+    expect(JSON.stringify(body)).not.toContain('userId')
+    expect(JSON.stringify(body)).not.toContain('latestArtifactKey')
+    expect(JSON.stringify(body)).not.toContain('users/')
   })
 
   it('returns the same 404 for missing and cross-user resources', async () => {
@@ -407,6 +440,39 @@ describe('playable task API', () => {
     expect(invalid.status).toBe(400)
   })
 
+  it('requires each 用户上传 resource to have task-owned metadata in the same explicit slot', async () => {
+    const uploadedAudio = {
+      ...confirmation,
+      resources: {
+        ...confirmation.resources,
+        audio: { status: '用户上传' as const, treatment: 'sound.mp3' },
+      },
+    }
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    const missing = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: uploadedAudio }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(missing.status).toBe(400)
+
+    harness.repository.assets.push({
+      id: 'asset-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'audio',
+      filename: 'sound.mp3',
+      mimeType: 'audio/mpeg',
+      size: 3,
+      storageKey: 'private-key',
+      createdAt: new Date(),
+    })
+    const accepted = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: uploadedAudio }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(accepted.status).toBe(202)
+  })
+
   it('returns confirmation without waiting for background event or build work', async () => {
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
     vi.spyOn(harness.repository, 'appendEvent').mockImplementationOnce(() => new Promise(() => undefined))
@@ -423,6 +489,21 @@ describe('playable task API', () => {
     expect(outcome).toBe(202)
     expect(harness.scheduled).toHaveLength(1)
     expect(harness.agent.build).not.toHaveBeenCalled()
+  })
+
+  it('reports authoritative building state during the after/event race', async () => {
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    await harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    expect(await response.json()).toEqual({
+      task: { phase: 'building', hasArtifact: false, artifactVersion: null },
+      events: [],
+    })
   })
 
   it('persists build-started before invoking the background build', async () => {
@@ -528,6 +609,63 @@ describe('playable task API', () => {
       expect.stringMatching(/validation-report\.json$/),
     ])
     expect(harness.repository.latestAssignments).toHaveLength(1)
+  })
+
+  it('loads owned private asset bytes for the build and persists the returned truthful manifest', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const storageKey = 'users/user-1/tasks/owned/assets/asset-1'
+    harness.repository.assets.push({
+      id: 'asset-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'audio',
+      filename: 'sound.mp3',
+      mimeType: 'audio/mpeg',
+      size: 3,
+      storageKey,
+      createdAt: new Date(0),
+    })
+    harness.artifacts.set(storageKey, new Uint8Array([1, 2, 3]))
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      assetManifest: {
+        assets: [
+          {
+            id: 'asset-1',
+            slot: 'audio',
+            filename: 'sound.mp3',
+            mimeType: 'audio/mpeg',
+            size: 3,
+            workspacePath: 'user-assets/audio/asset-1-sound.mp3',
+          },
+        ],
+        entrypoint: 'playable.html',
+      },
+      validation: { behavior: 'passed', bytes: 42 },
+    })
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'asset-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assets: [expect.objectContaining({ id: 'asset-1', bytes: new Uint8Array([1, 2, 3]) })],
+      }),
+    )
+    const manifest = new TextDecoder().decode(
+      harness.artifacts.get('users/user-1/tasks/owned/asset-build/asset-manifest.json'),
+    )
+    expect(manifest).toContain('user-assets/audio/asset-1-sound.mp3')
+    expect(manifest).not.toContain(storageKey)
+    expect(manifest).not.toContain('sk-test-secret')
   })
 
   it('marks a failed build without replacing the last published artifact', async () => {

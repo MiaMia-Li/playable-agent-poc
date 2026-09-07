@@ -3,6 +3,7 @@ import type { ArtifactStore } from './artifact-store'
 import type { PlayableAgentAdapter } from './playable-agent-adapter'
 import { confirmationProposalSchema, type ConfirmationProposal, type PlayableTaskPhase } from './schemas'
 import { redactSecrets } from './redact'
+import type { PlayableAsset } from './task-assets'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -14,6 +15,8 @@ export interface PlayableTaskRecord {
   confirmation: ConfirmationProposal | null
   latestArtifactKey: string | null
   latestValidation?: unknown
+  title?: string | null
+  createdAt?: Date
 }
 
 export interface PlayableEventRecord {
@@ -45,6 +48,9 @@ export interface PlayableTaskRepository {
   markFailed(taskId: string): Promise<void>
   appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void>
   listEvents(taskId: string): Promise<PlayableEventRecord[]>
+  listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]>
+  saveAsset(asset: PlayableAsset): Promise<void>
+  listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
 }
 
 export type BackgroundScheduler = (work: () => Promise<void>) => void
@@ -67,6 +73,33 @@ interface ConfirmedBuildDependencies {
   repository: PlayableTaskRepository
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
+}
+
+async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let length = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    length += value.byteLength
+  }
+  const result = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) {
+    result.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return result
+}
+
+function safeTaskState(task: PlayableTaskRecord) {
+  return {
+    phase: task.phase,
+    hasArtifact: Boolean(task.latestArtifactKey),
+    artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
+  }
 }
 
 const ARTIFACT_CSP =
@@ -154,10 +187,26 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       throw new Error('Confirmation contains a credential')
     }
     const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [apiKey])
+    const storedAssets = await repository.listAssets(task.id, task.userId)
+    const assets = await Promise.all(
+      storedAssets.map(async (asset) => {
+        const stream = await artifactStore.get(asset.storageKey)
+        if (!stream) throw new Error('Uploaded asset is missing')
+        return {
+          id: asset.id,
+          slot: asset.slot,
+          filename: asset.filename,
+          mimeType: asset.mimeType,
+          size: asset.size,
+          bytes: await readAll(stream),
+        }
+      }),
+    )
     const result = await agent.build({
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
+      assets,
     })
     if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
     if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
@@ -177,7 +226,12 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     )
     await artifactStore.put(
       `${prefix}/asset-manifest.json`,
-      JSON.stringify({ assets: [], entrypoint: 'playable.html' }),
+      JSON.stringify(
+        result.assetManifest ?? {
+          assets: assets.map(({ bytes: _bytes, ...asset }) => asset),
+          entrypoint: 'playable.html',
+        },
+      ),
       'application/json',
     )
     await artifactStore.put(`${prefix}/validation-report.json`, JSON.stringify(validationReport), 'application/json')
@@ -203,6 +257,21 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   return {
+    async list(request: NextRequest): Promise<Response> {
+      const userId = await dependencies.authenticate(request)
+      if (!userId) return jsonError(401, 'Unauthorized')
+      const tasks = await dependencies.repository.listOwnedTasks(userId)
+      return Response.json({
+        tasks: tasks.map((task) => ({
+          id: task.id,
+          title: task.title ?? null,
+          prompt: safeString(task.prompt),
+          ...safeTaskState(task),
+          createdAt: task.createdAt?.toISOString() ?? null,
+        })),
+      })
+    },
+
     async create(request: NextRequest): Promise<Response> {
       const userId = await dependencies.authenticate(request)
       if (!userId) return jsonError(401, 'Unauthorized')
@@ -317,6 +386,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
+      if (Object.values(sanitized.resources).some((resource) => resource.status === '待上传')) {
+        return jsonError(400, 'Pending uploads')
+      }
+      const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
+      const uploadedSlots = new Set(assets.map((asset) => asset.slot))
+      const missingUpload = Object.entries(sanitized.resources).some(
+        ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
+      )
+      if (missingUpload) return jsonError(400, 'Uploaded asset missing')
 
       const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, sanitized)
       if (!claimed) return jsonError(409, 'Task phase conflict')
@@ -352,7 +430,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const events = await dependencies.repository.listEvents(access.task.id)
-      return Response.json({ events: events.map(eventJson) }, { headers: { 'Cache-Control': 'private, no-store' } })
+      const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
+      return Response.json(
+        { task: safeTaskState(latestTask), events: events.map(eventJson) },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      )
     },
 
     async artifact(request: NextRequest, context: RouteContext): Promise<Response> {

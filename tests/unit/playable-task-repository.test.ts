@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SQL } from 'drizzle-orm'
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
-import { playableTaskEvents } from '@/lib/db/schema'
+import { playableTaskAssets, playableTaskEvents } from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
   mode: 'center_collision',
@@ -105,5 +105,15 @@ describe('playable task event storage', () => {
     )
 
     expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'created_at'])
+  })
+})
+
+describe('playable task asset storage', () => {
+  it('persists private storage metadata with task/owner foreign keys and a task-slot index', () => {
+    const config = getTableConfig(playableTaskAssets)
+    expect(config.foreignKeys).toHaveLength(2)
+    const index = config.indexes.find((candidate) => candidate.config.name === 'playable_task_assets_task_slot_idx')
+    expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'slot'])
+    expect(config.columns.find((column) => column.name === 'storage_key')?.isUnique).toBe(true)
   })
 })

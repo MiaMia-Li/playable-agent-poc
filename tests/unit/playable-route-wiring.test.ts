@@ -21,6 +21,9 @@ const infrastructure = vi.hoisted(() => {
       markFailed: vi.fn(),
       appendEvent: vi.fn(),
       listEvents: vi.fn(),
+      listOwnedTasks: vi.fn(),
+      saveAsset: vi.fn(),
+      listAssets: vi.fn(),
     },
     agent: {
       proposeConfirmation: vi.fn(),
@@ -98,6 +101,7 @@ describe('real playable task route wiring', () => {
     infrastructure.repository.compareAndSetPhase.mockResolvedValue(true)
     infrastructure.repository.publishArtifact.mockResolvedValue(true)
     infrastructure.repository.markFailed.mockResolvedValue(undefined)
+    infrastructure.repository.listAssets.mockResolvedValue([])
     infrastructure.agent.build.mockResolvedValue({
       html: '<script>window.__PLAYABLE__={}</script>',
       validation: { behavior: 'passed', bytes: 42 },
@@ -171,6 +175,7 @@ describe('real playable task route wiring', () => {
       taskId: 'task-1',
       apiKey: 'sk-session-key',
       confirmation,
+      assets: [],
     })
     expect(infrastructure.artifactStore.put).toHaveBeenCalledTimes(4)
     expect(infrastructure.repository.publishArtifact).toHaveBeenCalledWith(

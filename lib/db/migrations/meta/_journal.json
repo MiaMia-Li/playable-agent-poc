@@ -176,6 +176,13 @@
       "when": 1788769537008,
       "tag": "0024_index_playable_task_events",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788771828838,
+      "tag": "0025_playable_task_assets",
+      "breakpoints": true
     }
   ]
 }

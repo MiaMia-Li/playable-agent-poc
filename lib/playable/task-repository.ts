@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
-import { playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
+import { playableTaskAssets, playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
@@ -9,6 +9,7 @@ import {
   type PlayableTaskPhase,
 } from './schemas'
 import type { PlayableEventRecord, PlayableTaskRecord, PlayableTaskRepository } from './task-api'
+import type { PlayableAsset } from './task-assets'
 
 function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
   return {
@@ -19,6 +20,8 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
     latestArtifactKey: row.latestArtifactKey,
     latestValidation: row.latestValidation,
+    title: row.title,
+    createdAt: row.createdAt,
   }
 }
 
@@ -47,6 +50,15 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.deletedAt)))
       .limit(1)
     return task ? toTask(task) : undefined
+  }
+
+  async listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]> {
+    const rows = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt), isNull(tasks.repoUrl)))
+      .orderBy(asc(tasks.createdAt))
+    return rows.map(toTask).reverse()
   }
 
   async appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void> {
@@ -142,5 +154,18 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       ...(event.message ? { message: event.message } : {}),
       createdAt: event.createdAt,
     }))
+  }
+
+  async saveAsset(asset: PlayableAsset): Promise<void> {
+    await db.insert(playableTaskAssets).values(asset)
+  }
+
+  async listAssets(taskId: string, userId: string): Promise<PlayableAsset[]> {
+    const rows = await db
+      .select()
+      .from(playableTaskAssets)
+      .where(and(eq(playableTaskAssets.taskId, taskId), eq(playableTaskAssets.userId, userId)))
+      .orderBy(asc(playableTaskAssets.createdAt))
+    return rows as PlayableAsset[]
   }
 }

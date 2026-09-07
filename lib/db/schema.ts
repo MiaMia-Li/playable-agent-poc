@@ -422,6 +422,28 @@ export const playableTaskEvents = pgTable(
   }),
 )
 
+export const playableTaskAssets = pgTable(
+  'playable_task_assets',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    slot: text('slot').notNull(),
+    filename: text('filename').notNull(),
+    mimeType: text('mime_type').notNull(),
+    size: integer('size').notNull(),
+    storageKey: text('storage_key').notNull().unique(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    taskSlotIndex: index('playable_task_assets_task_slot_idx').on(table.taskId, table.slot),
+  }),
+)
+
 // Settings table - key-value pairs for overriding environment variables per user
 export const settings = pgTable(
   'settings',

@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
-import type { BuildResult, ConfirmedBuildInput } from './playable-agent-adapter'
+import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
 import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
 
@@ -75,6 +75,11 @@ async function readSkillFiles(root: string, directory = root): Promise<SkillFile
 function isFilesystemMetadata(name: string, directory: boolean): boolean {
   if (directory && ['.git', '.svn', '__MACOSX'].includes(name)) return true
   return name === '.DS_Store' || name === 'Thumbs.db' || name === 'desktop.ini' || name.startsWith('._')
+}
+
+function safeWorkspaceFilename(id: string, filename: string): string {
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'asset'
+  return `${id}-${safeName}`
 }
 
 async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
@@ -166,6 +171,24 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
+    const assetManifest: PlayableAssetManifest = { assets: [], entrypoint: 'playable.html' }
+    for (const asset of input.assets ?? []) {
+      if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
+      const workspacePath = path.posix.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, workspacePath),
+        content: asset.bytes,
+        abortSignal: dependencies.abortSignal,
+      })
+      const { bytes: _bytes, ...metadata } = asset
+      void _bytes
+      assetManifest.assets.push({ ...metadata, workspacePath })
+    }
+    await sandbox.writeTextFile({
+      path: path.join(workspace, 'asset-manifest.json'),
+      content: JSON.stringify(assetManifest, null, 2),
+      abortSignal: dependencies.abortSignal,
+    })
 
     await dependencies.logger?.info('Running playable agent')
     await dependencies.executeAgent({
@@ -218,6 +241,7 @@ export async function runPlayableBuild(
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
     return {
       html,
+      assetManifest,
       validation: {
         behavior: 'passed',
         bytes: artifact.byteLength,

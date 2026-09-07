@@ -20,6 +20,15 @@ const resourceSchema = z.strictObject({
   treatment: z.string().trim().min(1),
 })
 
+export function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && Boolean(url.hostname)
+  } catch {
+    return false
+  }
+}
+
 export const confirmationProposalSchema = z.strictObject({
   mode: z.enum(playableModeIds),
   gameplay: z.string().trim().min(1),
@@ -36,10 +45,7 @@ export const confirmationProposalSchema = z.strictObject({
     disclaimer: z.string(),
     locale: z.string(),
   }),
-  storeUrl: z
-    .string()
-    .url()
-    .refine((value) => /^https:\/\//i.test(value), 'Store URL must use HTTPS'),
+  storeUrl: z.string().url().refine(isAbsoluteHttpsUrl, 'Store URL must use HTTPS'),
   delivery: z.strictObject({
     network: z.literal('applovin'),
     logicalWidth: z.literal(360),
