@@ -44,6 +44,20 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
     vi.clearAllMocks()
   })
 
+  it('persists the proposal while moving to awaiting confirmation', async () => {
+    database.returning.mockResolvedValueOnce([{ id: 'task-1' }])
+    const repository = new DatabasePlayableTaskRepository()
+
+    await expect(repository.setAwaitingConfirmation('task-1', 'user-1', confirmation)).resolves.toBe(true)
+
+    expect(database.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'awaiting_confirmation',
+        confirmation,
+      }),
+    )
+  })
+
   it('claims a build only for the owner in awaiting_confirmation', async () => {
     database.returning.mockResolvedValueOnce([
       {

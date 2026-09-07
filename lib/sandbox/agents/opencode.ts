@@ -12,19 +12,17 @@ async function runAndLogCommand(sandbox: Sandbox, command: string, args: string[
   const fullCommand = args.length > 0 ? `${command} ${args.join(' ')}` : command
   const redactedCommand = redactSensitiveInfo(fullCommand)
 
-  await logger.command(redactedCommand)
+  await logger.command('Executing OpenCode setup command')
 
   const result = await runInProject(sandbox, command, args)
 
   // Only try to access properties if result is valid
   if (result && result.output && result.output.trim()) {
-    const redactedOutput = redactSensitiveInfo(result.output.trim())
-    await logger.info(redactedOutput)
+    await logger.info('OpenCode setup command output received')
   }
 
   if (result && !result.success && result.error) {
-    const redactedError = redactSensitiveInfo(result.error)
-    await logger.error(redactedError)
+    await logger.error('OpenCode setup command failed')
   }
 
   // If result is null/undefined, create a fallback result
@@ -59,7 +57,7 @@ export async function executeOpenCodeInSandbox(
     // Check if we have required environment variables for OpenCode
     if (!process.env.OPENAI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
       const errorMsg = 'OpenAI API key or Anthropic API key is required for OpenCode agent'
-      await logger.error(errorMsg)
+      await logger.error('OpenCode API key is missing')
       return {
         success: false,
         error: errorMsg,
@@ -347,9 +345,9 @@ EOF`
 
     // Log the command we're about to execute (with redacted API keys)
     const redactedCommand = fullCommand.replace(/API_KEY="[^"]*"/g, 'API_KEY="[REDACTED]"')
-    await logger.command(redactedCommand)
+    await logger.command('Executing OpenCode agent')
     if (logger) {
-      await logger.command(redactedCommand)
+      await logger.command('Executing OpenCode agent')
     }
 
     // Execute OpenCode run command
@@ -360,15 +358,15 @@ EOF`
 
     // Log the output
     if (stdout && stdout.trim()) {
-      await logger.info(redactSensitiveInfo(stdout.trim()))
+      await logger.info('OpenCode execution output received')
       if (logger) {
-        await logger.info(redactSensitiveInfo(stdout.trim()))
+        await logger.info('OpenCode execution output received')
       }
     }
     if (stderr && stderr.trim()) {
-      await logger.error(redactSensitiveInfo(stderr.trim()))
+      await logger.error('OpenCode execution failed')
       if (logger) {
-        await logger.error(redactSensitiveInfo(stderr.trim()))
+        await logger.error('OpenCode execution failed')
       }
     }
 
@@ -393,7 +391,7 @@ EOF`
     if (executeResult.success || executeResult.exitCode === 0) {
       const successMsg = `OpenCode executed successfully${hasChanges ? ' (Changes detected)' : ' (No changes made)'}`
       if (logger) {
-        await logger.success(successMsg)
+        await logger.success('OpenCode executed successfully')
       }
 
       // If there are changes, log what was changed
@@ -416,7 +414,7 @@ EOF`
     } else {
       const errorMsg = `OpenCode failed (exit code ${executeResult.exitCode}): ${stderr || stdout || 'No error message'}`
       if (logger) {
-        await logger.error(errorMsg)
+        await logger.error('OpenCode execution failed')
       }
 
       return {
@@ -433,7 +431,7 @@ EOF`
     console.error('OpenCode execution error:', error)
 
     if (logger) {
-      await logger.error(errorMessage)
+      await logger.error('OpenCode execution failed')
     }
 
     return {

@@ -47,7 +47,7 @@ html = html.replace("__ASSETS__", JSON.stringify(assets)).replace("__CONFIG__", 
 await mkdir(path.dirname(output), { recursive: true });
 await writeFile(output, html);
 const bytes = (await stat(output)).size;
-console.log(`${mode} ${output} ${bytes} bytes (${(bytes / 1024 / 1024).toFixed(2)} MiB)`);
+console.log("Playable artifact built");
 if (bytes > 5 * 1024 * 1024) {
   console.error("ERROR: playable exceeds the AppLovin 5 MiB hard limit");
   process.exitCode = 1;

@@ -35,7 +35,6 @@ export function PlayablePreview({
   useEffect(() => postMute(muted), [muted, frameKey])
 
   const size = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
-
   return (
     <section aria-label="Preview" className="bg-muted/30 flex min-h-[32rem] flex-col overflow-hidden lg:min-h-0">
       <header className="bg-background flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">

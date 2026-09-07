@@ -48,16 +48,32 @@ cp .env.example .env.local
 The environment contract is:
 
 ```dotenv
-DATABASE_URL=
+POSTGRES_URL=
 JWE_SECRET=
 BLOB_READ_WRITE_TOKEN=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 MAX_SANDBOX_DURATION=300
 PLAYABLE_AGENT_MODEL=gpt-5.6-sol
+LOCAL_CODEX_MODE=0
 ```
 
 No project-wide OpenAI credential belongs in `.env.local` or the deployment environment. Users enter their own key only after authentication.
+
+To run the real local workflow with saved Codex CLI authentication and without GitHub OAuth, link the project, pull the
+shared POC variables, migrate the database, and start the dedicated mode. The Vercel environment selector is only used
+as a configuration source here; this POC uses the same Postgres and Blob resources in every environment.
+
+```bash
+npx vercel link --yes --scope make-money --project playable-agent-poc
+npx vercel env pull .env.local --environment=development --yes --scope make-money
+node --env-file=.env.local ./node_modules/drizzle-kit/bin.cjs migrate
+pnpm smoke:local-codex
+pnpm local:codex
+```
+
+This mode uses the real PostgreSQL repository, private Blob store, Codex CLI, and Vercel Sandbox. It is disabled on
+Vercel deployments and never forwards project environment variables to the Codex child process.
 
 Run the development server:
 

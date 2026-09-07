@@ -55,4 +55,4 @@ windowListeners.message({source:parent,data:{type:"playable:set-muted",muted:tru
 if(!game.audio.muted||audioInstances.some(audio=>!audio.muted))throw new Error("runtime did not mute every audio instance");
 windowListeners.message({source:parent,data:{type:"playable:set-muted",muted:"yes"}});
 if(!game.audio.muted)throw new Error("malformed mute message changed state");
-console.log(`PASS mode=${game.mode} score=${game.score} matches=${game.matches} interactions=${game.interactions} endCard=visible`);
+console.log("PASS");

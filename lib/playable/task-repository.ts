@@ -65,10 +65,10 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     await db.insert(taskMessages).values({ id: generateId(), taskId, role, content })
   }
 
-  async setAwaitingConfirmation(taskId: string, userId: string): Promise<boolean> {
+  async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const updated = await db
       .update(tasks)
-      .set({ phase: 'awaiting_confirmation', updatedAt: new Date() })
+      .set({ phase: 'awaiting_confirmation', confirmation, updatedAt: new Date() })
       .where(
         and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
       )

@@ -156,9 +156,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
         // If the GitHub account belongs to a different user, we need to merge accounts
         if (connectedUserId !== storedUserId) {
-          console.log(
-            `[GitHub Callback] Merging accounts: GitHub account ${githubUser.id} belongs to user ${connectedUserId}, connecting to user ${storedUserId}`,
-          )
+          console.log('[GitHub Callback] Merging connected accounts')
 
           // Transfer all tasks, connectors, accounts, and keys from old user to new user
           await db.update(tasks).set({ userId: storedUserId! }).where(eq(tasks.userId, connectedUserId))
@@ -169,9 +167,7 @@ export async function GET(req: NextRequest): Promise<Response> {
           // Delete the old user record (this will cascade delete their accounts/keys)
           await db.delete(users).where(eq(users.id, connectedUserId))
 
-          console.log(
-            `[GitHub Callback] Account merge complete. Old user ${connectedUserId} merged into ${storedUserId}`,
-          )
+          console.log('[GitHub Callback] Account merge complete')
 
           // Update the GitHub account token
           await db

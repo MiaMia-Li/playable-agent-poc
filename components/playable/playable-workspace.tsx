@@ -24,6 +24,7 @@ interface PlayableWorkspaceProps {
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
   localDemo?: boolean
+  localCodex?: boolean
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -45,6 +46,7 @@ export function PlayableWorkspace({
   initialHasArtifact = false,
   initialArtifactVersion = null,
   localDemo = false,
+  localCodex = false,
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
@@ -84,10 +86,16 @@ export function PlayableWorkspace({
         })
         if (!response.ok) return
         const body = (await response.json()) as {
-          task?: { phase: PlayableTaskPhase; hasArtifact: boolean; artifactVersion: string | null }
+          task?: {
+            phase: PlayableTaskPhase
+            hasArtifact: boolean
+            artifactVersion: string | null
+            confirmation: ConfirmationProposal | null
+          }
         }
         if (!active || !body.task) return
         setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
+        if (body.task.confirmation) setProposal(body.task.confirmation)
         setHasArtifact(body.task.hasArtifact)
         setArtifactVersion(body.task.artifactVersion)
       } catch {
@@ -113,8 +121,8 @@ export function PlayableWorkspace({
           </span>
           Playable Studio
         </Link>
-        {localDemo ? (
-          <Badge variant="secondary">本地演示 · 数据不保存</Badge>
+        {localDemo || localCodex ? (
+          <Badge variant="secondary">{localCodex ? '本地 Codex · 实际数据' : '本地演示 · 数据不保存'}</Badge>
         ) : (
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={requireApiKey}>
@@ -133,10 +141,11 @@ export function PlayableWorkspace({
           onProposal={setProposal}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
+          autoSubmitInitialPrompt={localCodex && apiKeyConfigured === true}
         />
         <PlayablePreview taskId={taskId} phase={phase} hasArtifact={hasArtifact} artifactVersion={artifactVersion} />
       </div>
-      {!localDemo && (
+      {!localDemo && !localCodex && (
         <ApiKeyDialog
           open={keyDialogOpen}
           onOpenChange={setKeyDialogOpen}
@@ -162,6 +171,7 @@ interface PlayableHomeProps {
   user: Session['user'] | null
   authProvider: Session['authProvider'] | null
   localDemo?: boolean
+  localCodex?: boolean
 }
 
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
@@ -173,7 +183,7 @@ const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
   failed: '构建失败',
 }
 
-export function PlayableHome({ user, authProvider, localDemo = false }: PlayableHomeProps) {
+export function PlayableHome({ user, authProvider, localDemo = false, localCodex = false }: PlayableHomeProps) {
   const router = useRouter()
   const [prompt, setPrompt] = useState('')
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
@@ -222,8 +232,8 @@ export function PlayableHome({ user, authProvider, localDemo = false }: Playable
           </span>
           Playable Studio
         </div>
-        {localDemo ? (
-          <Badge variant="secondary">本地演示 · 重启后清空</Badge>
+        {localDemo || localCodex ? (
+          <Badge variant="secondary">{localCodex ? '本地 Codex · 实际数据' : '本地演示 · 重启后清空'}</Badge>
         ) : (
           <User user={user} authProvider={authProvider} />
         )}

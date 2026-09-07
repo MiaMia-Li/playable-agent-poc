@@ -57,9 +57,7 @@ export async function upsertUser(
       .limit(1)
 
     if (existingAccount.length > 0) {
-      console.log(
-        `[upsertUser] GitHub account (${externalId}) is already connected to user ${existingAccount[0].userId}. Using existing user.`,
-      )
+      console.log('[upsertUser] Existing GitHub account connection found')
 
       // Update the existing user's last login
       await db

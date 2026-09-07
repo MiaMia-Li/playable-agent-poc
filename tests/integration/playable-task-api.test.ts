@@ -81,10 +81,11 @@ class MemoryRepository implements PlayableTaskRepository {
     this.messages.push({ taskId, role, content })
   }
 
-  async setAwaitingConfirmation(taskId: string, userId: string): Promise<boolean> {
+  async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
     if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
+    task.confirmation = confirmation
     return true
   }
 
@@ -320,6 +321,7 @@ describe('playable task API', () => {
     expect(body).not.toContain('sk-test-secret')
     expect(body).not.toContain('sk-leaked1234')
     expect(harness.repository.tasks.get('owned')?.phase).toBe('awaiting_confirmation')
+    expect(harness.repository.tasks.get('owned')?.confirmation).toEqual(confirmation)
     expect(harness.repository.messages.map(({ role }) => role)).toEqual(['user', 'agent'])
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
@@ -501,7 +503,7 @@ describe('playable task API', () => {
       params: Promise.resolve({ taskId: 'owned' }),
     })
     expect(await response.json()).toEqual({
-      task: { phase: 'building', hasArtifact: false, artifactVersion: null },
+      task: { phase: 'building', hasArtifact: false, artifactVersion: null, confirmation },
       events: [],
     })
   })

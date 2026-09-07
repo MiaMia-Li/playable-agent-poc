@@ -9,6 +9,7 @@ import {
   localDemoSession,
   readLocalDemoApiKey,
 } from '@/lib/playable/local-demo-prototype'
+import { isLocalCodexMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
 
 interface TaskPageProps {
   params: Promise<{
@@ -19,7 +20,8 @@ interface TaskPageProps {
 export default async function TaskPage({ params }: TaskPageProps) {
   const { taskId } = await params
   const localDemo = isLocalDemoMode()
-  const session = localDemo ? localDemoSession : await getServerSession()
+  const localCodex = isLocalCodexMode()
+  const session = localDemo ? localDemoSession : localCodex ? localCodexSession : await getServerSession()
   if (!session?.user?.id) redirect('/')
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
@@ -31,7 +33,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       prompt: task.prompt,
       apiKey: await readLocalDemoApiKey(),
     })
-    await repository.setAwaitingConfirmation(task.id, session.user.id)
+    await repository.setAwaitingConfirmation(task.id, session.user.id, initialProposal)
   }
 
   return (
@@ -42,8 +44,9 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialProposal={initialProposal}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
-      initialApiKeyConfigured={localDemo ? true : undefined}
+      initialApiKeyConfigured={localDemo || localCodex ? true : undefined}
       localDemo={localDemo}
+      localCodex={localCodex}
     />
   )
 }
@@ -51,7 +54,8 @@ export default async function TaskPage({ params }: TaskPageProps) {
 export async function generateMetadata({ params }: TaskPageProps): Promise<Metadata> {
   const { taskId } = await params
   const localDemo = isLocalDemoMode()
-  const session = localDemo ? localDemoSession : await getServerSession()
+  const localCodex = isLocalCodexMode()
+  const session = localDemo ? localDemoSession : localCodex ? localCodexSession : await getServerSession()
 
   let pageTitle = `试玩 ${taskId}`
 

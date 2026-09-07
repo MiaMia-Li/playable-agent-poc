@@ -292,6 +292,26 @@ describe('runPlayableBuild', () => {
     expect(JSON.stringify(result.assetManifest)).not.toContain('sk-assets-test')
   })
 
+  it('validates and returns the exact artifact prepared by an external agent', async () => {
+    const sandbox = await createLocalSandbox()
+    const preparedPath = path.join(sandbox.defaultWorkingDirectory, 'prepared.html')
+    await execAsync(
+      `node assets/starter/build-playable.mjs center_collision ${JSON.stringify(preparedPath)} https://example.com/store`,
+      { cwd: path.join(process.cwd(), 'skills/mahjong-pair-match-playable') },
+    )
+    const preparedArtifact = new Uint8Array(await readFile(preparedPath))
+
+    const result = await runPlayableBuild(buildInput('center_collision', 'sk-prepared-artifact-test'), {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+      preparedArtifact,
+    })
+
+    expect(Buffer.from(result.html)).toEqual(Buffer.from(preparedArtifact))
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+    expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(true)
+  }, 30_000)
+
   it('returns no artifact and destroys the sandbox when validation fails', async () => {
     const sandbox = await createLocalSandbox()
     const run = sandbox.run.bind(sandbox)

@@ -49,6 +49,7 @@ export interface RunPlayableBuildDependencies {
   logger?: BuildLogger
   skillRoot?: string
   abortSignal?: AbortSignal
+  preparedArtifact?: Uint8Array
 }
 
 interface SkillFile {
@@ -83,12 +84,18 @@ function safeWorkspaceFilename(id: string, filename: string): string {
 }
 
 async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
+  const explicitCredentials =
+    process.env.SANDBOX_VERCEL_TOKEN && process.env.SANDBOX_VERCEL_TEAM_ID && process.env.SANDBOX_VERCEL_PROJECT_ID
+      ? {
+          token: process.env.SANDBOX_VERCEL_TOKEN,
+          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+        }
+      : {}
   const provider = createVercelSandbox({
     runtime: 'node24',
     ports: [4000],
-    ...(process.env.SANDBOX_VERCEL_TOKEN ? { token: process.env.SANDBOX_VERCEL_TOKEN } : {}),
-    ...(process.env.SANDBOX_VERCEL_TEAM_ID ? { teamId: process.env.SANDBOX_VERCEL_TEAM_ID } : {}),
-    ...(process.env.SANDBOX_VERCEL_PROJECT_ID ? { projectId: process.env.SANDBOX_VERCEL_PROJECT_ID } : {}),
+    ...explicitCredentials,
   })
   return provider.createSession({ sessionId: taskId, abortSignal })
 }
@@ -200,20 +207,29 @@ export async function runPlayableBuild(
     })
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
-    await dependencies.logger?.info('Building playable artifact')
-    await requireSuccessfulCommand(
-      sandbox,
-      {
-        command: 'node assets/starter/build-playable.mjs "$PLAYABLE_MODE" output.html "$PLAYABLE_STORE_URL"',
-        workingDirectory: workspace,
-        env: {
-          PLAYABLE_MODE: confirmation.mode,
-          PLAYABLE_STORE_URL: confirmation.storeUrl,
-        },
+    if (dependencies.preparedArtifact) {
+      await dependencies.logger?.info('Loading prepared playable artifact')
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, 'output.html'),
+        content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
-      },
-      'Playable build failed',
-    )
+      })
+    } else {
+      await dependencies.logger?.info('Building playable artifact')
+      await requireSuccessfulCommand(
+        sandbox,
+        {
+          command: 'node assets/starter/build-playable.mjs "$PLAYABLE_MODE" output.html "$PLAYABLE_STORE_URL"',
+          workingDirectory: workspace,
+          env: {
+            PLAYABLE_MODE: confirmation.mode,
+            PLAYABLE_STORE_URL: confirmation.storeUrl,
+          },
+          abortSignal: dependencies.abortSignal,
+        },
+        'Playable build failed',
+      )
+    }
 
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(

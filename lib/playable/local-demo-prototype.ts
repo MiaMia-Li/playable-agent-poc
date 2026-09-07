@@ -173,10 +173,11 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async appendMessage(): Promise<void> {}
 
-  async setAwaitingConfirmation(taskId: string, userId: string): Promise<boolean> {
+  async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
     if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
+    task.confirmation = confirmation
     return true
   }
 

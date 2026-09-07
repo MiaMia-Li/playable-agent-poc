@@ -153,9 +153,7 @@ export default mergeConfig(userConfig, defineConfig({
           .toString()
           .split('\n')
           .filter((line) => line.trim())
-        for (const line of lines) {
-          logger.info(`[SERVER] ${line}`).catch(() => {})
-        }
+        if (lines.length > 0) logger.info('Development server output received').catch(() => {})
         callback()
       },
     })
@@ -166,9 +164,7 @@ export default mergeConfig(userConfig, defineConfig({
           .toString()
           .split('\n')
           .filter((line) => line.trim())
-        for (const line of lines) {
-          logger.info(`[SERVER] ${line}`).catch(() => {})
-        }
+        if (lines.length > 0) logger.info('Development server error output received').catch(() => {})
         callback()
       },
     })

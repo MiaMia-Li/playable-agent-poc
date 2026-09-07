@@ -32,7 +32,7 @@ export interface PlayableTaskRepository {
   createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord>
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
   appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void>
-  setAwaitingConfirmation(taskId: string, userId: string): Promise<boolean>
+  setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
   claimBuild(
     taskId: string,
     userId: string,
@@ -99,6 +99,7 @@ function safeTaskState(task: PlayableTaskRecord) {
     phase: task.phase,
     hasArtifact: Boolean(task.latestArtifactKey),
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
+    confirmation: task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
   }
 }
 
@@ -219,6 +220,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       behavior: result.validation.behavior,
       bytes: result.validation.bytes,
     }
+    console.log('Storing playable artifacts')
     await artifactStore.put(
       `${prefix}/confirmed-config.json`,
       JSON.stringify(sanitizedConfirmation),
@@ -242,6 +244,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       await recordBuildFailure(repository, task.id)
       return
     }
+    console.log('Playable artifacts published')
     await repository
       .appendEvent({
         taskId: task.id,
@@ -338,7 +341,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               const validated = sanitizeConfirmation(parsedProposal)
               const serialized = JSON.stringify(validated)
               await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
-              const transitioned = await dependencies.repository.setAwaitingConfirmation(access.task.id, access.userId)
+              const transitioned = await dependencies.repository.setAwaitingConfirmation(
+                access.task.id,
+                access.userId,
+                validated,
+              )
               if (!transitioned) throw new Error('Task phase conflict')
               await dependencies.repository.appendEvent({
                 taskId: access.task.id,

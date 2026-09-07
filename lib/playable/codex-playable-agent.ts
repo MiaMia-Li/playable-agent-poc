@@ -74,12 +74,18 @@ async function createProposal(
   abortSignal: AbortSignal,
 ): Promise<ConfirmationProposal> {
   const skill = await loadSkill(skillRoot)
+  const explicitCredentials =
+    process.env.SANDBOX_VERCEL_TOKEN && process.env.SANDBOX_VERCEL_TEAM_ID && process.env.SANDBOX_VERCEL_PROJECT_ID
+      ? {
+          token: process.env.SANDBOX_VERCEL_TOKEN,
+          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+        }
+      : {}
   const sandbox = createVercelSandbox({
     runtime: 'node24',
     ports: [4000],
-    ...(process.env.SANDBOX_VERCEL_TOKEN ? { token: process.env.SANDBOX_VERCEL_TOKEN } : {}),
-    ...(process.env.SANDBOX_VERCEL_TEAM_ID ? { teamId: process.env.SANDBOX_VERCEL_TEAM_ID } : {}),
-    ...(process.env.SANDBOX_VERCEL_PROJECT_ID ? { projectId: process.env.SANDBOX_VERCEL_PROJECT_ID } : {}),
+    ...explicitCredentials,
   })
   const agent = new HarnessAgent({
     harness: codexHarness(input.apiKey),

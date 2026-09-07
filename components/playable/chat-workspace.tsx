@@ -1,8 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useRef, useState } from 'react'
-import { ArrowUp, Sparkles, Square } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowUp, Loader2, Sparkles, Square } from 'lucide-react'
 import type { ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
 import type { PlayableAssetSlot } from '@/lib/playable/task-assets'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,7 @@ interface ChatWorkspaceProps {
   onProposal: (proposal: ConfirmationProposal) => void
   onPhase: (phase: PlayableTaskPhase) => void
   onRequireApiKey: () => void
+  autoSubmitInitialPrompt?: boolean
 }
 
 interface Message {
@@ -50,6 +51,7 @@ export function ChatWorkspace({
   onProposal,
   onPhase,
   onRequireApiKey,
+  autoSubmitInitialPrompt = false,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<Message[]>(
@@ -61,78 +63,85 @@ export function ChatWorkspace({
   const [selectedAssets, setSelectedAssets] = useState<string[]>([])
   const [error, setError] = useState('')
   const streamController = useRef<AbortController | undefined>(undefined)
+  const autoSubmitted = useRef(false)
   const canCompose = phase === 'draft' || phase === 'awaiting_confirmation'
 
-  useEffect(
-    () => () => {
-      streamController.current?.abort()
+  const sendMessage = useCallback(
+    async (contentOverride?: string, appendToConversation = true) => {
+      const content = (contentOverride ?? message).trim()
+      if (!content || sending || !canCompose) return
+      const id = Date.now()
+      const controller = new AbortController()
+      streamController.current = controller
+      setSending(true)
+      setError('')
+      if (appendToConversation) setConversation((items) => [...items, { id, content, status: 'sending' }])
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: content }),
+          signal: controller.signal,
+        })
+        if (response.status === 428) {
+          onRequireApiKey()
+          throw new Error('请先配置 API Key')
+        }
+        if (response.status === 409) throw new Error('当前阶段不接受新需求，请新建试玩后继续')
+        if (!response.ok || !response.body) throw new Error('无法生成确认方案')
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        const handleLine = (line: string) => {
+          if (!line.trim()) return
+          let event: { type: string; confirmation?: ConfirmationProposal; message?: string }
+          try {
+            event = JSON.parse(line)
+          } catch {
+            throw new Error('响应数据格式错误，请重试')
+          }
+          if (event.type === 'confirmation' && event.confirmation) {
+            onProposal(event.confirmation)
+            onPhase('awaiting_confirmation')
+          } else if (event.type === 'error') {
+            throw new Error(event.message || '无法生成确认方案')
+          }
+        }
+        while (true) {
+          const { value, done } = await reader.read()
+          buffer += decoder.decode(value, { stream: !done })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+          for (const line of lines) handleLine(line)
+          if (done) {
+            handleLine(buffer)
+            break
+          }
+        }
+        if (appendToConversation) {
+          setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'sent' } : item)))
+        }
+        setMessage('')
+      } catch (cause) {
+        if (controller.signal.aborted) setError('已停止生成确认方案')
+        else setError(cause instanceof Error ? cause.message : '请求失败，请稍后重试')
+        if (appendToConversation) {
+          setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'failed' } : item)))
+        }
+      } finally {
+        if (streamController.current === controller) streamController.current = undefined
+        setSending(false)
+      }
     },
-    [],
+    [canCompose, message, onPhase, onProposal, onRequireApiKey, sending, taskId],
   )
 
-  async function sendMessage() {
-    const content = message.trim()
-    if (!content || sending || !canCompose) return
-    const id = Date.now()
-    const controller = new AbortController()
-    streamController.current = controller
-    setSending(true)
-    setError('')
-    setConversation((items) => [...items, { id, content, status: 'sending' }])
-    try {
-      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content }),
-        signal: controller.signal,
-      })
-      if (response.status === 428) {
-        onRequireApiKey()
-        throw new Error('请先配置 API Key')
-      }
-      if (response.status === 409) throw new Error('当前阶段不接受新需求，请新建试玩后继续')
-      if (!response.ok || !response.body) throw new Error('无法生成确认方案')
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      const handleLine = (line: string) => {
-        if (!line.trim()) return
-        let event: { type: string; confirmation?: ConfirmationProposal; message?: string }
-        try {
-          event = JSON.parse(line)
-        } catch {
-          throw new Error('响应数据格式错误，请重试')
-        }
-        if (event.type === 'confirmation' && event.confirmation) {
-          onProposal(event.confirmation)
-          onPhase('awaiting_confirmation')
-        } else if (event.type === 'error') {
-          throw new Error(event.message || '无法生成确认方案')
-        }
-      }
-      while (true) {
-        const { value, done } = await reader.read()
-        buffer += decoder.decode(value, { stream: !done })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) handleLine(line)
-        if (done) {
-          handleLine(buffer)
-          break
-        }
-      }
-      setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'sent' } : item)))
-      setMessage('')
-    } catch (cause) {
-      if (controller.signal.aborted) setError('已停止生成确认方案')
-      else setError(cause instanceof Error ? cause.message : '请求失败，请稍后重试')
-      setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'failed' } : item)))
-    } finally {
-      if (streamController.current === controller) streamController.current = undefined
-      setSending(false)
-    }
-  }
+  useEffect(() => {
+    if (!autoSubmitInitialPrompt || !initialPrompt || phase !== 'draft' || autoSubmitted.current) return
+    autoSubmitted.current = true
+    void sendMessage(initialPrompt, false)
+  }, [autoSubmitInitialPrompt, initialPrompt, phase, sendMessage])
 
   async function upload(slot: PlayableAssetSlot, file: File) {
     if (!proposal || phase !== 'awaiting_confirmation') return
@@ -244,10 +253,22 @@ export function ChatWorkspace({
             onChange={onProposal}
             onConfirm={confirm}
             confirming={confirming}
+            buildPhase={phase === 'building' || phase === 'validating' ? phase : undefined}
             disabled={phase !== 'awaiting_confirmation'}
             uploadingSlot={uploadingSlot}
             onUpload={upload}
           />
+        ) : sending ? (
+          <section
+            aria-label="正在生成确认方案"
+            className="border-muted-foreground/20 flex items-center gap-3 rounded-xl border border-dashed p-4"
+          >
+            <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-medium">正在生成确认方案</p>
+              <p className="text-muted-foreground mt-1 text-xs">Codex 正在整理玩法、素材、文案与交付配置。</p>
+            </div>
+          </section>
         ) : (
           <section aria-label="确认方案" className="border-muted-foreground/20 rounded-xl border border-dashed p-4">
             <p className="text-muted-foreground text-sm">发送需求后，这里会显示完整的玩法、素材、文案与交付确认表。</p>

@@ -8,16 +8,29 @@ import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
 import { createPlayableAssetHandler } from './task-assets'
 import { authenticateLocalDemo, isLocalDemoMode, localDemoRuntime, readLocalDemoApiKey } from './local-demo-prototype'
+import { CodexCliPlayableAgent } from './codex-cli-playable-agent'
+import { authenticateLocalCodex, isLocalCodexMode, readLocalCodexAuthMarker } from './local-codex-runtime'
 
 const localDemo = isLocalDemoMode()
+const localCodex = isLocalCodexMode()
 
 export const playableTaskRepository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
 export const playableArtifactStore = localDemo ? localDemoRuntime.artifactStore : new PrivateVercelArtifactStore()
-const playableAgent = localDemo ? localDemoRuntime.agent : new CodexPlayableAgent()
+const playableAgent = localDemo
+  ? localDemoRuntime.agent
+  : localCodex
+    ? new CodexCliPlayableAgent()
+    : new CodexPlayableAgent()
+
+const authenticate = localDemo
+  ? authenticateLocalDemo
+  : localCodex
+    ? authenticateLocalCodex
+    : async (request: Parameters<typeof getSessionFromReq>[0]) => (await getSessionFromReq(request))?.user.id
 
 export const playableTaskHandlers = createPlayableTaskHandlers({
-  authenticate: localDemo ? authenticateLocalDemo : async (request) => (await getSessionFromReq(request))?.user.id,
-  readApiKey: localDemo ? readLocalDemoApiKey : readOpenAIKeyCookie,
+  authenticate,
+  readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : readOpenAIKeyCookie,
   repository: playableTaskRepository,
   agent: playableAgent,
   artifactStore: playableArtifactStore,
@@ -26,7 +39,7 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
 })
 
 export const playableAssetHandler = createPlayableAssetHandler({
-  authenticate: localDemo ? authenticateLocalDemo : async (request) => (await getSessionFromReq(request))?.user.id,
+  authenticate,
   findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
   saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
   store: playableArtifactStore,

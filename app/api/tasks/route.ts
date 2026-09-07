@@ -442,7 +442,7 @@ async function processTask(
 
     // Detect the appropriate port for the project
     const port = await detectPortFromRepo(repoUrl, githubToken)
-    console.log(`Detected port ${port} for project`)
+    console.log('Detected project port')
 
     // Create sandbox with progress callback and 5-minute timeout
     const sandboxResult = await createSandbox(

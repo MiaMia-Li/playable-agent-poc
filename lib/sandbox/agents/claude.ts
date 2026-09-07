@@ -17,27 +17,25 @@ async function runAndLogCommand(sandbox: Sandbox, command: string, args: string[
   const redactedCommand = redactSensitiveInfo(fullCommand)
 
   // Log to both local logs and database if logger is provided
-  await logger.command(redactedCommand)
+  await logger.command('Executing Claude setup command')
   if (logger) {
-    await logger.command(redactedCommand)
+    await logger.command('Executing Claude setup command')
   }
 
   const result = await runInProject(sandbox, command, args)
 
   // Only try to access properties if result is valid
   if (result && result.output && result.output.trim()) {
-    const redactedOutput = redactSensitiveInfo(result.output.trim())
-    await logger.info(redactedOutput)
+    await logger.info('Claude setup command output received')
     if (logger) {
-      await logger.info(redactedOutput)
+      await logger.info('Claude setup command output received')
     }
   }
 
   if (result && !result.success && result.error) {
-    const redactedError = redactSensitiveInfo(result.error)
-    await logger.error(redactedError)
+    await logger.error('Claude setup command failed')
     if (logger) {
-      await logger.error(redactedError)
+      await logger.error('Claude setup command failed')
     }
   }
 
@@ -120,7 +118,6 @@ export async function installClaudeCLI(
             if (addResult.success) {
               await logger.info('Successfully added local MCP server')
             } else {
-              const redactedError = redactSensitiveInfo(addResult.error || 'Unknown error')
               await logger.info('Failed to add MCP server')
             }
           } else {
@@ -141,7 +138,6 @@ export async function installClaudeCLI(
             if (addResult.success) {
               await logger.info('Successfully added remote MCP server')
             } else {
-              const redactedError = redactSensitiveInfo(addResult.error || 'Unknown error')
               await logger.info('Failed to add MCP server')
             }
           }
@@ -299,8 +295,7 @@ export async function executeClaudeInSandbox(
     }
 
     // Log the command we're about to execute (with redacted API key)
-    const redactedCommand = fullCommand.replace(aiGatewayKey, '[REDACTED]')
-    await logger.command(redactedCommand)
+    await logger.command('Executing Claude agent')
 
     // Set up streaming output capture if we have an agent message
     let capturedOutput = ''

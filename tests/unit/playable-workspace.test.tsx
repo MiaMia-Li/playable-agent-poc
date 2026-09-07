@@ -2,6 +2,7 @@
 
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
@@ -60,6 +61,19 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
   })
 
+  it('shows compact progress on the confirmation button while Codex builds', () => {
+    render(
+      <ConfirmationTable
+        proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onChange={vi.fn()}
+        onConfirm={vi.fn()}
+        buildPhase="building"
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Codex 正在构建试玩…' })).toBeDisabled()
+  })
+
   it('renders exact mode ID and label and enforces pending-upload and HTTPS gates', () => {
     const onChange = vi.fn()
     render(<ConfirmationTable proposal={proposal} onChange={onChange} onConfirm={vi.fn()} />)
@@ -77,7 +91,12 @@ describe('PlayableWorkspace', () => {
   it('polls authoritative task state immediately and ignores backward phase responses', async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
-        task: { phase: 'awaiting_confirmation', hasArtifact: true, artifactVersion: 'old' },
+        task: {
+          phase: 'awaiting_confirmation',
+          hasArtifact: true,
+          artifactVersion: 'old',
+          confirmation: { ...proposal, storeUrl: 'https://example.com/store' },
+        },
         events: [],
       }),
     )
@@ -96,6 +115,7 @@ describe('PlayableWorkspace', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/playable-tasks/task-7/events', { cache: 'no-store' }),
     )
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('当前状态：构建中')
+    expect(screen.getByRole('region', { name: '确认方案' })).toHaveTextContent('top_rack')
     expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
   })
 
@@ -187,6 +207,53 @@ describe('PlayableWorkspace', () => {
         expect.objectContaining({ method: 'POST' }),
       ),
     )
+  })
+
+  it('automatically submits the initial prompt once in local Codex mode', async () => {
+    let requestSignal: AbortSignal | null | undefined
+    let resolveFetch!: (response: Response) => void
+    const responsePromise = new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    })
+    const confirmationLine = JSON.stringify({
+      type: 'confirmation',
+      confirmation: { ...proposal, storeUrl: 'https://example.com/store' },
+    })
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal
+      return responsePromise
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onProposal = vi.fn()
+
+    render(
+      <StrictMode>
+        <ChatWorkspace
+          taskId="task-local-codex"
+          initialPrompt="做一个中心碰撞试玩"
+          phase="draft"
+          onProposal={onProposal}
+          onPhase={vi.fn()}
+          onRequireApiKey={vi.fn()}
+          autoSubmitInitialPrompt
+        />
+      </StrictMode>,
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    expect(screen.getByRole('region', { name: '正在生成确认方案' })).toBeInTheDocument()
+    resolveFetch(new Response(confirmationLine))
+    await waitFor(() => expect(onProposal).toHaveBeenCalledOnce())
+    expect(requestSignal?.aborted).toBe(false)
+    expect(screen.queryByText('已停止生成确认方案')).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks/task-local-codex/messages',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: '做一个中心碰撞试玩' }),
+      }),
+    )
+    expect(screen.getAllByText('做一个中心碰撞试玩')).toHaveLength(1)
   })
 
   it('surfaces malformed NDJSON and aborts an in-flight confirmation on stop', async () => {

@@ -1,7 +1,6 @@
 import { Sandbox } from '@vercel/sandbox'
 import { runCommandInSandbox, runInProject, PROJECT_DIR } from '../commands'
 import { AgentExecutionResult } from '../types'
-import { redactSensitiveInfo } from '@/lib/utils/logging'
 import { TaskLogger } from '@/lib/utils/task-logger'
 import { connectors, taskMessages } from '@/lib/db/schema'
 import { db } from '@/lib/db/client'
@@ -13,16 +12,16 @@ type Connector = typeof connectors.$inferSelect
 // Helper function to run command and collect logs in project directory
 async function runAndLogCommand(sandbox: Sandbox, command: string, args: string[], logger: TaskLogger) {
   const fullCommand = args.length > 0 ? `${command} ${args.join(' ')}` : command
-  await logger.command(redactSensitiveInfo(fullCommand))
+  await logger.command('Executing Copilot setup command')
 
   const result = await runInProject(sandbox, command, args)
 
   if (result.output && result.output.trim()) {
-    await logger.info(redactSensitiveInfo(result.output.trim()))
+    await logger.info('Copilot setup command output received')
   }
 
   if (!result.success && result.error) {
-    await logger.error(redactSensitiveInfo(result.error))
+    await logger.error('Copilot setup command failed')
   }
 
   return result
@@ -64,7 +63,7 @@ export async function executeCopilotInSandbox(
       if (!copilotInstall.success) {
         const errorMsg = 'Failed to install GitHub Copilot CLI'
         if (logger) {
-          await logger.error(errorMsg)
+          await logger.error('Failed to install GitHub Copilot CLI')
         }
         return {
           success: false,
@@ -290,7 +289,7 @@ EOF`
     ]
 
     const logCommand = `copilot${modelFlag}${resumeFlag}${additionalMcpConfig} -p "${instruction}" --allow-all-tools --no-color`
-    await logger.command(logCommand)
+    await logger.command('Executing Copilot agent')
 
     if (logger) {
       await logger.info('Executing GitHub Copilot CLI in non-interactive mode')
@@ -331,13 +330,11 @@ EOF`
 
     // Log the output and error results
     if (result.output && result.output.trim() && !agentMessageId) {
-      const redactedOutput = redactSensitiveInfo(result.output.trim())
-      await logger.info(redactedOutput)
+      await logger.info('Copilot execution output received')
     }
 
     if (result.error && result.error.trim()) {
-      const redactedError = redactSensitiveInfo(result.error)
-      await logger.error(redactedError)
+      await logger.error('Copilot execution failed')
     }
 
     // Close the pre tag if streaming to database

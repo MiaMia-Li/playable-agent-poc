@@ -4,7 +4,6 @@ import { validateEnvironmentVariables, createAuthenticatedRepoUrl } from './conf
 import { runCommandInSandbox, runInProject, PROJECT_DIR } from './commands'
 import { generateId } from '@/lib/utils/id'
 import { SandboxConfig, SandboxResult } from './types'
-import { redactSensitiveInfo } from '@/lib/utils/logging'
 import { TaskLogger } from '@/lib/utils/task-logger'
 import { detectPackageManager, installDependencies } from './package-manager'
 import { registerSandbox } from './sandbox-registry'
@@ -18,9 +17,7 @@ async function runAndLogCommand(sandbox: Sandbox, command: string, args: string[
   }
 
   const fullCommand = args.length > 0 ? `${command} ${args.map(escapeArg).join(' ')}` : command
-  const redactedCommand = redactSensitiveInfo(fullCommand)
-
-  await logger.command(redactedCommand)
+  await logger.command('Executing sandbox command')
 
   let result
   if (cwd) {
@@ -32,13 +29,11 @@ async function runAndLogCommand(sandbox: Sandbox, command: string, args: string[
   }
 
   if (result && result.output && result.output.trim()) {
-    const redactedOutput = redactSensitiveInfo(result.output.trim())
-    await logger.info(redactedOutput)
+    await logger.info('Sandbox command output received')
   }
 
   if (result && !result.success && result.error) {
-    const redactedError = redactSensitiveInfo(result.error)
-    await logger.error(redactedError)
+    await logger.error('Sandbox command failed')
   }
 
   return result
@@ -149,8 +144,8 @@ export async function createSandbox(config: SandboxConfig, logger: TaskLogger): 
 
       // Check if this is a timeout error
       if (errorMessage?.includes('timeout') || errorCode === 'ETIMEDOUT' || errorName === 'TimeoutError') {
-        await logger.error(`Sandbox creation timed out after 5 minutes`)
-        await logger.error(`This usually happens when the repository is large or has many dependencies`)
+        await logger.error('Sandbox creation timed out after 5 minutes')
+        await logger.error('This usually happens when the repository is large or has many dependencies')
         throw new Error('Sandbox creation timed out. Try with a smaller repository or fewer dependencies.')
       }
 
@@ -425,9 +420,7 @@ fi
                   .toString()
                   .split('\n')
                   .filter((line) => line.trim())
-                for (const line of lines) {
-                  logger.info(`[SERVER] ${line}`).catch(() => {})
-                }
+                if (lines.length > 0) logger.info('Development server output received').catch(() => {})
                 callback()
               },
             })
@@ -438,9 +431,7 @@ fi
                   .toString()
                   .split('\n')
                   .filter((line) => line.trim())
-                for (const line of lines) {
-                  logger.info(`[SERVER] ${line}`).catch(() => {})
-                }
+                if (lines.length > 0) logger.info('Development server error output received').catch(() => {})
                 callback()
               },
             })

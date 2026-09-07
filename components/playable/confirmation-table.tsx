@@ -1,6 +1,6 @@
 'use client'
 
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, Loader2 } from 'lucide-react'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,7 @@ interface ConfirmationTableProps {
   onChange: (proposal: ConfirmationProposal) => void
   onConfirm: () => void
   confirming?: boolean
+  buildPhase?: 'building' | 'validating'
   disabled?: boolean
   uploadingSlot?: PlayableAssetSlot
   onUpload?: (slot: PlayableAssetSlot, file: File) => void
@@ -33,13 +34,15 @@ export function ConfirmationTable({
   onChange,
   onConfirm,
   confirming,
+  buildPhase,
   disabled,
   uploadingSlot,
   onUpload,
 }: ConfirmationTableProps) {
   const resourcesReady = Object.values(proposal.resources).every((resource) => resource.status !== '待上传')
   const validStoreUrl = isAbsoluteHttpsUrl(proposal.storeUrl)
-  const canConfirm = resourcesReady && validStoreUrl && !confirming && !disabled
+  const inProgress = Boolean(confirming || buildPhase)
+  const canConfirm = resourcesReady && validStoreUrl && !inProgress && !disabled
   const mode = getPlayableMode(proposal.mode)
 
   return (
@@ -129,8 +132,14 @@ export function ConfirmationTable({
       </div>
       {!resourcesReady && <p className="text-destructive text-sm">请先上传所有标记为“待上传”的素材。</p>}
       <Button className="w-full" disabled={!canConfirm} onClick={onConfirm}>
-        <CheckCircle2 aria-hidden="true" />
-        {confirming ? '正在启动构建…' : '确认方案并开始构建'}
+        {inProgress ? <Loader2 className="animate-spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+        {confirming
+          ? '正在提交方案…'
+          : buildPhase === 'building'
+            ? 'Codex 正在构建试玩…'
+            : buildPhase === 'validating'
+              ? '正在验证并发布试玩…'
+              : '确认方案并开始构建'}
       </Button>
     </section>
   )
