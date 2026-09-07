@@ -3,6 +3,12 @@ import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 import { getServerSession } from '@/lib/session/get-server-session'
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
 import { Metadata } from 'next'
+import {
+  isLocalDemoMode,
+  localDemoRuntime,
+  localDemoSession,
+  readLocalDemoApiKey,
+} from '@/lib/playable/local-demo-prototype'
 
 interface TaskPageProps {
   params: Promise<{
@@ -12,31 +18,54 @@ interface TaskPageProps {
 
 export default async function TaskPage({ params }: TaskPageProps) {
   const { taskId } = await params
-  const session = await getServerSession()
+  const localDemo = isLocalDemoMode()
+  const session = localDemo ? localDemoSession : await getServerSession()
   if (!session?.user?.id) redirect('/')
-  const task = await new DatabasePlayableTaskRepository().findOwnedTask(taskId, session.user.id)
+  const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
+  const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
+  let initialProposal = task.confirmation ?? undefined
+  if (localDemo && task.phase === 'draft') {
+    initialProposal = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: task.id,
+      prompt: task.prompt,
+      apiKey: await readLocalDemoApiKey(),
+    })
+    await repository.setAwaitingConfirmation(task.id, session.user.id)
+  }
 
   return (
     <PlayableWorkspace
       taskId={task.id}
       initialPrompt={task.prompt}
-      initialPhase={task.phase}
-      initialProposal={task.confirmation ?? undefined}
+      initialPhase={localDemo && initialProposal ? 'awaiting_confirmation' : task.phase}
+      initialProposal={initialProposal}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
+      initialApiKeyConfigured={localDemo ? true : undefined}
+      localDemo={localDemo}
     />
   )
 }
 
 export async function generateMetadata({ params }: TaskPageProps): Promise<Metadata> {
   const { taskId } = await params
-  const session = await getServerSession()
+  const localDemo = isLocalDemoMode()
+  const session = localDemo ? localDemoSession : await getServerSession()
 
   let pageTitle = `试玩 ${taskId}`
 
   if (session?.user?.id) {
     try {
+      if (localDemo) {
+        const task = await localDemoRuntime.repository.findOwnedTask(taskId, session.user.id)
+        if (task?.title) pageTitle = task.title
+        else if (task?.prompt) pageTitle = task.prompt.length > 60 ? `${task.prompt.slice(0, 60)}...` : task.prompt
+        return {
+          title: `${pageTitle} - Playable Studio`,
+          description: '创建、确认并预览 AI 生成的试玩广告',
+        }
+      }
       const { db } = await import('@/lib/db/client')
       const { tasks } = await import('@/lib/db/schema')
       const { eq, and, isNull } = await import('drizzle-orm')
@@ -50,9 +79,9 @@ export async function generateMetadata({ params }: TaskPageProps): Promise<Metad
       if (task[0]?.title) pageTitle = task[0].title
       else if (task[0]?.prompt)
         pageTitle = task[0].prompt.length > 60 ? `${task[0].prompt.slice(0, 60)}...` : task[0].prompt
-    } catch (error) {
+    } catch {
       // If fetching fails, fall back to task ID
-      console.error('Failed to fetch task for metadata:', error)
+      console.error('Failed to fetch task for metadata')
     }
   }
 

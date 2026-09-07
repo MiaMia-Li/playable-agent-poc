@@ -65,6 +65,18 @@ Run the development server:
 pnpm dev
 ```
 
+## Local demo prototype
+
+To exercise the complete UI without login, PostgreSQL, Blob, OpenAI, or Vercel Sandbox credentials, run:
+
+```bash
+pnpm demo
+```
+
+This explicitly temporary mode uses an in-memory task repository and artifact store plus the vendored local Skill
+builder. It performs the real four-mode build and behavior check, but its confirmation Agent is deterministic and all
+tasks disappear when the development server restarts. Do not enable `LOCAL_DEMO_MODE` in a deployed environment.
+
 ## Design and implementation
 
 - [Approved design](docs/superpowers/specs/2026-09-07-playable-agent-poc-design.md)

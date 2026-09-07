@@ -23,6 +23,7 @@ interface PlayableWorkspaceProps {
   initialProposal?: ConfirmationProposal
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
+  localDemo?: boolean
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -43,6 +44,7 @@ export function PlayableWorkspace({
   initialProposal,
   initialHasArtifact = false,
   initialArtifactVersion = null,
+  localDemo = false,
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
@@ -111,12 +113,16 @@ export function PlayableWorkspace({
           </span>
           Playable Studio
         </Link>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={requireApiKey}>
-            API Key
-          </Button>
-          <User />
-        </div>
+        {localDemo ? (
+          <Badge variant="secondary">本地演示 · 数据不保存</Badge>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={requireApiKey}>
+              API Key
+            </Button>
+            <User />
+          </div>
+        )}
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(22rem,0.78fr)_minmax(32rem,1.22fr)]">
         <ChatWorkspace
@@ -130,14 +136,16 @@ export function PlayableWorkspace({
         />
         <PlayablePreview taskId={taskId} phase={phase} hasArtifact={hasArtifact} artifactVersion={artifactVersion} />
       </div>
-      <ApiKeyDialog
-        open={keyDialogOpen}
-        onOpenChange={setKeyDialogOpen}
-        onConfigured={() => {
-          setApiKeyConfigured(true)
-          setKeyDialogOpen(false)
-        }}
-      />
+      {!localDemo && (
+        <ApiKeyDialog
+          open={keyDialogOpen}
+          onOpenChange={setKeyDialogOpen}
+          onConfigured={() => {
+            setApiKeyConfigured(true)
+            setKeyDialogOpen(false)
+          }}
+        />
+      )}
     </main>
   )
 }
@@ -153,6 +161,7 @@ interface PlayableTaskSummary {
 interface PlayableHomeProps {
   user: Session['user'] | null
   authProvider: Session['authProvider'] | null
+  localDemo?: boolean
 }
 
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
@@ -164,7 +173,7 @@ const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
   failed: '构建失败',
 }
 
-export function PlayableHome({ user, authProvider }: PlayableHomeProps) {
+export function PlayableHome({ user, authProvider, localDemo = false }: PlayableHomeProps) {
   const router = useRouter()
   const [prompt, setPrompt] = useState('')
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
@@ -213,7 +222,11 @@ export function PlayableHome({ user, authProvider }: PlayableHomeProps) {
           </span>
           Playable Studio
         </div>
-        <User user={user} authProvider={authProvider} />
+        {localDemo ? (
+          <Badge variant="secondary">本地演示 · 重启后清空</Badge>
+        ) : (
+          <User user={user} authProvider={authProvider} />
+        )}
       </header>
       <div className="mx-auto max-w-5xl px-5 py-12 sm:px-8 sm:py-20">
         <div className="mx-auto max-w-2xl text-center">

@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "dev": "next dev --webpack",
+    "demo": "LOCAL_DEMO_MODE=1 next dev --webpack",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
