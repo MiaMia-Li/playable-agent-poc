@@ -405,6 +405,17 @@ export const selectTaskMessageSchema = z.object({
 export type TaskMessage = z.infer<typeof selectTaskMessageSchema>
 export type InsertTaskMessage = z.infer<typeof insertTaskMessageSchema>
 
+export const playableTaskEvents = pgTable('playable_task_events', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(),
+  phase: text('phase'),
+  message: text('message'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+})
+
 // Settings table - key-value pairs for overriding environment variables per user
 export const settings = pgTable(
   'settings',
