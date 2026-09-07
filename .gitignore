@@ -13,6 +13,10 @@
 # testing
 /coverage
 
+# generated playable artifacts
+/.artifacts/
+/skills/mahjong-pair-match-playable/assets/starter/outputs/
+
 # next.js
 /.next/
 /out/
