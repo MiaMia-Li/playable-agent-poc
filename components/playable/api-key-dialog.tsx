@@ -51,7 +51,7 @@ export function ApiKeyDialog({ open, onConfigured, onOpenChange }: ApiKeyDialogP
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} aria-describedby="api-key-description">
+      <DialogContent aria-describedby="api-key-description">
         <DialogHeader>
           <div className="bg-primary/10 text-primary mb-1 flex size-10 items-center justify-center rounded-xl">
             <ShieldCheck aria-hidden="true" />
@@ -80,6 +80,9 @@ export function ApiKeyDialog({ open, onConfigured, onOpenChange }: ApiKeyDialogP
             )}
           </div>
           <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange?.(false)} disabled={submitting}>
+              暂不配置
+            </Button>
             <Button type="submit" disabled={!apiKey || submitting}>
               {submitting && <Loader2 className="animate-spin" aria-hidden="true" />}
               验证并继续

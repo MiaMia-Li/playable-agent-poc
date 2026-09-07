@@ -6,6 +6,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { getPlayableMode } from '@/lib/playable/template-registry'
+import { isAbsoluteHttpsUrl } from '@/lib/playable/schemas'
+import type { PlayableAssetSlot } from '@/lib/playable/task-assets'
 
 const resourceLabels: Record<keyof ConfirmationProposal['resources'], string> = {
   tileFaces: '牌面素材',
@@ -20,12 +23,24 @@ interface ConfirmationTableProps {
   onChange: (proposal: ConfirmationProposal) => void
   onConfirm: () => void
   confirming?: boolean
+  disabled?: boolean
+  uploadingSlot?: PlayableAssetSlot
+  onUpload?: (slot: PlayableAssetSlot, file: File) => void
 }
 
-export function ConfirmationTable({ proposal, onChange, onConfirm, confirming }: ConfirmationTableProps) {
+export function ConfirmationTable({
+  proposal,
+  onChange,
+  onConfirm,
+  confirming,
+  disabled,
+  uploadingSlot,
+  onUpload,
+}: ConfirmationTableProps) {
   const resourcesReady = Object.values(proposal.resources).every((resource) => resource.status !== '待上传')
-  const validStoreUrl = /^https:\/\/\S+$/i.test(proposal.storeUrl)
-  const canConfirm = resourcesReady && validStoreUrl && !confirming
+  const validStoreUrl = isAbsoluteHttpsUrl(proposal.storeUrl)
+  const canConfirm = resourcesReady && validStoreUrl && !confirming && !disabled
+  const mode = getPlayableMode(proposal.mode)
 
   return (
     <section aria-label="确认方案" className="space-y-4">
@@ -38,7 +53,12 @@ export function ConfirmationTable({ proposal, onChange, onConfirm, confirming }:
           <tbody className="divide-y">
             <tr>
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">玩法</th>
-              <td className="px-3 py-2">{proposal.gameplay}</td>
+              <td className="px-3 py-2">
+                <span className="font-mono text-xs">{mode.id}</span>
+                <span className="mx-2">·</span>
+                <span>{mode.label}</span>
+                <p className="text-muted-foreground mt-1">{proposal.gameplay}</p>
+              </td>
             </tr>
             {Object.entries(proposal.resources).map(([key, resource]) => (
               <tr key={key}>
@@ -51,6 +71,28 @@ export function ConfirmationTable({ proposal, onChange, onConfirm, confirming }:
                       {resource.status}
                     </Badge>
                     <span className="text-muted-foreground">{resource.treatment}</span>
+                    {resource.status === '待上传' && onUpload && (
+                      <Label
+                        htmlFor={`asset-${key}`}
+                        className="border-input hover:bg-accent cursor-pointer rounded-md border px-2 py-1 text-xs"
+                      >
+                        {uploadingSlot === key ? '上传中…' : `为${resourceLabels[key as PlayableAssetSlot]}上传素材`}
+                      </Label>
+                    )}
+                    {resource.status === '待上传' && onUpload && (
+                      <input
+                        id={`asset-${key}`}
+                        className="sr-only"
+                        type="file"
+                        disabled={Boolean(uploadingSlot)}
+                        accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav,audio/ogg,audio/mp4,video/mp4,video/webm"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          if (file) onUpload(key as PlayableAssetSlot, file)
+                          event.target.value = ''
+                        }}
+                      />
+                    )}
                   </div>
                 </td>
               </tr>

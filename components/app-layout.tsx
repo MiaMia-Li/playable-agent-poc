@@ -149,17 +149,19 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
 
   // Fetch tasks on component mount
   useEffect(() => {
+    if (isPlayablePath) return
     fetchTasks()
-  }, [])
+  }, [isPlayablePath])
 
   // Poll for task updates every 5 seconds
   useEffect(() => {
+    if (isPlayablePath) return
     const interval = setInterval(() => {
       fetchTasks()
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [])
+  }, [isPlayablePath])
 
   const toggleSidebar = useCallback(() => {
     updateSidebarOpen(!isSidebarOpen)
@@ -182,6 +184,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
   }, [isSidebarOpen])
 
   useEffect(() => {
+    if (isPlayablePath) return
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault()
@@ -191,7 +194,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [toggleSidebar])
+  }, [isPlayablePath, toggleSidebar])
 
   const fetchTasks = async () => {
     try {

@@ -23,6 +23,8 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialPrompt={task.prompt}
       initialPhase={task.phase}
       initialProposal={task.confirmation ?? undefined}
+      initialHasArtifact={Boolean(task.latestArtifactKey)}
+      initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
     />
   )
 }

@@ -21,6 +21,18 @@ interface PlayableWorkspaceProps {
   initialPrompt?: string
   initialPhase?: PlayableTaskPhase
   initialProposal?: ConfirmationProposal
+  initialHasArtifact?: boolean
+  initialArtifactVersion?: string | null
+}
+
+const phaseRank: Record<PlayableTaskPhase, number> = {
+  draft: 0,
+  awaiting_confirmation: 1,
+  building: 2,
+  validating: 3,
+  ready: 4,
+  failed: 4,
+  cancelled: 4,
 }
 
 export function PlayableWorkspace({
@@ -29,11 +41,15 @@ export function PlayableWorkspace({
   initialPrompt,
   initialPhase = 'draft',
   initialProposal,
+  initialHasArtifact = false,
+  initialArtifactVersion = null,
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposal, setProposal] = useState(initialProposal)
+  const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
+  const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
 
   useEffect(() => {
     if (initialApiKeyConfigured !== undefined) return
@@ -57,7 +73,7 @@ export function PlayableWorkspace({
   }, [initialApiKeyConfigured])
 
   useEffect(() => {
-    if (!['building', 'validating'].includes(phase)) return
+    if (['ready', 'failed', 'cancelled'].includes(phase)) return
     let active = true
     const poll = async () => {
       try {
@@ -65,15 +81,13 @@ export function PlayableWorkspace({
           cache: 'no-store',
         })
         if (!response.ok) return
-        const body = (await response.json()) as { events?: Array<{ phase?: string }> }
-        const next = [...(body.events ?? [])].reverse().find((event) => event.phase)?.phase
-        if (
-          active &&
-          next &&
-          ['draft', 'awaiting_confirmation', 'building', 'validating', 'ready', 'failed', 'cancelled'].includes(next)
-        ) {
-          setPhase(next as PlayableTaskPhase)
+        const body = (await response.json()) as {
+          task?: { phase: PlayableTaskPhase; hasArtifact: boolean; artifactVersion: string | null }
         }
+        if (!active || !body.task) return
+        setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
+        setHasArtifact(body.task.hasArtifact)
+        setArtifactVersion(body.task.artifactVersion)
       } catch {
         // A transient polling failure must not clear the last successful preview.
       }
@@ -114,13 +128,11 @@ export function PlayableWorkspace({
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
         />
-        <PlayablePreview taskId={taskId} phase={phase} />
+        <PlayablePreview taskId={taskId} phase={phase} hasArtifact={hasArtifact} artifactVersion={artifactVersion} />
       </div>
       <ApiKeyDialog
         open={keyDialogOpen}
-        onOpenChange={(open) => {
-          if (apiKeyConfigured) setKeyDialogOpen(open)
-        }}
+        onOpenChange={setKeyDialogOpen}
         onConfigured={() => {
           setApiKeyConfigured(true)
           setKeyDialogOpen(false)
@@ -134,7 +146,6 @@ interface PlayableTaskSummary {
   id: string
   prompt: string
   title?: string | null
-  repoUrl?: string | null
   phase?: PlayableTaskPhase
   createdAt: string
 }
@@ -163,12 +174,12 @@ export function PlayableHome({ user, authProvider }: PlayableHomeProps) {
 
   useEffect(() => {
     if (!user) return
-    void fetch('/api/tasks', { cache: 'no-store' })
+    void fetch('/api/playable-tasks', { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error('加载试玩列表失败')
         return (await response.json()) as { tasks: PlayableTaskSummary[] }
       })
-      .then((body) => setTasks(body.tasks.filter((task) => !task.repoUrl)))
+      .then((body) => setTasks(body.tasks))
       .catch((cause) => setError(cause instanceof Error ? cause.message : '加载试玩列表失败'))
       .finally(() => setLoading(false))
   }, [user])
