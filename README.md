@@ -1,6 +1,8 @@
-# Coding Agent Template
+# C6 Playable Agent POC
 
-A template for building AI-powered coding agents that supports Claude Code, OpenAI's Codex CLI, GitHub Copilot CLI, Cursor CLI, Google Gemini CLI, and opencode with [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) to automatically execute coding tasks on your repositories.
+A proof-of-concept web application for producing C6 Mahjong pair-match playable ads with a GPT-5.6 Sol agent running in an isolated Vercel Sandbox.
+
+End users provide their own OpenAI API Key after login. No project-wide OpenAI API Key is required.
 
 ![Coding Agent Template Screenshot](screenshot.png)
 
