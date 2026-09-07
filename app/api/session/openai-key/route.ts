@@ -16,7 +16,7 @@ export async function PUT(request: NextRequest) {
 
   const result = await checkOpenAIKey(body.apiKey)
   if (!result.ok) {
-    return Response.json(result, { status: 400 })
+    return Response.json({ ok: false, reason: result.reason }, { status: 400 })
   }
 
   const response = Response.json({ configured: true, model: PLAYABLE_OPENAI_MODEL })

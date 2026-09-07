@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { encryptOpenAIKey, OPENAI_KEY_COOKIE } from '@/lib/playable/byok-session'
 
@@ -47,6 +47,10 @@ describe('OpenAI key session routes', () => {
     vi.unstubAllEnvs()
   })
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('requires authentication for every operation', async () => {
     getSessionFromReq.mockResolvedValue(undefined)
     const putRequest = new NextRequest('https://example.com/api/session/openai-key', {
@@ -92,6 +96,38 @@ describe('OpenAI key session routes', () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ ok: false, reason: 'invalid' })
     expect(response.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('allowlists validation failures at the route response and logging sinks', async () => {
+    const apiKey = 'sk-test-route-secret'
+    const uniqueSecretBody = `unique-route-provider-body-${apiKey}`
+    const consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ]
+    checkOpenAIKey.mockResolvedValue({
+      ok: false,
+      reason: 'network',
+      providerBody: uniqueSecretBody,
+      providerHeaders: { authorization: `Bearer ${apiKey}` },
+    })
+    const request = new NextRequest('https://example.com/api/session/openai-key', {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey }),
+    })
+
+    const response = await PUT(request)
+    const serialized = JSON.stringify(await response.json())
+
+    expect(serialized).toBe(JSON.stringify({ ok: false, reason: 'network' }))
+    expect(serialized).not.toContain(apiKey)
+    expect(serialized).not.toContain(uniqueSecretBody)
+    for (const spy of consoleSpies) {
+      expect(spy).not.toHaveBeenCalled()
+    }
   })
 
   it('clears the key cookie for an authenticated user', async () => {

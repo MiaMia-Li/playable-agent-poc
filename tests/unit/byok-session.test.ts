@@ -8,7 +8,7 @@ import {
   readOpenAIKeyCookie,
   setOpenAIKeyCookie,
 } from '@/lib/playable/byok-session'
-import { checkOpenAIKey } from '@/lib/playable/openai-key-check'
+import { OPENAI_KEY_CHECK_TIMEOUT_MS, checkOpenAIKey } from '@/lib/playable/openai-key-check'
 import { redactSecrets } from '@/lib/playable/redact'
 
 const secret = Buffer.alloc(32, 7).toString('base64url')
@@ -91,6 +91,8 @@ describe('secret redaction', () => {
 describe('OpenAI model access check', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('makes only the required minimal gpt-5.6-sol Responses request', async () => {
@@ -104,6 +106,7 @@ describe('OpenAI model access check', () => {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
+      signal: expect.any(AbortSignal),
       body: JSON.stringify({
         model: 'gpt-5.6-sol',
         input: 'Reply OK',
@@ -112,8 +115,34 @@ describe('OpenAI model access check', () => {
     })
   })
 
+  it('cancels a stalled provider request at the bounded timeout and returns network', async () => {
+    vi.useFakeTimers()
+    let observedSignal: AbortSignal | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+        observedSignal = init?.signal ?? undefined
+        if (!observedSignal) return Promise.resolve(new Response('{}', { status: 200 }))
+        return new Promise<Response>((_resolve, reject) => {
+          observedSignal?.addEventListener('abort', () => reject(new DOMException('Request timed out', 'AbortError')), {
+            once: true,
+          })
+        })
+      }),
+    )
+
+    const resultPromise = checkOpenAIKey(apiKey)
+    await vi.advanceTimersByTimeAsync(OPENAI_KEY_CHECK_TIMEOUT_MS)
+
+    await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'network' })
+    expect(observedSignal).toBeInstanceOf(AbortSignal)
+    expect(observedSignal?.aborted).toBe(true)
+  })
+
   it.each([
     [401, { error: { code: 'invalid_api_key' } }, 'invalid'],
+    [400, { error: { code: 'invalid_api_key' } }, 'invalid'],
+    [400, { error: { code: 'model_not_found' } }, 'model_access'],
     [403, { error: { code: 'model_not_found' } }, 'model_access'],
     [404, { error: { code: 'model_not_found' } }, 'model_access'],
     [429, { error: { code: 'insufficient_quota' } }, 'quota'],
@@ -135,5 +164,68 @@ describe('OpenAI model access check', () => {
 
     expect(result).toEqual({ ok: false, reason: 'network' })
     expect(JSON.stringify(result)).not.toContain(apiKey)
+  })
+
+  it('does not log or return provider response secrets at any sink', async () => {
+    const uniqueSecretBody = `unique-provider-body-${apiKey}`
+    const consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: 'rate_limit_exceeded',
+              message: uniqueSecretBody,
+            },
+            apiKey,
+          },
+          {
+            status: 429,
+            headers: {
+              'x-provider-secret': uniqueSecretBody,
+            },
+          },
+        ),
+      ),
+    )
+
+    const result = await checkOpenAIKey(apiKey)
+    const serialized = JSON.stringify(result)
+
+    expect(result).toEqual({ ok: false, reason: 'rate_limited' })
+    expect(serialized).not.toContain(apiKey)
+    expect(serialized).not.toContain(uniqueSecretBody)
+    for (const spy of consoleSpies) {
+      expect(spy).not.toHaveBeenCalled()
+    }
+  })
+
+  it('does not log or return secret-bearing provider exceptions', async () => {
+    const uniqueSecretBody = `unique-provider-exception-${apiKey}`
+    const consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(uniqueSecretBody)))
+
+    const result = await checkOpenAIKey(apiKey)
+    const serialized = JSON.stringify(result)
+
+    expect(result).toEqual({ ok: false, reason: 'network' })
+    expect(serialized).not.toContain(apiKey)
+    expect(serialized).not.toContain(uniqueSecretBody)
+    for (const spy of consoleSpies) {
+      expect(spy).not.toHaveBeenCalled()
+    }
   })
 })
