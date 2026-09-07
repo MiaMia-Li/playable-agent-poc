@@ -83,8 +83,22 @@ describe('secret redaction', () => {
     expect(redactSecrets(`Bearer ${apiKey}`, [apiKey])).toBe('Bearer [REDACTED]')
   })
 
-  it('redacts partial OpenAI keys', () => {
-    expect(redactSecrets('Provider rejected sk-test-secr...', [apiKey])).toBe('Provider rejected [REDACTED]')
+  it('redacts realistic complete and partial OpenAI keys at a non-token boundary', () => {
+    const realisticKey = 'sk-1234567890abcdefghijklmnop'
+    expect(redactSecrets(`Bearer ${realisticKey}`)).toBe('Bearer [REDACTED]')
+    expect(redactSecrets(`Provider rejected ${realisticKey}...`)).toBe('Provider rejected [REDACTED]')
+  })
+
+  it.each(['mask-image', '-webkit-mask-size', 'sk-chase', 'https://example.com/task-1234'])(
+    'does not alter non-credential text: %s',
+    (value) => {
+      expect(redactSecrets(value)).toBe(value)
+    },
+  )
+
+  it('requires a non-token left boundary for pattern-based redaction', () => {
+    const embedded = 'prefixsk-1234567890abcdefghijklmnop'
+    expect(redactSecrets(embedded)).toBe(embedded)
   })
 })
 

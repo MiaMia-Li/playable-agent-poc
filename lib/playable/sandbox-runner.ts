@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput } from './playable-agent-adapter'
+import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
 
 const MAX_PLAYABLE_BYTES = 5 * 1024 * 1024
@@ -132,7 +133,12 @@ export async function runPlayableBuild(
   let operationError: unknown
 
   try {
-    if (serializedConfirmation.includes(input.apiKey)) throw new Error('Confirmation contains a credential')
+    if (serializedConfirmation.includes(input.apiKey)) {
+      throw new Error('Confirmation contains a credential')
+    }
+    if (redactSecrets(serializedConfirmation) !== serializedConfirmation) {
+      throw new Error('Confirmation contains a credential')
+    }
     await dependencies.logger?.info('Preparing isolated playable workspace')
     for (const file of skillFiles) {
       await sandbox.writeBinaryFile({
@@ -207,6 +213,7 @@ export async function runPlayableBuild(
     const html = new TextDecoder().decode(artifact)
     if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
     if (html.includes(input.apiKey)) throw new Error('Playable artifact contains a credential')
+    if (redactSecrets(html) !== html) throw new Error('Playable artifact contains a credential')
 
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
     return {

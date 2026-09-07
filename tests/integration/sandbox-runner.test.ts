@@ -359,6 +359,35 @@ describe('runPlayableBuild', () => {
     expect(sandbox.destroyed).toBe(true)
   })
 
+  it('preserves CSS and URLs containing non-credential sk fragments', async () => {
+    const sandbox = await createLocalSandbox()
+    const html =
+      '<style>.x{mask-image:none;-webkit-mask-size:cover}</style><script>window.__PLAYABLE__={name:"sk-chase",url:"https://example.com/task-1234"}</script>'
+    replaceArtifactCommands(sandbox, html)
+
+    const result = await runPlayableBuild(buildInput('center_collision', 'sk-exact-caller-key'), {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.html).toBe(html)
+    expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('rejects a realistic credential-shaped non-caller key in generated HTML', async () => {
+    const sandbox = await createLocalSandbox()
+    const otherSecret = 'sk-1234567890abcdefghijklmnop'
+    replaceArtifactCommands(sandbox, `<script>window.__PLAYABLE__={secret:${JSON.stringify(otherSecret)}}</script>`)
+
+    await expect(
+      runPlayableBuild(buildInput('center_collision', 'sk-exact-caller-key'), {
+        createSandbox: async () => sandbox,
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toThrow('Playable artifact contains a credential')
+    expect(sandbox.destroyed).toBe(true)
+  })
+
   it('rejects an API key in serialized confirmation and destroys the sandbox', async () => {
     const apiKey = 'sk-confirmation-leak-test'
     const sandbox = await createLocalSandbox()

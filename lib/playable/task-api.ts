@@ -56,6 +56,7 @@ interface HandlerDependencies {
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
   schedule: BackgroundScheduler
+  buildStartedEventTimeoutMs?: number
   generateId(): string
 }
 
@@ -68,8 +69,11 @@ interface ConfirmedBuildDependencies {
   artifactStore: ArtifactStore
 }
 
+const ARTIFACT_CSP =
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
 const PREVIEW_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ error }, { status })
@@ -94,6 +98,22 @@ function safeString(value: string, secrets: readonly string[] = []): string {
 
 function sanitizeConfirmation(value: ConfirmationProposal, secrets: readonly string[] = []): ConfirmationProposal {
   return confirmationProposalSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+function containsExactSecret(value: string, secret: string): boolean {
+  return secret.length > 0 && value.includes(secret)
+}
+
+async function settleWithin(operation: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs)
+  })
+  try {
+    await Promise.race([operation.catch(() => undefined), timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 async function recordBuildFailure(repository: PlayableTaskRepository, taskId: string): Promise<void> {
@@ -130,13 +150,17 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
   }
 
   try {
+    if (containsExactSecret(JSON.stringify(task.confirmation), apiKey)) {
+      throw new Error('Confirmation contains a credential')
+    }
     const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [apiKey])
     const result = await agent.build({
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
     })
-    if (redactSecrets(result.html, [apiKey]) !== result.html) throw new Error('Artifact contains a credential')
+    if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
+    if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
     const validating = await repository.compareAndSetPhase(task.id, 'building', 'validating')
     if (!validating) return
 
@@ -238,7 +262,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 apiKey,
               })
               if (cancelled) return
-              const validated = sanitizeConfirmation(confirmationProposalSchema.parse(proposal), [apiKey])
+              const parsedProposal = confirmationProposalSchema.parse(proposal)
+              if (containsExactSecret(JSON.stringify(parsedProposal), apiKey)) {
+                throw new Error('Proposal contains a credential')
+              }
+              const validated = sanitizeConfirmation(parsedProposal)
               const serialized = JSON.stringify(validated)
               await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
               const transitioned = await dependencies.repository.setAwaitingConfirmation(access.task.id, access.userId)
@@ -280,9 +308,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!parsed.success) return jsonError(400, 'Invalid confirmation')
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (containsExactSecret(JSON.stringify(parsed.data), apiKey)) {
+        return jsonError(400, 'Invalid confirmation')
+      }
       let sanitized: ConfirmationProposal
       try {
-        sanitized = sanitizeConfirmation(parsed.data, [apiKey])
+        sanitized = sanitizeConfirmation(parsed.data)
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -292,14 +323,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const buildId = dependencies.generateId()
       try {
         dependencies.schedule(async () => {
-          await dependencies.repository
-            .appendEvent({
+          await settleWithin(
+            dependencies.repository.appendEvent({
               taskId: claimed.id,
               type: 'build_started',
               phase: 'building',
               message: 'Playable build started',
-            })
-            .catch(() => undefined)
+            }),
+            dependencies.buildStartedEventTimeoutMs ?? DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS,
+          )
           return runConfirmedBuild({
             task: claimed,
             apiKey,
@@ -337,7 +369,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Content-Disposition': `${disposition}; filename="playable.html"`,
-          'Content-Security-Policy': PREVIEW_CSP,
+          'Content-Security-Policy': disposition === 'inline' ? PREVIEW_CSP : ARTIFACT_CSP,
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store',
         },

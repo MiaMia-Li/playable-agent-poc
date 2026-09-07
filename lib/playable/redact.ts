@@ -1,4 +1,4 @@
-const OPENAI_KEY_PATTERN = /sk-[A-Za-z0-9_-]{4,}(?:\.\.\.)?/g
+const OPENAI_KEY_PATTERN = /(^|[^A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{20,}(?:\.\.\.)?)/g
 
 export function redactSecrets(value: string, secrets: readonly string[] = []): string {
   let redacted = value
@@ -7,5 +7,5 @@ export function redactSecrets(value: string, secrets: readonly string[] = []): s
       redacted = redacted.replaceAll(secret, '[REDACTED]')
     }
   }
-  return redacted.replace(OPENAI_KEY_PATTERN, '[REDACTED]')
+  return redacted.replace(OPENAI_KEY_PATTERN, '$1[REDACTED]')
 }
