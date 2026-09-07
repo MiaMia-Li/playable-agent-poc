@@ -1,5 +1,7 @@
 import { pgTable, text, timestamp, integer, jsonb, boolean, uniqueIndex } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
+import { confirmationProposalSchema, playableTaskPhaseSchema } from '@/lib/playable/schemas'
+import { playableModeIds } from '@/lib/playable/types'
 
 // Log entry types
 export const logEntrySchema = z.object({
@@ -107,6 +109,11 @@ export const tasks = pgTable('tasks', {
   }),
   prMergeCommitSha: text('pr_merge_commit_sha'),
   mcpServerIds: jsonb('mcp_server_ids').$type<string[]>(),
+  playableMode: text('playable_mode'),
+  phase: text('phase').notNull().default('draft'),
+  confirmation: jsonb('confirmation'),
+  latestArtifactKey: text('latest_artifact_key'),
+  latestValidation: jsonb('latest_validation'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
@@ -140,6 +147,11 @@ export const insertTaskSchema = z.object({
   prStatus: z.enum(['open', 'closed', 'merged']).optional(),
   prMergeCommitSha: z.string().optional(),
   mcpServerIds: z.array(z.string()).optional(),
+  playableMode: z.enum(playableModeIds).optional(),
+  phase: playableTaskPhaseSchema.default('draft'),
+  confirmation: confirmationProposalSchema.optional(),
+  latestArtifactKey: z.string().optional(),
+  latestValidation: z.unknown().optional(),
   createdAt: z.date().optional(),
   updatedAt: z.date().optional(),
   completedAt: z.date().optional(),
@@ -172,6 +184,11 @@ export const selectTaskSchema = z.object({
   prStatus: z.enum(['open', 'closed', 'merged']).nullable(),
   prMergeCommitSha: z.string().nullable(),
   mcpServerIds: z.array(z.string()).nullable(),
+  playableMode: z.enum(playableModeIds).nullable().optional(),
+  phase: playableTaskPhaseSchema.optional(),
+  confirmation: confirmationProposalSchema.nullable().optional(),
+  latestArtifactKey: z.string().nullable().optional(),
+  latestValidation: z.unknown().nullable().optional(),
   createdAt: z.date(),
   updatedAt: z.date(),
   completedAt: z.date().nullable(),
