@@ -95,6 +95,7 @@ tasks disappear when the development server restarts. Do not enable `LOCAL_DEMO_
 
 ## Design and implementation
 
+- [Current capabilities, user flow, technical architecture, and roadmap](docs/playable-poc-capabilities-user-flow-and-roadmap.md)
 - [Approved design](docs/superpowers/specs/2026-09-07-playable-agent-poc-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-09-07-playable-agent-poc-implementation.md)
 

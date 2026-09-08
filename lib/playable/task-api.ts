@@ -1,9 +1,17 @@
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
-import type { PlayableAgentAdapter } from './playable-agent-adapter'
-import { confirmationProposalSchema, type ConfirmationProposal, type PlayableTaskPhase } from './schemas'
+import type { PlayableAgentAdapter, PlayableBuildAsset } from './playable-agent-adapter'
+import {
+  confirmationProposalSchema,
+  playableAgentReplySchema,
+  type ConfirmationProposal,
+  type PlayableAgentReply,
+  type PlayableTaskPhase,
+} from './schemas'
 import { redactSecrets } from './redact'
-import type { PlayableAsset } from './task-assets'
+import { safeAsset, type PlayableAsset } from './task-assets'
+import { generatePlayableMediaAssets } from './media-generation'
+import { createAssetSourceManifest, createProductionConfig } from './production-contract'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -28,11 +36,22 @@ export interface PlayableEventRecord {
   createdAt: Date
 }
 
+export interface PlayableTaskMessageRecord {
+  id: string
+  taskId: string
+  role: 'user' | 'agent'
+  content: string
+  createdAt: Date
+}
+
 export interface PlayableTaskRepository {
   createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord>
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
   appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void>
+  listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]>
+  setDraft(taskId: string, userId: string): Promise<boolean>
   setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
+  setNeedsPlugin(taskId: string, userId: string): Promise<boolean>
   claimBuild(
     taskId: string,
     userId: string,
@@ -45,6 +64,8 @@ export interface PlayableTaskRepository {
     artifactKey: string,
     validation: unknown,
   ): Promise<boolean>
+  acceptArtifact(taskId: string, userId: string): Promise<boolean>
+  requestRevision(taskId: string, userId: string): Promise<boolean>
   markFailed(taskId: string): Promise<void>
   appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void>
   listEvents(taskId: string): Promise<PlayableEventRecord[]>
@@ -58,21 +79,31 @@ export type BackgroundScheduler = (work: () => Promise<void>) => void
 interface HandlerDependencies {
   authenticate(request: NextRequest): Promise<string | undefined>
   readApiKey(request: NextRequest, userId: string): Promise<string | undefined>
+  readMediaApiKey?(request: NextRequest, userId: string): Promise<string | undefined>
   repository: PlayableTaskRepository
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
   schedule: BackgroundScheduler
   buildStartedEventTimeoutMs?: number
+  mediaGenerator?: MediaGenerator
   generateId(): string
 }
+
+type MediaGenerator = (input: {
+  taskId: string
+  apiKey: string
+  confirmation: ConfirmationProposal
+}) => Promise<PlayableBuildAsset[]>
 
 interface ConfirmedBuildDependencies {
   task: PlayableTaskRecord
   apiKey: string
+  mediaApiKey?: string
   buildId: string
   repository: PlayableTaskRepository
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
+  mediaGenerator?: MediaGenerator
 }
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -99,7 +130,7 @@ function safeTaskState(task: PlayableTaskRecord) {
     phase: task.phase,
     hasArtifact: Boolean(task.latestArtifactKey),
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
-    confirmation: task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
+    confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
   }
 }
 
@@ -132,6 +163,21 @@ function safeString(value: string, secrets: readonly string[] = []): string {
 
 function sanitizeConfirmation(value: ConfirmationProposal, secrets: readonly string[] = []): ConfirmationProposal {
   return confirmationProposalSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+function sanitizeAgentReply(value: PlayableAgentReply, secrets: readonly string[] = []): PlayableAgentReply {
+  return playableAgentReplySchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+function conversationContent(message: PlayableTaskMessageRecord, secrets: readonly string[]): string {
+  const safeContent = safeString(message.content, secrets)
+  if (message.role === 'user') return safeContent
+  try {
+    const parsed = playableAgentReplySchema.safeParse(JSON.parse(safeContent))
+    return parsed.success ? parsed.data.message : safeContent
+  } catch {
+    return safeContent
+  }
 }
 
 function containsExactSecret(value: string, secret: string): boolean {
@@ -177,38 +223,62 @@ function artifactPrefix(task: PlayableTaskRecord, buildId: string): string {
 }
 
 export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies): Promise<void> {
-  const { task, apiKey, buildId, repository, agent, artifactStore } = dependencies
+  const { task, apiKey, mediaApiKey, buildId, repository, agent, artifactStore } = dependencies
+  const generationApiKey = mediaApiKey ?? apiKey
   if (!task.confirmation) {
     await recordBuildFailure(repository, task.id)
     return
   }
 
   try {
-    if (containsExactSecret(JSON.stringify(task.confirmation), apiKey)) {
+    if (
+      containsExactSecret(JSON.stringify(task.confirmation), apiKey) ||
+      (mediaApiKey && containsExactSecret(JSON.stringify(task.confirmation), mediaApiKey))
+    ) {
       throw new Error('Confirmation contains a credential')
     }
-    const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [apiKey])
+    const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [
+      apiKey,
+      ...(mediaApiKey ? [mediaApiKey] : []),
+    ])
     const storedAssets = await repository.listAssets(task.id, task.userId)
-    const assets = await Promise.all(
-      storedAssets.map(async (asset) => {
-        const stream = await artifactStore.get(asset.storageKey)
-        if (!stream) throw new Error('Uploaded asset is missing')
-        return {
-          id: asset.id,
-          slot: asset.slot,
-          filename: asset.filename,
-          mimeType: asset.mimeType,
-          size: asset.size,
-          bytes: await readAll(stream),
-        }
-      }),
+    const uploadedAssets = await Promise.all(
+      storedAssets
+        .filter((asset) => sanitizedConfirmation.resources[asset.slot].status === '用户上传')
+        .map(async (asset) => {
+          const stream = await artifactStore.get(asset.storageKey)
+          if (!stream) throw new Error('Uploaded asset is missing')
+          return {
+            id: asset.id,
+            slot: asset.slot,
+            filename: asset.filename,
+            mimeType: asset.mimeType,
+            size: asset.size,
+            bytes: await readAll(stream),
+          }
+        }),
     )
+    const needsGeneratedMedia = Object.values(sanitizedConfirmation.resources).some(
+      (resource) => resource.status === '待生成',
+    )
+    const mediaGenerator = dependencies.mediaGenerator ?? generatePlayableMediaAssets
+    const generatedAssets = needsGeneratedMedia
+      ? await mediaGenerator({
+          taskId: task.id,
+          apiKey: generationApiKey,
+          confirmation: sanitizedConfirmation,
+        })
+      : []
+    const assets = [...uploadedAssets, ...generatedAssets]
     const result = await agent.build({
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
     })
+    if (!result.validation.passed || Object.values(result.validation.gates).includes('failed')) {
+      throw new Error('Playable validation gates failed')
+    }
     if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
     if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
     const validating = await repository.compareAndSetPhase(task.id, 'building', 'validating')
@@ -216,26 +286,12 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 
     const prefix = artifactPrefix(task, buildId)
     const playableKey = `${prefix}/playable.html`
-    const validationReport = {
-      behavior: result.validation.behavior,
-      bytes: result.validation.bytes,
-    }
+    const validationReport = result.validation
+    const productionConfig = createProductionConfig(sanitizedConfirmation)
+    const assetManifest = result.assetManifest ?? createAssetSourceManifest(sanitizedConfirmation, assets)
     console.log('Storing playable artifacts')
-    await artifactStore.put(
-      `${prefix}/confirmed-config.json`,
-      JSON.stringify(sanitizedConfirmation),
-      'application/json',
-    )
-    await artifactStore.put(
-      `${prefix}/asset-manifest.json`,
-      JSON.stringify(
-        result.assetManifest ?? {
-          assets: assets.map(({ bytes: _bytes, ...asset }) => asset),
-          entrypoint: 'playable.html',
-        },
-      ),
-      'application/json',
-    )
+    await artifactStore.put(`${prefix}/production-config.json`, JSON.stringify(productionConfig), 'application/json')
+    await artifactStore.put(`${prefix}/asset-manifest.json`, JSON.stringify(assetManifest), 'application/json')
     await artifactStore.put(`${prefix}/validation-report.json`, JSON.stringify(validationReport), 'application/json')
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
 
@@ -248,9 +304,9 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     await repository
       .appendEvent({
         taskId: task.id,
-        type: 'build_ready',
-        phase: 'ready',
-        message: 'Playable build is ready',
+        type: 'review_requested',
+        phase: 'reviewing',
+        message: 'Playable build is ready for review',
       })
       .catch(() => undefined)
   } catch {
@@ -326,21 +382,68 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           const processing = (async () => {
             const prompt = safeString(message, [apiKey])
             try {
-              await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
               if (!enqueue({ type: 'started' })) return
-              const proposal = await dependencies.agent.proposeConfirmation({
+              const [history, assets] = await Promise.all([
+                dependencies.repository.listMessages(access.task.id),
+                dependencies.repository.listAssets(access.task.id, access.userId),
+              ])
+              await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
+              const agentReply = await dependencies.agent.proposeConfirmation({
                 taskId: access.task.id,
                 prompt,
                 apiKey,
+                history: history.map((turn) => ({
+                  role: turn.role === 'agent' ? 'assistant' : 'user',
+                  content: conversationContent(turn, [apiKey]),
+                })),
+                confirmation: access.task.confirmation
+                  ? sanitizeConfirmation(access.task.confirmation, [apiKey])
+                  : null,
+                assets: assets.map(safeAsset),
               })
               if (cancelled) return
-              const parsedProposal = confirmationProposalSchema.parse(proposal)
-              if (containsExactSecret(JSON.stringify(parsedProposal), apiKey)) {
-                throw new Error('Proposal contains a credential')
+              const parsedReply = playableAgentReplySchema.parse(agentReply)
+              if (containsExactSecret(JSON.stringify(parsedReply), apiKey)) {
+                throw new Error('Agent reply contains a credential')
               }
-              const validated = sanitizeConfirmation(parsedProposal)
-              const serialized = JSON.stringify(validated)
+              const validatedReply = sanitizeAgentReply(parsedReply)
+              const serialized = JSON.stringify(validatedReply)
               await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
+              if (validatedReply.kind === 'clarification') {
+                const transitioned = await dependencies.repository.setDraft(access.task.id, access.userId)
+                if (!transitioned) throw new Error('Task phase conflict')
+                await dependencies.repository.appendEvent({
+                  taskId: access.task.id,
+                  type: 'clarification_requested',
+                  phase: 'draft',
+                  message: 'Playable requirements need clarification',
+                })
+                enqueue({
+                  type: 'clarification',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  options: validatedReply.options,
+                })
+                return
+              }
+              if (validatedReply.kind === 'plugin_request') {
+                const transitioned = await dependencies.repository.setNeedsPlugin(access.task.id, access.userId)
+                if (!transitioned) throw new Error('Task phase conflict')
+                await dependencies.repository.appendEvent({
+                  taskId: access.task.id,
+                  type: 'plugin_requested',
+                  phase: 'needs_plugin',
+                  message: 'A new playable Plugin is required',
+                })
+                enqueue({
+                  type: 'plugin_request',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  pluginRequest: validatedReply.pluginRequest,
+                })
+                return
+              }
+              const validated = validatedReply.confirmation
               const transitioned = await dependencies.repository.setAwaitingConfirmation(
                 access.task.id,
                 access.userId,
@@ -353,9 +456,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 phase: 'awaiting_confirmation',
                 message: 'Confirmation is ready',
               })
-              enqueue({ type: 'confirmation', confirmation: validated })
+              enqueue({
+                type: 'confirmation',
+                message: validatedReply.message,
+                reasoning: validatedReply.reasoning,
+                confirmation: validated,
+              })
             } catch {
-              enqueue({ type: 'error', message: 'Unable to prepare confirmation' })
+              enqueue({ type: 'error', message: '助手暂时无法继续整理需求，请重试' })
             } finally {
               close()
             }
@@ -396,6 +504,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (Object.values(sanitized.resources).some((resource) => resource.status === '待上传')) {
         return jsonError(400, 'Pending uploads')
       }
+      const needsGeneratedMedia = Object.values(sanitized.resources).some((resource) => resource.status === '待生成')
+      const mediaApiKey = needsGeneratedMedia
+        ? await (dependencies.readMediaApiKey ?? dependencies.readApiKey)(request, access.userId)
+        : undefined
+      if (needsGeneratedMedia && !mediaApiKey) {
+        return jsonError(428, 'OpenAI key required for AI media generation')
+      }
       const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
@@ -420,10 +535,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           return runConfirmedBuild({
             task: claimed,
             apiKey,
+            mediaApiKey,
             buildId,
             repository: dependencies.repository,
             agent: dependencies.agent,
             artifactStore: dependencies.artifactStore,
+            mediaGenerator: dependencies.mediaGenerator,
           })
         })
       } catch {
@@ -444,21 +561,80 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       )
     },
 
+    async review(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      const body = (await request.json().catch(() => undefined)) as { action?: unknown } | undefined
+      if (body?.action === 'accept') {
+        const accepted = await dependencies.repository.acceptArtifact(access.task.id, access.userId)
+        if (!accepted) return jsonError(409, 'Task phase conflict')
+        await dependencies.repository.appendEvent({
+          taskId: access.task.id,
+          type: 'review_accepted',
+          phase: 'ready',
+          message: 'Playable review was accepted',
+        })
+        return Response.json({ task: { id: access.task.id, phase: 'ready' } })
+      }
+      if (body?.action === 'revise') {
+        const reopened = await dependencies.repository.requestRevision(access.task.id, access.userId)
+        if (!reopened) return jsonError(409, 'Task phase conflict')
+        await dependencies.repository.appendEvent({
+          taskId: access.task.id,
+          type: 'revision_requested',
+          phase: 'awaiting_confirmation',
+          message: 'Playable revision was requested',
+        })
+        return Response.json({ task: { id: access.task.id, phase: 'awaiting_confirmation' } })
+      }
+      return jsonError(400, 'Invalid review action')
+    },
+
     async artifact(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const url = new URL(request.url)
-      if (url.searchParams.get('kind') !== 'playable') return jsonError(404, 'Not found')
       if (!access.task.latestArtifactKey) return jsonError(404, 'Not found')
-      const artifact = await dependencies.artifactStore.get(access.task.latestArtifactKey)
+      const kind = url.searchParams.get('kind')
+      const download = url.searchParams.get('download') === '1'
+      if (download && access.task.phase !== 'ready') return jsonError(409, 'Artifact requires review approval')
+      const prefix = access.task.latestArtifactKey.slice(0, -'/playable.html'.length)
+      const artifacts = {
+        playable: {
+          key: access.task.latestArtifactKey,
+          contentType: 'text/html; charset=utf-8',
+          filename: 'playable.html',
+        },
+        config: {
+          key: `${prefix}/production-config.json`,
+          contentType: 'application/json; charset=utf-8',
+          filename: 'production-config.json',
+        },
+        manifest: {
+          key: `${prefix}/asset-manifest.json`,
+          contentType: 'application/json; charset=utf-8',
+          filename: 'asset-manifest.json',
+        },
+        validation: {
+          key: `${prefix}/validation-report.json`,
+          contentType: 'application/json; charset=utf-8',
+          filename: 'validation-report.json',
+        },
+      } as const
+      if (!kind || !(kind in artifacts)) return jsonError(404, 'Not found')
+      if (kind !== 'playable' && !download) return jsonError(404, 'Not found')
+      const descriptor = artifacts[kind as keyof typeof artifacts]
+      const artifact = await dependencies.artifactStore.get(descriptor.key)
       if (!artifact) return jsonError(404, 'Not found')
 
-      const disposition = url.searchParams.get('download') === '1' ? 'attachment' : 'inline'
+      const disposition = download ? 'attachment' : 'inline'
       return new Response(artifact, {
         headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Disposition': `${disposition}; filename="playable.html"`,
-          'Content-Security-Policy': disposition === 'inline' ? PREVIEW_CSP : ARTIFACT_CSP,
+          'Content-Type': descriptor.contentType,
+          'Content-Disposition': `${disposition}; filename="${descriptor.filename}"`,
+          ...(kind === 'playable'
+            ? { 'Content-Security-Policy': disposition === 'inline' ? PREVIEW_CSP : ARTIFACT_CSP }
+            : {}),
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store',
         },

@@ -8,4 +8,7 @@ export interface PlayableMode {
   description: string
   configPath: string
   referencePath: string
+  pluginId: string
+  pluginVersion: string
+  runtimeVersion: string
 }

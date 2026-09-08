@@ -25,6 +25,7 @@ function deferred() {
 }
 
 const baseConfirmation = {
+  routing: { match: 'exact', confidence: 1, differences: [] as string[] },
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {
@@ -275,7 +276,7 @@ describe('runPlayableBuild', () => {
       },
     })
 
-    expect(result.assetManifest).toEqual({
+    expect(result.assetManifest).toMatchObject({
       assets: [
         {
           id: 'asset-1',
@@ -287,10 +288,53 @@ describe('runPlayableBuild', () => {
         },
       ],
       entrypoint: 'playable.html',
+      plugin: {
+        id: 'mahjong-pair-match-playable',
+        version: '1.0.0',
+        runtimeVersion: '2',
+      },
     })
     expect(JSON.stringify(result.assetManifest)).not.toContain('users/')
     expect(JSON.stringify(result.assetManifest)).not.toContain('sk-assets-test')
   })
+
+  it('builds confirmed copy and uploaded media into the single-file artifact', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-configured-build-test')
+    input.confirmation = {
+      ...input.confirmation,
+      resources: {
+        ...input.confirmation.resources,
+        backgroundBoard: { status: '用户上传', treatment: '使用已上传背景' },
+      },
+      copy: {
+        title: 'Farm & Match',
+        cta: 'Play <Now>',
+        disclaimer: 'Demo "Only"',
+        locale: 'en-US',
+      },
+    }
+    input.assets = [
+      {
+        id: 'asset-background',
+        slot: 'backgroundBoard',
+        filename: 'farm.png',
+        mimeType: 'image/png',
+        size: 4,
+        bytes: new Uint8Array([1, 2, 3, 4]),
+      },
+    ]
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.html).toContain('Farm &amp; Match')
+    expect(result.html).toContain('Play &lt;Now&gt;')
+    expect(result.html).toContain('Demo &quot;Only&quot;')
+    expect(result.html).toContain('data:image/png;base64,AQIDBA==')
+  }, 30_000)
 
   it('validates and returns the exact artifact prepared by an external agent', async () => {
     const sandbox = await createLocalSandbox()
@@ -422,7 +466,7 @@ describe('runPlayableBuild', () => {
   it('preserves CSS and URLs containing non-credential sk fragments', async () => {
     const sandbox = await createLocalSandbox()
     const html =
-      '<style>.x{mask-image:none;-webkit-mask-size:cover}</style><script>window.__PLAYABLE__={name:"sk-chase",url:"https://example.com/task-1234"}</script>'
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><style>.x{mask-image:none;-webkit-mask-size:cover}</style><script>window.__PLAYABLE__={name:"sk-chase",url:"https://example.com/task-1234"}</script>'
     replaceArtifactCommands(sandbox, html)
 
     const result = await runPlayableBuild(buildInput('center_collision', 'sk-exact-caller-key'), {
@@ -431,6 +475,51 @@ describe('runPlayableBuild', () => {
     })
 
     expect(result.html).toBe(html)
+    expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('blocks external resource references before an artifact can be published', async () => {
+    const sandbox = await createLocalSandbox()
+    replaceArtifactCommands(
+      sandbox,
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><img src="https://tracker.example/pixel"><script>window.__PLAYABLE__={}</script>',
+    )
+
+    await expect(
+      runPlayableBuild(buildInput('center_collision', 'sk-offline-check'), {
+        createSandbox: async () => sandbox,
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toThrow('Playable artifact contains an external resource')
+    expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('blocks relative resource references before an artifact can be published', async () => {
+    const sandbox = await createLocalSandbox()
+    replaceArtifactCommands(
+      sandbox,
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><img src="./asset.png"><script>window.__PLAYABLE__={}</script>',
+    )
+
+    await expect(
+      runPlayableBuild(buildInput('center_collision', 'sk-relative-offline-check'), {
+        createSandbox: async () => sandbox,
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toThrow('Playable artifact contains an external resource')
+    expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('blocks artifacts without the responsive viewport contract', async () => {
+    const sandbox = await createLocalSandbox()
+    replaceArtifactCommands(sandbox, '<canvas></canvas><script>window.__PLAYABLE__={}</script>')
+
+    await expect(
+      runPlayableBuild(buildInput('center_collision', 'sk-responsive-check'), {
+        createSandbox: async () => sandbox,
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toThrow('Playable artifact is missing responsive viewport support')
     expect(sandbox.destroyed).toBe(true)
   })
 

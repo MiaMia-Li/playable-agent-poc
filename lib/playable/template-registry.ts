@@ -1,6 +1,52 @@
 import { playableModeIds, type PlayableMode, type PlayableModeId } from './types'
+import pluginManifest from '@/skills/mahjong-pair-match-playable/plugin.json'
+import { z } from 'zod'
 
-const skillRoot = 'skills/mahjong-pair-match-playable'
+export interface PlayablePluginManifest {
+  id: string
+  name: string
+  version: string
+  runtimeVersion: string
+  skillRoot: string
+  modes: PlayableModeId[]
+  assetSlots: string[]
+  delivery: {
+    networks: string[]
+    entrypoint: 'playable.html'
+    maxBytes: number
+  }
+  commands: {
+    build: string
+    validate: string
+  }
+  exploration: string[]
+  requiresNewPlugin: string[]
+}
+
+const playablePluginManifestSchema = z.strictObject({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  runtimeVersion: z.string().trim().min(1),
+  skillRoot: z.string().trim().min(1),
+  modes: z.array(z.enum(playableModeIds)).min(1),
+  assetSlots: z.array(z.string().trim().min(1)).min(1),
+  delivery: z.strictObject({
+    networks: z.array(z.string().trim().min(1)).min(1),
+    entrypoint: z.literal('playable.html'),
+    maxBytes: z.number().int().positive(),
+  }),
+  commands: z.strictObject({
+    build: z.string().trim().min(1),
+    validate: z.string().trim().min(1),
+  }),
+  exploration: z.array(z.string().trim().min(1)),
+  requiresNewPlugin: z.array(z.string().trim().min(1)),
+})
+
+export const MAHJONG_PLAYABLE_PLUGIN: PlayablePluginManifest = playablePluginManifestSchema.parse(pluginManifest)
+
+const skillRoot = MAHJONG_PLAYABLE_PLUGIN.skillRoot
 
 const playableModeDefinitions = {
   center_collision: {
@@ -27,15 +73,23 @@ const playableModeDefinitions = {
     configPath: `${skillRoot}/assets/templates/perspective_3d/config.json`,
     referencePath: `${skillRoot}/references/modes/perspective_3d.md`,
   },
-} satisfies Record<PlayableModeId, Omit<PlayableMode, 'id'>>
+} satisfies Record<PlayableModeId, Omit<PlayableMode, 'id' | 'pluginId' | 'pluginVersion' | 'runtimeVersion'>>
 
 export const PLAYABLE_MODES: readonly PlayableMode[] = playableModeIds.map((id) => ({
   id,
   ...playableModeDefinitions[id],
+  pluginId: MAHJONG_PLAYABLE_PLUGIN.id,
+  pluginVersion: MAHJONG_PLAYABLE_PLUGIN.version,
+  runtimeVersion: MAHJONG_PLAYABLE_PLUGIN.runtimeVersion,
 }))
 
 export function getPlayableMode(value: string): PlayableMode {
   const mode = PLAYABLE_MODES.find((candidate) => candidate.id === value)
   if (!mode) throw new Error(`Unsupported playable mode: ${value}`)
   return mode
+}
+
+export function getPlayablePlugin(pluginId: string): PlayablePluginManifest {
+  if (pluginId !== MAHJONG_PLAYABLE_PLUGIN.id) throw new Error('Unsupported playable Plugin')
+  return MAHJONG_PLAYABLE_PLUGIN
 }

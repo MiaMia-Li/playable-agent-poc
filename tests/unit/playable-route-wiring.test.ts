@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import { createValidationReport } from '@/lib/playable/production-contract'
 
 const infrastructure = vi.hoisted(() => {
   const scheduled: Array<() => Promise<void>> = []
@@ -70,6 +71,7 @@ import { POST as create } from '@/app/api/playable-tasks/route'
 import { POST as confirm } from '@/app/api/playable-tasks/[taskId]/confirm/route'
 
 const confirmation: ConfirmationProposal = {
+  routing: { match: 'exact', confidence: 1, differences: [] },
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {
@@ -104,7 +106,7 @@ describe('real playable task route wiring', () => {
     infrastructure.repository.listAssets.mockResolvedValue([])
     infrastructure.agent.build.mockResolvedValue({
       html: '<script>window.__PLAYABLE__={}</script>',
-      validation: { behavior: 'passed', bytes: 42 },
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
     })
     infrastructure.artifactStore.put.mockResolvedValue(undefined)
   })
@@ -182,7 +184,7 @@ describe('real playable task route wiring', () => {
       'task-1',
       'validating',
       'users/user-1/tasks/task-1/build-1/playable.html',
-      { behavior: 'passed', bytes: 42 },
+      expect.objectContaining({ passed: true, behavior: 'passed', bytes: 42 }),
     )
   })
 })

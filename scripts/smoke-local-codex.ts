@@ -19,17 +19,18 @@ async function main() {
   })
 
   console.log('Generating confirmation with Codex CLI')
-  const confirmation = await agent.proposeConfirmation({
+  const reply = await agent.proposeConfirmation({
     taskId: task.id,
     prompt: task.prompt,
     apiKey,
   })
   await repository.appendMessage(task.id, 'user', task.prompt)
-  await repository.appendMessage(task.id, 'agent', JSON.stringify(confirmation))
-  if (!(await repository.setAwaitingConfirmation(task.id, userId, confirmation))) {
+  await repository.appendMessage(task.id, 'agent', JSON.stringify(reply))
+  if (reply.kind !== 'confirmation') throw new Error('Codex CLI requested unexpected clarification')
+  if (!(await repository.setAwaitingConfirmation(task.id, userId, reply.confirmation))) {
     throw new Error('Unable to save confirmation')
   }
-  const claimed = await repository.claimBuild(task.id, userId, confirmation)
+  const claimed = await repository.claimBuild(task.id, userId, reply.confirmation)
   if (!claimed) throw new Error('Unable to claim playable build')
 
   console.log('Building with Codex CLI and Vercel Sandbox')

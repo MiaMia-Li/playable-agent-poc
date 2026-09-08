@@ -3,13 +3,10 @@ import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 import { getServerSession } from '@/lib/session/get-server-session'
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
 import { Metadata } from 'next'
-import {
-  isLocalDemoMode,
-  localDemoRuntime,
-  localDemoSession,
-  readLocalDemoApiKey,
-} from '@/lib/playable/local-demo-prototype'
+import { isLocalDemoMode, localDemoRuntime, localDemoSession } from '@/lib/playable/local-demo-prototype'
 import { isLocalCodexMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
+import { playableAgentReplySchema } from '@/lib/playable/schemas'
+import type { ConversationMessage } from '@/components/playable/chat-workspace'
 
 interface TaskPageProps {
   params: Promise<{
@@ -26,22 +23,36 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  let initialProposal = task.confirmation ?? undefined
-  if (localDemo && task.phase === 'draft') {
-    initialProposal = await localDemoRuntime.agent.proposeConfirmation({
-      taskId: task.id,
-      prompt: task.prompt,
-      apiKey: await readLocalDemoApiKey(),
-    })
-    await repository.setAwaitingConfirmation(task.id, session.user.id, initialProposal)
-  }
+  const storedMessages = await repository.listMessages(task.id)
+  const initialConversation = storedMessages.flatMap((stored): ConversationMessage[] => {
+    if (stored.role === 'user') {
+      return [{ id: stored.id, role: 'user', content: stored.content, status: 'sent' }]
+    }
+    try {
+      const parsed = playableAgentReplySchema.safeParse(JSON.parse(stored.content))
+      if (!parsed.success) return []
+      return [
+        {
+          id: stored.id,
+          role: 'assistant',
+          content: parsed.data.message,
+          reasoning: parsed.data.reasoning,
+          options: parsed.data.kind === 'clarification' ? parsed.data.options : undefined,
+          status: 'sent',
+        },
+      ]
+    } catch {
+      return []
+    }
+  })
 
   return (
     <PlayableWorkspace
       taskId={task.id}
       initialPrompt={task.prompt}
-      initialPhase={localDemo && initialProposal ? 'awaiting_confirmation' : task.phase}
-      initialProposal={initialProposal}
+      initialPhase={task.phase}
+      initialProposal={task.phase === 'draft' ? undefined : (task.confirmation ?? undefined)}
+      initialConversation={initialConversation}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialApiKeyConfigured={localDemo || localCodex ? true : undefined}

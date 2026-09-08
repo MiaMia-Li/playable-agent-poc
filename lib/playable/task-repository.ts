@@ -8,7 +8,12 @@ import {
   type ConfirmationProposal,
   type PlayableTaskPhase,
 } from './schemas'
-import type { PlayableEventRecord, PlayableTaskRecord, PlayableTaskRepository } from './task-api'
+import type {
+  PlayableEventRecord,
+  PlayableTaskMessageRecord,
+  PlayableTaskRecord,
+  PlayableTaskRepository,
+} from './task-api'
 import type { PlayableAsset } from './task-assets'
 
 function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
@@ -65,10 +70,36 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     await db.insert(taskMessages).values({ id: generateId(), taskId, role, content })
   }
 
+  async listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]> {
+    return db.select().from(taskMessages).where(eq(taskMessages.taskId, taskId)).orderBy(asc(taskMessages.createdAt))
+  }
+
+  async setDraft(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ phase: 'draft', updatedAt: new Date() })
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+      )
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const updated = await db
       .update(tasks)
       .set({ phase: 'awaiting_confirmation', confirmation, updatedAt: new Date() })
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+      )
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async setNeedsPlugin(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ phase: 'needs_plugin', updatedAt: new Date() })
       .where(
         and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
       )
@@ -112,13 +143,33 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     const updated = await db
       .update(tasks)
       .set({
-        phase: 'ready',
+        phase: 'reviewing',
         latestArtifactKey: artifactKey,
         latestValidation: validation,
-        completedAt: new Date(),
+        completedAt: null,
         updatedAt: new Date(),
       })
       .where(and(eq(tasks.id, taskId), eq(tasks.phase, expectedPhase)))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async acceptArtifact(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ phase: 'ready', completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), eq(tasks.phase, 'reviewing')))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async requestRevision(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ phase: 'awaiting_confirmation', completedAt: null, updatedAt: new Date() })
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['reviewing', 'ready', 'failed'])),
+      )
       .returning({ id: tasks.id })
     return updated.length === 1
   }

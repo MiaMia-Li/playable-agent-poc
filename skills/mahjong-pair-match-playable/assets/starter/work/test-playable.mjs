@@ -15,13 +15,15 @@ const elements={},windowListeners={};
 for(const id of ["loading","endCard","endBg","endIcon","endTitle","endButton","cta","toast"])elements[id]={id,classList:classes(),style:{},addEventListener(type,fn){this[type]=fn}};
 elements.game={id:"game",getContext:()=>ctx,getBoundingClientRect:()=>({left:0,top:0,width:360,height:640}),addEventListener(type,fn){this[type]=fn}};
 
-globalThis.window=globalThis;globalThis.parent={};globalThis.addEventListener=(type,fn)=>{windowListeners[type]=fn};globalThis.document={getElementById:id=>elements[id]};globalThis.performance={now:()=>simTime};
+let storeOpenCount=0;globalThis.window=globalThis;globalThis.parent={};globalThis.mraid={open(){storeOpenCount++}};globalThis.addEventListener=(type,fn)=>{windowListeners[type]=fn};globalThis.document={getElementById:id=>elements[id]};globalThis.performance={now:()=>simTime};
 globalThis.requestAnimationFrame=fn=>{raf=fn;return 1};globalThis.setTimeout=(fn,delay)=>{timers.push({at:simTime+delay,fn,done:false});return timers.length};
 globalThis.Image=class{constructor(){this.width=126;this.height=160}set src(v){this._src=v;queueMicrotask(()=>this.onload?.())}get src(){return this._src}};
 const audioInstances=[];globalThis.Audio=class{constructor(src){this.src=src;this.loop=false;this.volume=1;this.muted=false;audioInstances.push(this)}play(){return Promise.resolve()}};
 
 new Function(script)();for(let i=0;i<5;i++)await Promise.resolve();
 const game=window.__PLAYABLE__;if(!game)throw new Error("game did not initialize");
+if(game.audio.muted!==true||game.audio.unlocked!==false||audioInstances.length!==0)throw new Error("audio was not initially muted and locked");
+elements.cta.click();if(storeOpenCount!==0)throw new Error("store opened before gameplay interaction");
 if(typeof windowListeners.message!=="function")throw new Error("mute message protocol missing");
 windowListeners.message({source:{},data:{type:"playable:set-muted",muted:true}});
 if(game.audio.muted!==true)throw new Error("untrusted mute message changed state");

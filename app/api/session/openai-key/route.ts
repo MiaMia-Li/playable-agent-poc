@@ -1,10 +1,10 @@
 import type { NextRequest } from 'next/server'
-import { getSessionFromReq } from '@/lib/session/server'
 import { clearOpenAIKeyCookie, PLAYABLE_OPENAI_MODEL, setOpenAIKeyCookie } from '@/lib/playable/byok-session'
 import { checkOpenAIKey } from '@/lib/playable/openai-key-check'
+import { getOpenAIKeyRouteSession } from '@/lib/playable/byok-route-session'
 
 export async function PUT(request: NextRequest) {
-  const session = await getSessionFromReq(request)
+  const session = await getOpenAIKeyRouteSession(request)
   if (!session) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
@@ -25,7 +25,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const session = await getSessionFromReq(request)
+  const session = await getOpenAIKeyRouteSession(request)
   if (!session) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }

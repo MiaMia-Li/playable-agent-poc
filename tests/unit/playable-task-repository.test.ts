@@ -5,6 +5,7 @@ import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import { playableTaskAssets, playableTaskEvents } from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
+  routing: { match: 'exact', confidence: 1, differences: [] },
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {
@@ -105,7 +106,7 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
     expect(query.params).toEqual(['task-1', 'validating'])
     expect(database.set).toHaveBeenCalledWith(
       expect.objectContaining({
-        phase: 'ready',
+        phase: 'reviewing',
         latestArtifactKey: 'users/user-1/tasks/task-1/build/playable.html',
       }),
     )

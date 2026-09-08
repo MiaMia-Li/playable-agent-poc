@@ -11,6 +11,7 @@ import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 
 const proposal: ConfirmationProposal = {
+  routing: { match: 'approximate', confidence: 0.8, differences: ['奖励表现使用模板默认效果'] },
   mode: 'top_rack',
   gameplay: '相同牌进入牌架后消除',
   resources: {
@@ -47,17 +48,55 @@ describe('PlayableWorkspace', () => {
     expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
   })
 
+  it('lets local Codex users configure a media API key without blocking chat', () => {
+    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured localCodex />)
+
+    expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '媒体 API Key' }))
+    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
+  })
+
+  it('starts the first conversation automatically after the API key is available', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/messages')) {
+        return new Response(
+          `${JSON.stringify({
+            type: 'clarification',
+            message: '请选择一种玩法。',
+            reasoning: '目前只有视觉主题。',
+            options: [{ id: 'center', label: '中心碰撞', description: '碰撞消除', value: '选择中心碰撞玩法' }],
+          })}\n`,
+        )
+      }
+      return Response.json({
+        task: { phase: 'draft', hasArtifact: false, artifactVersion: null, confirmation: null },
+        events: [],
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured initialPrompt="制作农场主题试玩" />)
+
+    expect(await screen.findByText('请选择一种玩法。')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks/task-7/messages',
+      expect.objectContaining({ body: JSON.stringify({ message: '制作农场主题试玩' }) }),
+    )
+  })
+
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
 
     expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '确认方案' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('需求整理等待确认构建中验证中可预览')
+    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent(
+      '需求整理等待确认构建中验证中待验收已交付',
+    )
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '竖屏预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '横屏预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '刷新预览' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '静音预览' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '取消静音预览' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
   })
 
@@ -209,6 +248,84 @@ describe('PlayableWorkspace', () => {
     )
   })
 
+  it('renders an assistant clarification, decision rationale, quick choices, and loading over an existing proposal', async () => {
+    let resolveFetch!: (response: Response) => void
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace
+        taskId="task-7"
+        phase="awaiting_confirmation"
+        proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '我想换一种玩法' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    expect(screen.getByRole('region', { name: '助手正在思考' })).toBeInTheDocument()
+
+    resolveFetch(
+      new Response(
+        `${JSON.stringify({
+          type: 'clarification',
+          message: '请选择一种玩法。',
+          reasoning: '当前描述没有指定核心消除机制。',
+          options: [
+            { id: 'center', label: '中心碰撞', description: '配对后碰撞', value: '选择中心碰撞玩法' },
+            { id: 'rack', label: '上方牌架', description: '选牌进入牌架', value: '选择上方牌架玩法' },
+          ],
+        })}\n`,
+      ),
+    )
+
+    expect(await screen.findByText('请选择一种玩法。')).toBeInTheDocument()
+    expect(screen.getByText(/当前描述没有指定核心消除机制/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /中心碰撞/ }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({ body: JSON.stringify({ message: '选择中心碰撞玩法' }) }),
+      ),
+    )
+  })
+
+  it('lets users choose built-in, AI-generated, or uploaded media before confirmation', () => {
+    const onChange = vi.fn()
+    render(
+      <ConfirmationTable
+        proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onChange={onChange}
+        onConfirm={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI 生成牌面素材' }))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resources: expect.objectContaining({
+          tileFaces: expect.objectContaining({ status: '待生成' }),
+        }),
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '本地上传背景与棋盘' }))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resources: expect.objectContaining({
+          backgroundBoard: expect.objectContaining({ status: '待上传' }),
+        }),
+      }),
+    )
+  })
+
   it('automatically submits the initial prompt once in local Codex mode', async () => {
     let requestSignal: AbortSignal | null | undefined
     let resolveFetch!: (response: Response) => void
@@ -241,7 +358,7 @@ describe('PlayableWorkspace', () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
-    expect(screen.getByRole('region', { name: '正在生成确认方案' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '助手正在思考' })).toBeInTheDocument()
     resolveFetch(new Response(confirmationLine))
     await waitFor(() => expect(onProposal).toHaveBeenCalledOnce())
     expect(requestSignal?.aborted).toBe(false)
@@ -296,16 +413,16 @@ describe('PlayableWorkspace', () => {
     expect(iframe).toHaveAttribute('src', '/api/playable-tasks/task-7/artifact?kind=playable')
   })
 
-  it('mutes through postMessage without adding iframe permissions or replacing the frame', () => {
+  it('starts muted and unmutes through postMessage without adding iframe permissions or replacing the frame', () => {
     render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="v1" />)
     const iframe = screen.getByTitle('Playable preview') as HTMLIFrameElement
     const frameBefore = iframe
     const postMessage = vi.spyOn(iframe.contentWindow!, 'postMessage')
 
-    fireEvent.click(screen.getByRole('button', { name: '静音预览' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消静音预览' }))
 
-    expect(postMessage).toHaveBeenCalledWith({ type: 'playable:set-muted', muted: true }, '*')
-    expect(screen.getByRole('button', { name: '取消静音预览' })).toHaveAttribute('aria-pressed', 'true')
+    expect(postMessage).toHaveBeenCalledWith({ type: 'playable:set-muted', muted: false }, '*')
+    expect(screen.getByRole('button', { name: '静音预览' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTitle('Playable preview')).toBe(frameBefore)
     expect(iframe).not.toHaveAttribute('allow')
   })
@@ -320,5 +437,28 @@ describe('PlayableWorkspace', () => {
     rerender(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="new-build" />)
 
     expect(screen.getByTitle('Playable preview')).not.toBe(oldFrame)
+  })
+
+  it('requires explicit human acceptance and can reopen an accepted artifact for revision', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ task: { id: 'task-7' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const onPhase = vi.fn()
+    const { rerender } = render(
+      <PlayablePreview taskId="task-7" phase="reviewing" hasArtifact artifactVersion="build-1" onPhase={onPhase} />,
+    )
+
+    expect(screen.getByText('自动门禁已通过，请完成人工验收')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '验收通过' }))
+    await waitFor(() => expect(onPhase).toHaveBeenCalledWith('ready'))
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks/task-7/review',
+      expect.objectContaining({ body: JSON.stringify({ action: 'accept' }) }),
+    )
+
+    rerender(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-1" onPhase={onPhase} />)
+    expect(screen.getByRole('button', { name: '下载交付物' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '返回修改' }))
+    await waitFor(() => expect(onPhase).toHaveBeenCalledWith('awaiting_confirmation'))
   })
 })

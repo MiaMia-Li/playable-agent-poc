@@ -2,10 +2,11 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
+import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
+import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 
-const MAX_PLAYABLE_BYTES = 5 * 1024 * 1024
 const DEFAULT_SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 interface SandboxCommandOptions {
@@ -81,6 +82,25 @@ function isFilesystemMetadata(name: string, directory: boolean): boolean {
 function safeWorkspaceFilename(id: string, filename: string): string {
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'asset'
   return `${id}-${safeName}`
+}
+
+function hasExternalResourceReference(html: string): boolean {
+  const isEmbeddedReference = (value: string) => /^(?:data:|blob:|#)/i.test(value.trim())
+  const resourceAttributes =
+    /<(?:img|audio|video|source|script|link|iframe|object)\b[^>]*\b(?:src|href|poster|data|srcset)\s*=\s*["']([^"']+)["']/gi
+  for (const match of html.matchAll(resourceAttributes)) {
+    if (!isEmbeddedReference(match[1])) return true
+  }
+
+  const cssResources = /url\(\s*["']?([^"')]+)["']?\s*\)/gi
+  for (const match of html.matchAll(cssResources)) {
+    if (!isEmbeddedReference(match[1])) return true
+  }
+  return false
+}
+
+function hasResponsiveViewport(html: string): boolean {
+  return /<meta\s+name=["']viewport["'][^>]*width=device-width/i.test(html) && /<canvas\b/i.test(html)
 }
 
 async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
@@ -178,7 +198,7 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
-    const assetManifest: PlayableAssetManifest = { assets: [], entrypoint: 'playable.html' }
+    const assetManifest: PlayableAssetManifest = createAssetSourceManifest(confirmation, [])
     for (const asset of input.assets ?? []) {
       if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
       const workspacePath = path.posix.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
@@ -190,6 +210,7 @@ export async function runPlayableBuild(
       const { bytes: _bytes, ...metadata } = asset
       void _bytes
       assetManifest.assets.push({ ...metadata, workspacePath })
+      assetManifest.sources.find((source) => source.slot === asset.slot)?.files.push(asset.filename)
     }
     await sandbox.writeTextFile({
       path: path.join(workspace, 'asset-manifest.json'),
@@ -219,7 +240,7 @@ export async function runPlayableBuild(
       await requireSuccessfulCommand(
         sandbox,
         {
-          command: 'node assets/starter/build-playable.mjs "$PLAYABLE_MODE" output.html "$PLAYABLE_STORE_URL"',
+          command: MAHJONG_PLAYABLE_PLUGIN.commands.build,
           workingDirectory: workspace,
           env: {
             PLAYABLE_MODE: confirmation.mode,
@@ -235,7 +256,7 @@ export async function runPlayableBuild(
     await requireSuccessfulCommand(
       sandbox,
       {
-        command: 'node assets/starter/work/test-playable.mjs output.html',
+        command: MAHJONG_PLAYABLE_PLUGIN.commands.validate,
         workingDirectory: workspace,
         abortSignal: dependencies.abortSignal,
       },
@@ -247,21 +268,26 @@ export async function runPlayableBuild(
       abortSignal: dependencies.abortSignal,
     })
     if (artifact === null) throw new Error('Playable artifact is missing')
-    if (artifact.byteLength >= MAX_PLAYABLE_BYTES) throw new Error('Playable artifact exceeds size limit')
+    if (artifact.byteLength >= MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes) {
+      throw new Error('Playable artifact exceeds size limit')
+    }
 
     const html = new TextDecoder().decode(artifact)
     if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
     if (html.includes(input.apiKey)) throw new Error('Playable artifact contains a credential')
     if (redactSecrets(html) !== html) throw new Error('Playable artifact contains a credential')
+    if (hasExternalResourceReference(html)) throw new Error('Playable artifact contains an external resource')
+    if (!hasResponsiveViewport(html)) throw new Error('Playable artifact is missing responsive viewport support')
 
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
     return {
       html,
       assetManifest,
-      validation: {
-        behavior: 'passed',
+      validation: createValidationReport({
         bytes: artifact.byteLength,
-      },
+        offlineResources: true,
+        responsiveViewport: true,
+      }),
     }
   } catch (error) {
     operationError = error

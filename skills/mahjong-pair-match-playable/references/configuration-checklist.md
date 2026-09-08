@@ -1,6 +1,6 @@
 # Configuration Checklist
 
-Use this after the user selects an included mode or describes a custom mechanic. Produce one consolidated confirmation table and wait for one approval before implementation. Do not split these decisions into the former eight-stage confirmation workflow.
+Use this after the user selects an included mode or accepts an approximate Plugin match. Produce one consolidated confirmation table and wait for one approval before implementation. Do not split these decisions into the former eight-stage confirmation workflow.
 
 ## Confirmation table
 
@@ -8,7 +8,8 @@ Include every row below. Combine rows only when doing so remains equally explici
 
 | Category | Confirm | Default when omitted |
 | --- | --- | --- |
-| Gameplay | Included mode name, or concise custom rules for selection, match, mismatch, movement/refill/layers, score, completion, and replay | Ask for route first; never silently force custom behavior into a template |
+| Plugin route | Exact/approximate match, confidence, known differences, and included mode | Ask for route first; unsupported core state machines become a new Plugin request |
+| Gameplay | Included mode name and concise rules for selection, match, mismatch, movement/refill/layers, score, completion, and replay | Preserve the selected template state machine |
 | Tile or item faces | Exact uploaded files, bundled set, or approved generation specification | Bundled Mahjong tile set |
 | Background and board UI | Background, rack/grid/stack treatment, HUD, tutorial hand | Selected mode defaults |
 | Animation and effects | Selection, mismatch, match motion, particles, shake, layer reveal | Selected mode defaults |

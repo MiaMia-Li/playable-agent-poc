@@ -1,9 +1,9 @@
 import type { NextRequest } from 'next/server'
-import { getSessionFromReq } from '@/lib/session/server'
 import { PLAYABLE_OPENAI_MODEL, readOpenAIKeyCookie } from '@/lib/playable/byok-session'
+import { getOpenAIKeyRouteSession } from '@/lib/playable/byok-route-session'
 
 export async function GET(request: NextRequest) {
-  const session = await getSessionFromReq(request)
+  const session = await getOpenAIKeyRouteSession(request)
   if (!session) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }

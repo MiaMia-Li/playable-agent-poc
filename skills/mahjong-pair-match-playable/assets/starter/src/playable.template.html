@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="__DOCUMENT_LANG__">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="theme-color" content="#071b18">
-  <title>Mahjong Match Playable</title>
+  <title>__PLAYABLE_TITLE__</title>
   <style>
     *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#07110f;touch-action:none;-webkit-user-select:none;user-select:none;font-family:Arial,"PingFang SC",sans-serif}body{display:grid;place-items:center}.stage{position:relative;width:min(100vw,56.25vh);height:min(177.778vw,100vh);overflow:hidden;background:#075b45;box-shadow:0 0 45px #000c}canvas{display:block;width:100%;height:100%;touch-action:none}.loading{position:absolute;inset:0;z-index:8;display:grid;place-items:center;background:radial-gradient(circle at 50% 42%,#168566,#063b32 68%,#021b18);color:#ffe27b;font-weight:900;letter-spacing:.08em;transition:opacity .25s}.loading.hide{opacity:0;pointer-events:none}.end-card{position:absolute;inset:0;z-index:5;overflow:hidden;background:#06462d;opacity:0;pointer-events:none;transition:opacity .2s}.end-card.show{opacity:1;pointer-events:auto}.end-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scale(1.04)}.end-card.show .end-bg{animation:endZoom .8s ease-out forwards}.end-icon-wrap{position:absolute;left:27%;top:15%;width:46%;aspect-ratio:1;padding:2%;border-radius:22%;background:linear-gradient(145deg,#fff88c,#e4a514 48%,#76510a);box-shadow:0 10px 20px #0018;opacity:0}.end-icon{width:100%;height:100%;object-fit:cover;border-radius:18%}.end-title{position:absolute;left:5%;top:39%;width:90%;height:24%;object-fit:contain;opacity:0}.end-cta{position:absolute;left:15%;top:64%;width:70%;height:14%;border:0;padding:0;background:transparent;opacity:0;filter:drop-shadow(0 7px 5px #0019)}.end-cta img{width:100%;height:100%}.end-cta span{position:absolute;inset:0;display:grid;place-items:center;padding-bottom:2%;color:#fff;font-size:23px;font-weight:900;text-shadow:0 3px #16813a}.end-card.show .end-icon-wrap{animation:pop .45s .08s cubic-bezier(.2,.9,.3,1.2) forwards}.end-card.show .end-title{animation:pop .35s .42s ease-out forwards}.end-card.show .end-cta{animation:pop .35s .65s ease-out forwards,pulse 1.5s 1.2s ease-in-out infinite}.disclaimer{position:absolute;z-index:7;left:5px;right:5px;bottom:max(3px,env(safe-area-inset-bottom));padding:3px 5px;border-radius:4px;background:#001c;color:#fff;font-size:7px;line-height:1.25;text-align:center;direction:rtl;pointer-events:none}.toast{position:absolute;z-index:9;left:50%;bottom:48px;transform:translate(-50%,12px);padding:8px 12px;border-radius:9px;background:#001d;color:#fff;font-size:12px;opacity:0;transition:.2s;white-space:nowrap}.toast.show{opacity:1;transform:translate(-50%,0)}@keyframes pop{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}@keyframes pulse{50%{transform:scale(1.04);filter:drop-shadow(0 7px 5px #0019) drop-shadow(0 0 11px #ffe75ca0)}}@keyframes endZoom{to{transform:scale(1)}}
   </style>
@@ -16,9 +16,9 @@
     <section class="end-card" id="endCard" aria-label="游戏完成">
       <img class="end-bg" id="endBg" alt=""><div class="end-icon-wrap"><img class="end-icon" id="endIcon" alt=""></div>
       <img class="end-title" id="endTitle" alt="Domino Cafe">
-      <button class="end-cta" id="cta" type="button" aria-label="前往应用商店"><img id="endButton" alt=""><span lang="ar" dir="rtl">تحميل سريع</span></button>
+      <button class="end-cta" id="cta" type="button" aria-label="前往应用商店"><img id="endButton" alt=""><span>__CTA_TEXT__</span></button>
     </section>
-    <div class="disclaimer" lang="ar" dir="rtl">هذه ليست لعبة قمار وليس بها أي وسيلة للفوز بأي مكافآت مالية أو جوائز ذات قيمة مالية بأي شكل من الأشكال. القمار ممنوع منعا باتا</div>
+    <div class="disclaimer">__DISCLAIMER_TEXT__</div>
     <div class="toast" id="toast">商店链接将在投放环境中打开</div>
   </main>
   <script>
@@ -190,7 +190,7 @@
     function openStore(){const game=window.__PLAYABLE__;if(!game||game.interactions<1){toast();return}try{if(window.mraid&&typeof window.mraid.open==="function"&&CONFIG.storeUrl){window.mraid.open(CONFIG.storeUrl);return}if(window.PlayableBridge&&typeof window.PlayableBridge.openStore==="function"){window.PlayableBridge.openStore(CONFIG.storeUrl);return}}catch(e){}toast()}
     window.addEventListener("message",event=>{const data=event.data;if(event.source!==window.parent||!data||data.type!=="playable:set-muted"||typeof data.muted!=="boolean")return;window.__PLAYABLE__?.audio?.setMuted(data.muted)});
     document.getElementById("cta").addEventListener("click",openStore);
-    loadImages().then(images=>{document.getElementById("endBg").src=ASSETS.endcard.background;document.getElementById("endIcon").src=ASSETS.endcard.icon;document.getElementById("endTitle").src=ASSETS.endcard.title;document.getElementById("endButton").src=ASSETS.endcard.button;document.getElementById("loading").classList.add("hide");window.__PLAYABLE__=new MahjongGame(document.getElementById("game"),images,new AudioService(ASSETS.audio))}).catch(e=>{document.getElementById("loading").textContent="资源加载失败";console.error(e)});
+    loadImages().then(images=>{document.getElementById("endBg").src=ASSETS.endcard.background;document.getElementById("endIcon").src=ASSETS.endcard.icon;document.getElementById("endTitle").src=ASSETS.endcard.title;document.getElementById("endButton").src=ASSETS.endcard.button;document.getElementById("loading").classList.add("hide");window.__PLAYABLE__=new MahjongGame(document.getElementById("game"),images,new AudioService(ASSETS.audio))}).catch(()=>{document.getElementById("loading").textContent="资源加载失败";console.error("Playable asset loading failed")});
   })();
   </script>
 </body>

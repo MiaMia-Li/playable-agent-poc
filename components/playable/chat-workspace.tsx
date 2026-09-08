@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, Loader2, Sparkles, Square } from 'lucide-react'
-import type { ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
+import type { ClarificationOption, ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
 import type { PlayableAssetSlot } from '@/lib/playable/task-assets'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,14 +14,17 @@ const stages = [
   ['awaiting_confirmation', '等待确认'],
   ['building', '构建中'],
   ['validating', '验证中'],
-  ['ready', '可预览'],
+  ['reviewing', '待验收'],
+  ['ready', '已交付'],
 ] as const
 const phaseNames: Record<PlayableTaskPhase, string> = {
   draft: '需求整理',
   awaiting_confirmation: '等待确认',
   building: '构建中',
   validating: '验证中',
-  ready: '可预览',
+  reviewing: '等待人工验收',
+  ready: '已验收，可交付',
+  needs_plugin: '需要新增 Plugin',
   failed: '构建失败',
   cancelled: '已取消',
 }
@@ -31,16 +34,20 @@ interface ChatWorkspaceProps {
   initialPrompt?: string
   phase: PlayableTaskPhase
   proposal?: ConfirmationProposal
-  onProposal: (proposal: ConfirmationProposal) => void
+  onProposal: (proposal?: ConfirmationProposal) => void
   onPhase: (phase: PlayableTaskPhase) => void
   onRequireApiKey: () => void
   autoSubmitInitialPrompt?: boolean
+  initialConversation?: ConversationMessage[]
 }
 
-interface Message {
-  id: number
+export interface ConversationMessage {
+  id: string | number
+  role: 'user' | 'assistant'
   content: string
   status: 'sending' | 'sent' | 'failed'
+  reasoning?: string
+  options?: ClarificationOption[]
 }
 
 export function ChatWorkspace({
@@ -52,10 +59,15 @@ export function ChatWorkspace({
   onPhase,
   onRequireApiKey,
   autoSubmitInitialPrompt = false,
+  initialConversation = [],
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
-  const [conversation, setConversation] = useState<Message[]>(
-    initialPrompt ? [{ id: 0, content: initialPrompt, status: 'sent' }] : [],
+  const [conversation, setConversation] = useState<ConversationMessage[]>(
+    initialConversation.length
+      ? initialConversation
+      : initialPrompt
+        ? [{ id: 0, role: 'user', content: initialPrompt, status: 'sent' }]
+        : [],
   )
   const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -75,7 +87,7 @@ export function ChatWorkspace({
       streamController.current = controller
       setSending(true)
       setError('')
-      if (appendToConversation) setConversation((items) => [...items, { id, content, status: 'sending' }])
+      if (appendToConversation) setConversation((items) => [...items, { id, role: 'user', content, status: 'sending' }])
       try {
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
@@ -95,7 +107,13 @@ export function ChatWorkspace({
         let buffer = ''
         const handleLine = (line: string) => {
           if (!line.trim()) return
-          let event: { type: string; confirmation?: ConfirmationProposal; message?: string }
+          let event: {
+            type: string
+            confirmation?: ConfirmationProposal
+            message?: string
+            reasoning?: string
+            options?: ClarificationOption[]
+          }
           try {
             event = JSON.parse(line)
           } catch {
@@ -104,6 +122,45 @@ export function ChatWorkspace({
           if (event.type === 'confirmation' && event.confirmation) {
             onProposal(event.confirmation)
             onPhase('awaiting_confirmation')
+            if (event.message) {
+              setConversation((items) => [
+                ...items,
+                {
+                  id: Date.now() + 1,
+                  role: 'assistant',
+                  content: event.message!,
+                  reasoning: event.reasoning,
+                  status: 'sent',
+                },
+              ])
+            }
+          } else if (event.type === 'clarification' && event.message) {
+            onProposal(undefined)
+            onPhase('draft')
+            setConversation((items) => [
+              ...items,
+              {
+                id: Date.now() + 1,
+                role: 'assistant',
+                content: event.message!,
+                reasoning: event.reasoning,
+                options: event.options,
+                status: 'sent',
+              },
+            ])
+          } else if (event.type === 'plugin_request' && event.message) {
+            onProposal(undefined)
+            onPhase('needs_plugin')
+            setConversation((items) => [
+              ...items,
+              {
+                id: Date.now() + 1,
+                role: 'assistant',
+                content: event.message!,
+                reasoning: event.reasoning,
+                status: 'sent',
+              },
+            ])
           } else if (event.type === 'error') {
             throw new Error(event.message || '无法生成确认方案')
           }
@@ -212,7 +269,7 @@ export function ChatWorkspace({
 
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
         <section aria-label="构建进度" className="bg-muted/50 rounded-xl p-3">
-          <ol className="grid grid-cols-5 gap-1">
+          <ol className="grid grid-cols-6 gap-1">
             {stages.map(([id, label]) => (
               <li
                 key={id}
@@ -232,9 +289,35 @@ export function ChatWorkspace({
         {conversation.map((item) => (
           <div
             key={item.id}
-            className="bg-primary text-primary-foreground ml-auto max-w-[88%] rounded-2xl rounded-br-sm px-4 py-3 text-sm"
+            className={
+              item.role === 'user'
+                ? 'bg-primary text-primary-foreground ml-auto max-w-[88%] rounded-2xl rounded-br-sm px-4 py-3 text-sm'
+                : 'bg-muted mr-auto max-w-[92%] rounded-2xl rounded-bl-sm px-4 py-3 text-sm'
+            }
           >
             {item.content}
+            {item.reasoning && (
+              <p className="text-muted-foreground mt-2 border-t pt-2 text-xs">判断依据：{item.reasoning}</p>
+            )}
+            {item.options?.length ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {item.options.map((option) => (
+                  <Button
+                    key={option.id}
+                    type="button"
+                    variant="outline"
+                    className="h-auto justify-start whitespace-normal px-3 py-2 text-left"
+                    disabled={sending || !canCompose}
+                    onClick={() => void sendMessage(option.value)}
+                  >
+                    <span>
+                      <span className="block font-medium">{option.label}</span>
+                      <span className="text-muted-foreground block text-xs font-normal">{option.description}</span>
+                    </span>
+                  </Button>
+                ))}
+              </div>
+            ) : null}
             {item.status !== 'sent' && (
               <span className="mt-1 block text-xs opacity-75">
                 {item.status === 'sending' ? '发送中…' : '发送失败'}
@@ -247,6 +330,19 @@ export function ChatWorkspace({
           {selectedAssets.length ? `已选择素材：${selectedAssets.at(-1)}` : ''}
         </div>
 
+        {sending && (
+          <section
+            aria-label="助手正在思考"
+            className="border-muted-foreground/20 flex items-center gap-3 rounded-xl border border-dashed p-4"
+          >
+            <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-medium">助手正在思考</p>
+              <p className="text-muted-foreground mt-1 text-xs">正在结合对话、已选方案和素材状态整理下一步。</p>
+            </div>
+          </section>
+        )}
+
         {proposal ? (
           <ConfirmationTable
             proposal={proposal}
@@ -258,24 +354,13 @@ export function ChatWorkspace({
             uploadingSlot={uploadingSlot}
             onUpload={upload}
           />
-        ) : sending ? (
-          <section
-            aria-label="正在生成确认方案"
-            className="border-muted-foreground/20 flex items-center gap-3 rounded-xl border border-dashed p-4"
-          >
-            <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden="true" />
-            <div>
-              <p className="text-sm font-medium">正在生成确认方案</p>
-              <p className="text-muted-foreground mt-1 text-xs">Codex 正在整理玩法、素材、文案与交付配置。</p>
-            </div>
-          </section>
-        ) : (
+        ) : !sending ? (
           <section aria-label="确认方案" className="border-muted-foreground/20 rounded-xl border border-dashed p-4">
             <p className="text-muted-foreground text-sm">发送需求后，这里会显示完整的玩法、素材、文案与交付确认表。</p>
           </section>
-        )}
+        ) : null}
 
-        {(phase === 'ready' || phase === 'failed' || phase === 'cancelled') && (
+        {(phase === 'ready' || phase === 'needs_plugin' || phase === 'failed' || phase === 'cancelled') && (
           <Button asChild variant="outline" className="w-full">
             <Link href="/">新建试玩</Link>
           </Button>

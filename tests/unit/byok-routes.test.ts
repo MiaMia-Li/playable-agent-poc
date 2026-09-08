@@ -49,6 +49,7 @@ describe('OpenAI key session routes', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('requires authentication for every operation', async () => {
@@ -82,6 +83,22 @@ describe('OpenAI key session routes', () => {
     expect(checkOpenAIKey).toHaveBeenCalledWith('sk-test-secret')
     expect(setCookie).toContain(`${OPENAI_KEY_COOKIE}=`)
     expect(setCookie).not.toContain('sk-test-secret')
+  })
+
+  it('allows the development-only local Codex identity to configure a media key', async () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('LOCAL_CODEX_MODE', '1')
+    getSessionFromReq.mockResolvedValue(undefined)
+    checkOpenAIKey.mockResolvedValue({ ok: true })
+    const request = new NextRequest('https://example.com/api/session/openai-key', {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey: 'sk-test-media-secret' }),
+    })
+
+    const response = await PUT(request)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('set-cookie')).toContain(`${OPENAI_KEY_COOKIE}=`)
   })
 
   it('does not set a cookie or echo provider details when validation fails', async () => {

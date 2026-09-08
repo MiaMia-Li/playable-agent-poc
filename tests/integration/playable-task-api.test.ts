@@ -8,11 +8,13 @@ import {
   type PlayableTaskRepository,
 } from '@/lib/playable/task-api'
 import { PrivateVercelArtifactStore, type ArtifactStore, type PrivateBlobClient } from '@/lib/playable/artifact-store'
-import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import type { ConfirmationProposal, PlayableAgentReply } from '@/lib/playable/schemas'
 import type { PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
+import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
 
 const confirmation: ConfirmationProposal = {
+  routing: { match: 'exact', confidence: 1, differences: [] },
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {
@@ -31,6 +33,13 @@ const confirmation: ConfirmationProposal = {
     output: 'single-html',
     maxBytes: 5242880,
   },
+}
+
+const confirmationReply: PlayableAgentReply = {
+  kind: 'confirmation',
+  message: '方案已经整理完成。',
+  reasoning: '玩法已经明确。',
+  confirmation,
 }
 
 type EventRecord = {
@@ -81,11 +90,31 @@ class MemoryRepository implements PlayableTaskRepository {
     this.messages.push({ taskId, role, content })
   }
 
+  async listMessages(taskId: string) {
+    return this.messages
+      .filter((message) => message.taskId === taskId)
+      .map((message, index) => ({ ...message, id: `message-${index + 1}`, createdAt: new Date(index) }))
+  }
+
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
     if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
+    return true
+  }
+
+  async setDraft(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    task.phase = 'draft'
+    return true
+  }
+
+  async setNeedsPlugin(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    task.phase = 'needs_plugin'
     return true
   }
 
@@ -120,10 +149,24 @@ class MemoryRepository implements PlayableTaskRepository {
   ): Promise<boolean> {
     const task = this.tasks.get(taskId)
     if (!task || task.phase !== expectedPhase) return false
-    task.phase = 'ready'
+    task.phase = 'reviewing'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
     this.latestAssignments.push(artifactKey)
+    return true
+  }
+
+  async acceptArtifact(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || task.phase !== 'reviewing') return false
+    task.phase = 'ready'
+    return true
+  }
+
+  async requestRevision(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['reviewing', 'ready', 'failed'].includes(task.phase) || !task.confirmation) return false
+    task.phase = 'awaiting_confirmation'
     return true
   }
 
@@ -175,10 +218,10 @@ function createHarness() {
   const scheduled: Array<() => Promise<void>> = []
   const scheduler: BackgroundScheduler = (work) => scheduled.push(work)
   const agent: PlayableAgentAdapter = {
-    proposeConfirmation: vi.fn(async () => confirmation),
+    proposeConfirmation: vi.fn(async () => confirmationReply),
     build: vi.fn(async () => ({
       html: '<!doctype html><script>window.__PLAYABLE__={}</script>',
-      validation: { behavior: 'passed' as const, bytes: 57 },
+      validation: createValidationReport({ bytes: 57, offlineResources: true, responsiveViewport: true }),
     })),
     cancel: vi.fn(async () => undefined),
   }
@@ -194,9 +237,11 @@ function createHarness() {
   }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
+  let mediaApiKey: string | undefined = 'sk-test-media-secret'
   const handlers = createPlayableTaskHandlers({
     authenticate: async () => authenticatedUserId,
     readApiKey: async () => apiKey,
+    readMediaApiKey: async () => mediaApiKey,
     repository,
     agent,
     artifactStore,
@@ -220,6 +265,9 @@ function createHarness() {
     },
     setApiKey(value: string | undefined) {
       apiKey = value
+    },
+    setMediaApiKey(value: string | undefined) {
+      mediaApiKey = value
     },
   }
 }
@@ -326,11 +374,162 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
 
+  it('keeps an ambiguous theme in draft and streams a clarification with full conversation context', async () => {
+    const clarification = {
+      kind: 'clarification',
+      message: '农场主题已经记下了，请选择一种核心玩法。',
+      reasoning: '主题不能唯一确定消除后的移动方式。',
+      options: [
+        {
+          id: 'center_collision',
+          label: '中心碰撞',
+          description: '相同元素飞向中心碰撞消除',
+          value: '选择中心碰撞玩法',
+        },
+        {
+          id: 'gravity_fill',
+          label: '下落补位',
+          description: '消除后元素从上方下落补位',
+          value: '选择下落补位玩法',
+        },
+      ],
+    } as const
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce(clarification as never)
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '制作一个农场消消乐风格' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const body = await response.text()
+
+    expect(body).toContain('"type":"clarification"')
+    expect(body).toContain('农场主题已经记下了')
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
+    expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: [],
+        confirmation: null,
+        assets: [],
+      }),
+    )
+    expect(harness.repository.messages.map(({ role }) => role)).toEqual(['user', 'agent'])
+  })
+
+  it('records unsupported state machines as new Plugin requests instead of forcing a build', async () => {
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'plugin_request',
+      message: '当前模板无法表达跑酷状态机，需要新增 Plugin。',
+      reasoning: '核心输入和失败条件不属于麻将配对。',
+      pluginRequest: {
+        summary: '制作跑酷试玩',
+        reason: '核心状态机不匹配',
+        requiredStateMachine: ['持续移动', '障碍碰撞', '失败重开'],
+        source: 'text-description',
+      },
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '制作跑酷试玩' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const body = await response.text()
+
+    expect(body).toContain('"type":"plugin_request"')
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('needs_plugin')
+    expect(harness.repository.events.at(-1)).toMatchObject({ type: 'plugin_requested', phase: 'needs_plugin' })
+    expect(harness.scheduled).toHaveLength(0)
+  })
+
+  it('hides an existing proposal while preserving it as context when a follow-up needs clarification', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'clarification',
+      message: '你想改成哪一种玩法？',
+      reasoning: '用户要求更换玩法但没有指定目标。',
+      options: [{ id: 'rack', label: '上方牌架', description: '进入牌架后配对', value: '选择上方牌架玩法' }],
+    })
+
+    await (
+      await harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', { message: '换一种玩法' }), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+    ).text()
+
+    expect(task.phase).toBe('draft')
+    expect(task.confirmation).toEqual(confirmation)
+
+    const eventsResponse = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    expect((await eventsResponse.json()).task.confirmation).toBeNull()
+
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce(confirmationReply)
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '改成上方牌架' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+    expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(expect.objectContaining({ confirmation }))
+  })
+
+  it('passes prior turns, the current proposal, and safe uploaded-asset metadata into follow-up messages', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.confirmation = confirmation
+    harness.repository.messages.push(
+      { taskId: 'owned', role: 'user', content: '制作农场主题' },
+      {
+        taskId: 'owned',
+        role: 'agent',
+        content: JSON.stringify({
+          kind: 'clarification',
+          message: '请选择玩法',
+          reasoning: '玩法尚未明确',
+          options: [{ id: 'center', label: '中心碰撞', description: '碰撞消除', value: '选择中心碰撞玩法' }],
+        }),
+      },
+    )
+    harness.repository.assets.push({
+      id: 'asset-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'audio',
+      filename: 'farm.mp3',
+      mimeType: 'audio/mpeg',
+      size: 3,
+      storageKey: 'private-storage-key',
+      createdAt: new Date(0),
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '把标题改成欢乐农场' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: [
+          { role: 'user', content: '制作农场主题' },
+          { role: 'assistant', content: '请选择玩法' },
+        ],
+        confirmation,
+        assets: [{ id: 'asset-1', slot: 'audio', filename: 'farm.mp3', mimeType: 'audio/mpeg', size: 3 }],
+      }),
+    )
+    expect(JSON.stringify(vi.mocked(harness.agent.proposeConfirmation).mock.calls)).not.toContain('private-storage-key')
+  })
+
   it('redacts and revalidates every credential-shaped string in an agent proposal before storage', async () => {
     const otherSecret = 'sk-1234567890abcdefghijklmnop'
     vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
-      ...confirmation,
-      gameplay: `Leaked ${otherSecret}`,
+      ...confirmationReply,
+      confirmation: { ...confirmation, gameplay: `Leaked ${otherSecret}` },
     })
     const response = await harness.handlers.message(
       request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
@@ -347,8 +546,8 @@ describe('playable task API', () => {
 
   it('hard-fails an exact caller-key echo in an agent proposal before sanitization or storage', async () => {
     vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
-      ...confirmation,
-      gameplay: 'Leaked sk-test-secret',
+      ...confirmationReply,
+      confirmation: { ...confirmation, gameplay: 'Leaked sk-test-secret' },
     })
 
     const response = await harness.handlers.message(
@@ -356,13 +555,15 @@ describe('playable task API', () => {
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
 
-    expect(await response.text()).toContain('"type":"error"')
+    const body = await response.text()
+    expect(body).toContain('"type":"error"')
+    expect(body).toContain('助手暂时无法继续整理需求，请重试')
     expect(harness.repository.messages).toHaveLength(1)
     expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
   })
 
   it('cancels an in-flight message stream without writing to a closed controller or leaking a rejection', async () => {
-    let resolveProposal!: (value: ConfirmationProposal) => void
+    let resolveProposal!: (value: PlayableAgentReply) => void
     vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(
       () => new Promise((resolve) => (resolveProposal = resolve)),
     )
@@ -378,7 +579,7 @@ describe('playable task API', () => {
       const reader = response.body!.getReader()
       expect(new TextDecoder().decode((await reader.read()).value)).toContain('"type":"started"')
       await reader.cancel()
-      resolveProposal(confirmation)
+      resolveProposal(confirmationReply)
       await new Promise((resolve) => setTimeout(resolve, 0))
 
       expect(harness.agent.cancel).toHaveBeenCalledWith('owned')
@@ -407,6 +608,34 @@ describe('playable task API', () => {
     expect(messageResponse.status).toBe(428)
     expect(confirmResponse.status).toBe(428)
     expect(harness.scheduled).toHaveLength(0)
+  })
+
+  it('requires a separate media API key only when the confirmed plan contains AI-generated media', async () => {
+    harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
+    harness.setMediaApiKey(undefined)
+    const generatedConfirmation: ConfirmationProposal = {
+      ...confirmation,
+      resources: {
+        ...confirmation.resources,
+        backgroundBoard: { status: '待生成', treatment: '生成竖屏农场背景' },
+      },
+    }
+
+    const generatedResponse = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: generatedConfirmation }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(generatedResponse.status).toBe(428)
+    expect(harness.scheduled).toHaveLength(0)
+
+    const bundledResponse = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(bundledResponse.status).toBe(202)
+    expect(harness.scheduled).toHaveLength(1)
   })
 
   it('rejects a build until a task is awaiting confirmation', async () => {
@@ -602,12 +831,12 @@ describe('playable task API', () => {
     await harness.scheduled[0]()
 
     const task = harness.repository.tasks.get('owned')
-    expect(task?.phase).toBe('ready')
+    expect(task?.phase).toBe('reviewing')
     expect(task?.latestArtifactKey).toMatch(/^users\/user-1\/tasks\/owned\/random-\d+\/playable\.html$/)
     expect([...harness.artifacts.keys()].sort()).toEqual([
       expect.stringMatching(/asset-manifest\.json$/),
-      expect.stringMatching(/confirmed-config\.json$/),
       expect.stringMatching(/playable\.html$/),
+      expect.stringMatching(/production-config\.json$/),
       expect.stringMatching(/validation-report\.json$/),
     ])
     expect(harness.repository.latestAssignments).toHaveLength(1)
@@ -616,7 +845,13 @@ describe('playable task API', () => {
   it('loads owned private asset bytes for the build and persists the returned truthful manifest', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'
-    task.confirmation = confirmation
+    task.confirmation = {
+      ...confirmation,
+      resources: {
+        ...confirmation.resources,
+        audio: { status: '用户上传', treatment: '使用上传的音频' },
+      },
+    }
     const storageKey = 'users/user-1/tasks/owned/assets/asset-1'
     harness.repository.assets.push({
       id: 'asset-1',
@@ -633,6 +868,7 @@ describe('playable task API', () => {
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html: '<script>window.__PLAYABLE__={}</script>',
       assetManifest: {
+        ...createAssetSourceManifest(confirmation, []),
         assets: [
           {
             id: 'asset-1',
@@ -645,7 +881,7 @@ describe('playable task API', () => {
         ],
         entrypoint: 'playable.html',
       },
-      validation: { behavior: 'passed', bytes: 42 },
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
     })
 
     await runConfirmedBuild({
@@ -668,6 +904,40 @@ describe('playable task API', () => {
     expect(manifest).toContain('user-assets/audio/asset-1-sound.mp3')
     expect(manifest).not.toContain(storageKey)
     expect(manifest).not.toContain('sk-test-secret')
+  })
+
+  it('generates AI-selected media only inside the confirmed build and passes it to the agent', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = {
+      ...confirmation,
+      resources: {
+        ...confirmation.resources,
+        tileFaces: { status: '待生成', treatment: '生成农场动物牌面' },
+      },
+    }
+    const generatedAsset = {
+      id: 'generated-1',
+      slot: 'tileFaces' as const,
+      filename: 'tileFaces-ai.png',
+      mimeType: 'image/png',
+      size: 3,
+      bytes: new Uint8Array([7, 8, 9]),
+    }
+    const mediaGenerator = vi.fn(async () => [generatedAsset])
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'generated-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+      mediaGenerator,
+    })
+
+    expect(mediaGenerator).toHaveBeenCalledOnce()
+    expect(harness.agent.build).toHaveBeenCalledWith(expect.objectContaining({ assets: [generatedAsset] }))
   })
 
   it('marks a failed build without replacing the last published artifact', async () => {
@@ -699,7 +969,7 @@ describe('playable task API', () => {
     task.confirmation = confirmation
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html: '<script>window.__PLAYABLE__="sk-test-secret"</script>',
-      validation: { behavior: 'passed', bytes: 52 },
+      validation: createValidationReport({ bytes: 52, offlineResources: true, responsiveViewport: true }),
     })
 
     await runConfirmedBuild({
@@ -724,7 +994,7 @@ describe('playable task API', () => {
       '<style>.x{mask-image:none;-webkit-mask-size:cover}</style><script>window.__PLAYABLE__={name:"sk-chase",url:"https://example.com/task-1234"}</script>'
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html,
-      validation: { behavior: 'passed', bytes: html.length },
+      validation: createValidationReport({ bytes: html.length, offlineResources: true, responsiveViewport: true }),
     })
 
     await runConfirmedBuild({
@@ -736,7 +1006,7 @@ describe('playable task API', () => {
       artifactStore: harness.artifactStore,
     })
 
-    expect(task.phase).toBe('ready')
+    expect(task.phase).toBe('reviewing')
     expect(new TextDecoder().decode(harness.artifacts.get('users/user-1/tasks/owned/safe-build/playable.html'))).toBe(
       html,
     )
@@ -749,7 +1019,7 @@ describe('playable task API', () => {
     const otherSecret = 'sk-1234567890abcdefghijklmnop'
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html: `<script>window.__PLAYABLE__={secret:"${otherSecret}"}</script>`,
-      validation: { behavior: 'passed', bytes: 72 },
+      validation: createValidationReport({ bytes: 72, offlineResources: true, responsiveViewport: true }),
     })
 
     await runConfirmedBuild({
@@ -879,6 +1149,51 @@ describe('playable task API', () => {
     )
     expect(await download.text()).toBe('<html>safe</html>')
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
+  })
+
+  it('requires human approval before downloads and exposes the complete delivery set after approval', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'reviewing'
+    task.confirmation = confirmation
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build/playable.html'
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>preview</html>'))
+    harness.artifacts.set(
+      'users/user-1/tasks/owned/build/production-config.json',
+      new TextEncoder().encode('{"core":{}}'),
+    )
+
+    const blocked = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&download=1'),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(blocked.status).toBe(409)
+
+    const accepted = await harness.handlers.review(
+      request('/api/playable-tasks/owned/review', 'POST', { action: 'accept' }),
+      {
+        params: Promise.resolve({ taskId: 'owned' }),
+      },
+    )
+    expect(accepted.status).toBe(200)
+    expect(task.phase).toBe('ready')
+
+    const config = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=config&download=1'),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(config.status).toBe(200)
+    expect(config.headers.get('content-disposition')).toBe('attachment; filename="production-config.json"')
+    expect(await config.text()).toBe('{"core":{}}')
+
+    const reopened = await harness.handlers.review(
+      request('/api/playable-tasks/owned/review', 'POST', { action: 'revise' }),
+      {
+        params: Promise.resolve({ taskId: 'owned' }),
+      },
+    )
+    expect(reopened.status).toBe(200)
+    expect(task.phase).toBe('awaiting_confirmation')
+    expect(task.latestArtifactKey).toBe('users/user-1/tasks/owned/build/playable.html')
   })
 
   it.each(['failed', 'validating'] as const)(

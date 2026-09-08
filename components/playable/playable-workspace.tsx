@@ -13,6 +13,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiKeyDialog } from './api-key-dialog'
 import { ChatWorkspace } from './chat-workspace'
+import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
 
 interface PlayableWorkspaceProps {
@@ -25,6 +26,7 @@ interface PlayableWorkspaceProps {
   initialArtifactVersion?: string | null
   localDemo?: boolean
   localCodex?: boolean
+  initialConversation?: ConversationMessage[]
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -32,9 +34,11 @@ const phaseRank: Record<PlayableTaskPhase, number> = {
   awaiting_confirmation: 1,
   building: 2,
   validating: 3,
-  ready: 4,
-  failed: 4,
-  cancelled: 4,
+  reviewing: 4,
+  ready: 5,
+  needs_plugin: 5,
+  failed: 5,
+  cancelled: 5,
 }
 
 export function PlayableWorkspace({
@@ -47,6 +51,7 @@ export function PlayableWorkspace({
   initialArtifactVersion = null,
   localDemo = false,
   localCodex = false,
+  initialConversation = [],
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
@@ -77,7 +82,7 @@ export function PlayableWorkspace({
   }, [initialApiKeyConfigured])
 
   useEffect(() => {
-    if (['ready', 'failed', 'cancelled'].includes(phase)) return
+    if (['reviewing', 'ready', 'needs_plugin', 'failed', 'cancelled'].includes(phase)) return
     let active = true
     const poll = async () => {
       try {
@@ -121,8 +126,15 @@ export function PlayableWorkspace({
           </span>
           Playable Studio
         </Link>
-        {localDemo || localCodex ? (
-          <Badge variant="secondary">{localCodex ? '本地 Codex · 实际数据' : '本地演示 · 数据不保存'}</Badge>
+        {localDemo ? (
+          <Badge variant="secondary">本地演示 · 数据不保存</Badge>
+        ) : localCodex ? (
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">本地 Codex · 实际数据</Badge>
+            <Button variant="outline" size="sm" onClick={requireApiKey}>
+              媒体 API Key
+            </Button>
+          </div>
         ) : (
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={requireApiKey}>
@@ -141,11 +153,18 @@ export function PlayableWorkspace({
           onProposal={setProposal}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
-          autoSubmitInitialPrompt={localCodex && apiKeyConfigured === true}
+          autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
+          initialConversation={initialConversation}
         />
-        <PlayablePreview taskId={taskId} phase={phase} hasArtifact={hasArtifact} artifactVersion={artifactVersion} />
+        <PlayablePreview
+          taskId={taskId}
+          phase={phase}
+          hasArtifact={hasArtifact}
+          artifactVersion={artifactVersion}
+          onPhase={setPhase}
+        />
       </div>
-      {!localDemo && !localCodex && (
+      {!localDemo && (
         <ApiKeyDialog
           open={keyDialogOpen}
           onOpenChange={setKeyDialogOpen}
@@ -179,7 +198,9 @@ const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
   awaiting_confirmation: '等待确认',
   building: '构建中',
   validating: '验证中',
-  ready: '可预览',
+  reviewing: '等待验收',
+  ready: '已交付',
+  needs_plugin: '需要新增 Plugin',
   failed: '构建失败',
 }
 

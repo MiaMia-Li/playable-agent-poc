@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -19,6 +19,7 @@ vi.mock('@/lib/session/get-server-session', () => ({ getServerSession: mocks.get
 vi.mock('@/components/task-sidebar', () => ({ TaskSidebar: () => null }))
 
 import TasksListPage from '@/app/tasks/page'
+import TaskLoading from '@/app/tasks/[taskId]/loading'
 import { AppLayout } from '@/components/app-layout'
 
 afterEach(() => {
@@ -42,5 +43,24 @@ describe('playable page boundaries', () => {
     )
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/connectors'))
     expect(fetchMock.mock.calls.some(([url]) => url === '/api/tasks')).toBe(false)
+  })
+
+  it('shows a Playable Studio loading shell without legacy coding-agent actions', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ connectors: [] })),
+    )
+
+    render(
+      <AppLayout initialSidebarOpen={false} initialIsMobile>
+        <TaskLoading />
+      </AppLayout>,
+    )
+
+    expect(screen.getByRole('link', { name: '试玩工作台首页' })).toHaveTextContent('Playable Studio')
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载试玩…')
+    expect(screen.queryByText('Deploy Your Own')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sign in')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading task...')).not.toBeInTheDocument()
   })
 })

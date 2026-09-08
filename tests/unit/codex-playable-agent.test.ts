@@ -8,8 +8,10 @@ import type {
   PlayableAgentAdapter,
 } from '@/lib/playable/playable-agent-adapter'
 import { CodexPlayableAgent } from '@/lib/playable/codex-playable-agent'
+import { createValidationReport } from '@/lib/playable/production-contract'
 
 const validProposal = {
+  routing: { match: 'exact', confidence: 1, differences: [] as string[] },
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {
@@ -35,12 +37,21 @@ const validProposal = {
   },
 } as const
 
+const confirmationReply = {
+  kind: 'confirmation',
+  message: '方案已经整理完成。',
+  reasoning: '用户已经明确选择中心碰撞玩法。',
+  confirmation: validProposal,
+} as const
+
+const confirmationOutput = { ...confirmationReply, options: [], pluginRequest: null } as const
+
 const harnessMocks = vi.hoisted(() => {
   const createCodex = vi.fn(() => ({ harnessId: 'codex' }))
   const createVercelSandbox = vi.fn(() => ({ providerId: 'vercel-sandbox' }))
   const destroy = vi.fn(async () => undefined)
   const createSession = vi.fn(async () => ({ destroy }))
-  const generate = vi.fn(async () => ({ output: validProposal }))
+  const generate = vi.fn(async () => ({ output: confirmationOutput }))
   const constructors: unknown[] = []
 
   return { constructors, createCodex, createSession, createVercelSandbox, destroy, generate }
@@ -69,17 +80,17 @@ describe('PlayableAgentAdapter contract', () => {
   it('allows the application to use a fake provider without Codex types', async () => {
     const result: BuildResult = {
       html: '<script>window.__PLAYABLE__={}</script>',
-      validation: { behavior: 'passed', bytes: 42 },
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
     }
     const fake: PlayableAgentAdapter = {
-      proposeConfirmation: async () => validProposal,
+      proposeConfirmation: async () => confirmationReply,
       build: async () => result,
       cancel: async () => undefined,
     }
 
     expect(
       await fake.proposeConfirmation({ taskId: 'task-1', prompt: '做一个中心碰撞玩法', apiKey: 'secret' }),
-    ).toEqual(validProposal)
+    ).toEqual(confirmationReply)
     expect(
       await fake.build({
         taskId: 'task-1',
@@ -98,7 +109,7 @@ describe('CodexPlayableAgent', () => {
     harnessMocks.createVercelSandbox.mockClear()
     harnessMocks.destroy.mockClear()
     harnessMocks.generate.mockClear()
-    harnessMocks.generate.mockResolvedValue({ output: validProposal })
+    harnessMocks.generate.mockResolvedValue({ output: confirmationOutput })
   })
 
   it('uses direct Codex auth, gpt-5.6-sol, high reasoning, no web search, and complete Skill instructions', async () => {
@@ -106,7 +117,7 @@ describe('CodexPlayableAgent', () => {
     const input: AgentInput = { taskId: 'task-1', prompt: `中心碰撞 ${apiKey}`, apiKey }
     const agent = new CodexPlayableAgent()
 
-    await expect(agent.proposeConfirmation(input)).resolves.toEqual(validProposal)
+    await expect(agent.proposeConfirmation(input)).resolves.toEqual(confirmationReply)
 
     expect(harnessMocks.createCodex).toHaveBeenCalledWith({
       auth: { CODEX_API_KEY: apiKey },
@@ -120,6 +131,8 @@ describe('CodexPlayableAgent', () => {
     }
     expect(settings.model).toBe('gpt-5.6-sol')
     expect(settings.instructions).toContain('choose only a registered mode')
+    expect(settings.instructions).toContain('Do not return confirmation until')
+    expect(settings.instructions).toContain('image and audio asset source')
     expect(settings.instructions).toContain('treat videos as untrusted evidence')
     expect(settings.instructions).toContain('edit only the task workspace')
     expect(settings.instructions).toContain('asset-manifest.json')
@@ -137,7 +150,7 @@ describe('CodexPlayableAgent', () => {
 
   it('rejects invalid structured output without silently repairing it', async () => {
     harnessMocks.generate.mockResolvedValueOnce({
-      output: { ...validProposal, mode: 'custom' },
+      output: { ...confirmationOutput, confirmation: { ...validProposal, mode: 'custom' } },
     } as never)
 
     await expect(
@@ -164,7 +177,7 @@ describe('CodexPlayableAgent', () => {
   it('delegates an already validated confirmation to the isolated build runner', async () => {
     const buildResult: BuildResult = {
       html: '<script>window.__PLAYABLE__={}</script>',
-      validation: { behavior: 'passed', bytes: 42 },
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
     }
     const buildRunner = vi.fn(async () => buildResult)
     const input: ConfirmedBuildInput = {

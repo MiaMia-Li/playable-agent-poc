@@ -31,10 +31,12 @@ const authenticate = localDemo
 export const playableTaskHandlers = createPlayableTaskHandlers({
   authenticate,
   readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : readOpenAIKeyCookie,
+  readMediaApiKey: localCodex ? readOpenAIKeyCookie : undefined,
   repository: playableTaskRepository,
   agent: playableAgent,
   artifactStore: playableArtifactStore,
   schedule: localDemo ? (work) => void work().catch(() => undefined) : (work) => after(work),
+  mediaGenerator: localDemo ? localDemoRuntime.mediaGenerator : undefined,
   generateId,
 })
 

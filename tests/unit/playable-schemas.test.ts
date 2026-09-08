@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { confirmationProposalSchema, playableTaskPhases } from '@/lib/playable/schemas'
+import {
+  confirmationProposalSchema,
+  parsePlayableAgentOutput,
+  playableAgentReplySchema,
+  playableTaskPhases,
+} from '@/lib/playable/schemas'
 
 const validProposal = {
+  routing: { match: 'approximate', confidence: 0.84, differences: ['奖励表现使用模板默认效果'] },
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {
@@ -33,7 +39,7 @@ describe('confirmation proposal schema', () => {
 
     expect(parsed).toEqual(validProposal)
     expect(parsed.storeUrl).toBe(validProposal.storeUrl)
-    expect(Object.keys(parsed)).toEqual(['mode', 'gameplay', 'resources', 'copy', 'storeUrl', 'delivery'])
+    expect(Object.keys(parsed)).toEqual(['routing', 'mode', 'gameplay', 'resources', 'copy', 'storeUrl', 'delivery'])
     expect(Object.keys(parsed.resources)).toEqual([
       'tileFaces',
       'backgroundBoard',
@@ -41,6 +47,17 @@ describe('confirmation proposal schema', () => {
       'audio',
       'endCard',
     ])
+  })
+
+  it('upgrades persisted pre-Plugin confirmations with an exact routing default', () => {
+    const { routing: _routing, ...legacyProposal } = validProposal
+    void _routing
+
+    expect(confirmationProposalSchema.parse(legacyProposal).routing).toEqual({
+      match: 'exact',
+      confidence: 1,
+      differences: [],
+    })
   })
 
   it.each(['center_collision', 'top_rack', 'gravity_fill', 'perspective_3d'] as const)(
@@ -136,6 +153,51 @@ describe('confirmation proposal schema', () => {
   )
 })
 
+describe('playable agent reply schema', () => {
+  it('accepts a clarification with user-selectable actions', () => {
+    const reply = {
+      kind: 'clarification',
+      message: '你希望使用哪一种核心玩法？',
+      reasoning: '目前只知道农场主题，还没有足够信息确定消除机制。',
+      options: [
+        { id: 'center_collision', label: '中心碰撞', description: '配对后向中心碰撞消除', value: '选择中心碰撞玩法' },
+        { id: 'top_rack', label: '上方牌架', description: '选牌进入牌架后配对', value: '选择上方牌架玩法' },
+      ],
+    } as const
+
+    expect(playableAgentReplySchema.parse(reply)).toEqual(reply)
+  })
+
+  it('accepts a confirmation with a visible assistant summary', () => {
+    const reply = {
+      kind: 'confirmation',
+      message: '方案已经整理完成，你还可以调整素材来源。',
+      reasoning: '用户已经明确选择中心碰撞玩法。',
+      confirmation: validProposal,
+    } as const
+
+    expect(playableAgentReplySchema.parse(reply)).toEqual(reply)
+  })
+
+  it('returns a structured Plugin request when the state machine is unsupported', () => {
+    expect(
+      parsePlayableAgentOutput({
+        kind: 'plugin_request',
+        message: '需要新增 Plugin。',
+        reasoning: '核心状态机不受支持。',
+        options: [],
+        confirmation: null,
+        pluginRequest: {
+          summary: '跑酷玩法',
+          reason: '不是配对消除状态机',
+          requiredStateMachine: ['移动', '障碍碰撞', '失败重开'],
+          source: 'text-description',
+        },
+      }),
+    ).toMatchObject({ kind: 'plugin_request', pluginRequest: { summary: '跑酷玩法' } })
+  })
+})
+
 describe('playable task phases', () => {
   it('publishes the complete lifecycle in order', () => {
     expect(playableTaskPhases).toEqual([
@@ -143,7 +205,9 @@ describe('playable task phases', () => {
       'awaiting_confirmation',
       'building',
       'validating',
+      'reviewing',
       'ready',
+      'needs_plugin',
       'failed',
       'cancelled',
     ])

@@ -17,6 +17,21 @@ const mime = file => ({
   ".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".mp3": "audio/mpeg"
 }[path.extname(file).toLowerCase()] || "application/octet-stream");
 const dataUrl = async file => `data:${mime(file)};base64,${(await readFile(file)).toString("base64")}`;
+const readJson = async file => JSON.parse(await readFile(file, "utf8"));
+const optionalJson = async file => {
+  try { return await readJson(file); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+};
+const htmlText = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+const workspaceRoot = process.cwd();
+const confirmed = await optionalJson(path.join(workspaceRoot, "confirmed-config.json"));
+const assetManifest = await optionalJson(path.join(workspaceRoot, "asset-manifest.json"));
+const manifestAsset = (slot, prefix) => assetManifest?.assets?.find(asset => asset.slot === slot && asset.mimeType?.startsWith(prefix));
+const manifestDataUrl = async asset => {
+  if (!asset) return null;
+  const absolute = path.resolve(workspaceRoot, asset.workspacePath);
+  if (!absolute.startsWith(`${workspaceRoot}${path.sep}`)) throw new Error("asset path leaves workspace");
+  return `data:${asset.mimeType};base64,${(await readFile(absolute)).toString("base64")}`;
+};
 
 const tileNames = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "眼睛", "蛇", "月亮", "火", "灯", "房子"];
 const tiles = {};
@@ -38,12 +53,28 @@ const assets = {
     button: await dataUrl(path.join(endRoot, "cta-button.webp"))
   }
 };
-const config = JSON.parse(await readFile(path.join(templateRoot, "config.json"), "utf8"));
-config.storeUrl = storeUrl;
+const tileAsset = await manifestDataUrl(manifestAsset("tileFaces", "image/"));
+if (tileAsset) for (const name of tileNames) assets.tiles[name] = tileAsset;
+const backgroundAsset = await manifestDataUrl(manifestAsset("backgroundBoard", "image/"));
+if (backgroundAsset) assets.background = backgroundAsset;
+const audioAsset = await manifestDataUrl(manifestAsset("audio", "audio/"));
+if (audioAsset) assets.audio.bgm = audioAsset;
+const endCardAsset = await manifestDataUrl(manifestAsset("endCard", "image/"));
+if (endCardAsset) assets.endcard.background = endCardAsset;
+
+const config = await readJson(path.join(templateRoot, "config.json"));
+config.storeUrl = confirmed?.storeUrl || storeUrl;
 config.tileKeys = Object.keys(tiles);
+config.copy = confirmed?.copy || null;
 
 let html = await readFile(path.join(root, "src", "playable.template.html"), "utf8");
-html = html.replace("__ASSETS__", JSON.stringify(assets)).replace("__CONFIG__", JSON.stringify(config));
+html = html
+  .replace("__ASSETS__", JSON.stringify(assets))
+  .replace("__CONFIG__", JSON.stringify(config))
+  .replaceAll("__DOCUMENT_LANG__", htmlText(confirmed?.copy?.locale || "zh-CN"))
+  .replaceAll("__PLAYABLE_TITLE__", htmlText(confirmed?.copy?.title || "Mahjong Match Playable"))
+  .replaceAll("__CTA_TEXT__", htmlText(confirmed?.copy?.cta || "立即试玩"))
+  .replaceAll("__DISCLAIMER_TEXT__", htmlText(confirmed?.copy?.disclaimer || ""));
 await mkdir(path.dirname(output), { recursive: true });
 await writeFile(output, html);
 const bytes = (await stat(output)).size;

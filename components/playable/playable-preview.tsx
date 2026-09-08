@@ -1,9 +1,20 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
+import {
+  CheckCircle2,
+  Download,
+  FileJson2,
+  Monitor,
+  RefreshCw,
+  RotateCcw,
+  Smartphone,
+  Volume2,
+  VolumeX,
+} from 'lucide-react'
 import type { PlayableTaskPhase } from '@/lib/playable/schemas'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 
 interface PlayablePreviewProps {
@@ -11,6 +22,7 @@ interface PlayablePreviewProps {
   phase: PlayableTaskPhase
   hasArtifact?: boolean
   artifactVersion?: string | null
+  onPhase?: (phase: PlayableTaskPhase) => void
 }
 
 export function PlayablePreview({
@@ -18,14 +30,17 @@ export function PlayablePreview({
   phase,
   hasArtifact = phase === 'ready',
   artifactVersion = null,
+  onPhase,
 }: PlayablePreviewProps) {
   const authenticatedArtifactUrl = useMemo(
     () => `/api/playable-tasks/${encodeURIComponent(taskId)}/artifact?kind=playable`,
     [taskId],
   )
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait')
-  const [muted, setMuted] = useState(false)
+  const [muted, setMuted] = useState(true)
   const [manualVersion, setManualVersion] = useState(0)
+  const [reviewing, setReviewing] = useState(false)
+  const [reviewError, setReviewError] = useState('')
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const frameKey = `${artifactVersion ?? 'existing'}:${manualVersion}`
 
@@ -35,6 +50,32 @@ export function PlayablePreview({
   useEffect(() => postMute(muted), [muted, frameKey])
 
   const size = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
+
+  async function submitReview(action: 'accept' | 'revise') {
+    if (reviewing) return
+    setReviewing(true)
+    setReviewError('')
+    try {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      if (!response.ok) throw new Error('无法更新验收状态')
+      onPhase?.(action === 'accept' ? 'ready' : 'awaiting_confirmation')
+    } catch (cause) {
+      setReviewError(cause instanceof Error ? cause.message : '无法更新验收状态')
+    } finally {
+      setReviewing(false)
+    }
+  }
+
+  const downloads = [
+    ['playable', '单文件 HTML'],
+    ['config', '完整生产配置'],
+    ['manifest', '素材来源清单'],
+    ['validation', '自检报告'],
+  ] as const
   return (
     <section aria-label="Preview" className="bg-muted/30 flex min-h-[32rem] flex-col overflow-hidden lg:min-h-0">
       <header className="bg-background flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
@@ -42,14 +83,16 @@ export function PlayablePreview({
           <h2 className="font-semibold">Preview</h2>
           <p className="text-muted-foreground text-xs">
             {phase === 'ready'
-              ? '已连接安全预览'
-              : phase === 'failed'
-                ? hasArtifact
-                  ? '本次构建失败，保留上次成功版本'
-                  : '构建失败'
-                : hasArtifact
-                  ? '正在构建新版本，显示上次成功版本'
-                  : '构建完成后自动显示'}
+              ? '已通过人工验收，可下载交付物'
+              : phase === 'reviewing'
+                ? '自动门禁已通过，请完成人工验收'
+                : phase === 'failed'
+                  ? hasArtifact
+                    ? '本次构建失败，保留上次成功版本'
+                    : '构建失败'
+                  : hasArtifact
+                    ? '正在构建新版本，显示上次成功版本'
+                    : '构建完成后自动显示'}
           </p>
         </div>
         <div className="flex items-center gap-1" role="group" aria-label="预览控制">
@@ -90,12 +133,24 @@ export function PlayablePreview({
           >
             {muted ? <VolumeX /> : <Volume2 />}
           </Button>
-          {hasArtifact ? (
-            <Button asChild size="icon" variant="ghost">
-              <a aria-label="下载试玩" href={`${authenticatedArtifactUrl}&download=1`} download="playable.html">
-                <Download />
-              </a>
-            </Button>
+          {hasArtifact && phase === 'ready' ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" aria-label="下载交付物">
+                  <Download />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {downloads.map(([kind, label]) => (
+                  <DropdownMenuItem key={kind} asChild>
+                    <a href={`${authenticatedArtifactUrl.replace('kind=playable', `kind=${kind}`)}&download=1`}>
+                      <FileJson2 aria-hidden="true" />
+                      {label}
+                    </a>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : (
             <Button size="icon" variant="ghost" aria-label="下载试玩" disabled>
               <Download />
@@ -103,6 +158,32 @@ export function PlayablePreview({
           )}
         </div>
       </header>
+      {((hasArtifact && ['reviewing', 'ready'].includes(phase)) || phase === 'failed') && (
+        <div className="bg-background flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+          <p className="text-muted-foreground text-xs">
+            {phase === 'reviewing'
+              ? '请检查视觉质感、节奏、易理解性和品牌一致性。'
+              : '可以保留当前成功版本并继续调整方案。'}
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
+              <RotateCcw aria-hidden="true" />
+              返回修改
+            </Button>
+            {phase === 'reviewing' && (
+              <Button size="sm" disabled={reviewing} onClick={() => void submitReview('accept')}>
+                <CheckCircle2 aria-hidden="true" />
+                验收通过
+              </Button>
+            )}
+          </div>
+          {reviewError && (
+            <p className="text-destructive basis-full text-xs" role="alert">
+              {reviewError}
+            </p>
+          )}
+        </div>
+      )}
       <div className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6">
         <div
           className={cn(
