@@ -1,5 +1,6 @@
 import type { ConfirmationProposal, PlayableAgentReply } from './schemas'
-import type { PlayableAssetSlot, SafePlayableAsset } from './task-assets'
+import type { PlayableResourceAssetSlot } from './asset-policy'
+import type { SafePlayableAsset } from './task-assets'
 
 export interface AgentConversationTurn {
   role: 'user' | 'assistant'
@@ -8,7 +9,7 @@ export interface AgentConversationTurn {
 
 export interface PlayableBuildAsset {
   id: string
-  slot: PlayableAssetSlot
+  slot: PlayableResourceAssetSlot
   filename: string
   mimeType: string
   size: number
@@ -22,8 +23,8 @@ export interface PlayableAssetManifest {
     runtimeVersion: string
   }
   sources: Array<{
-    slot: PlayableAssetSlot
-    status: ConfirmationProposal['resources'][PlayableAssetSlot]['status']
+    slot: PlayableResourceAssetSlot
+    status: ConfirmationProposal['resources'][PlayableResourceAssetSlot]['status']
     treatment: string
     origin: string
     files: string[]

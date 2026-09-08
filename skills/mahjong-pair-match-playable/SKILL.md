@@ -1,6 +1,6 @@
 ---
 name: mahjong-pair-match-playable
-description: "Build and package single-file tile-matching playable ads from four reusable Mahjong modes. Route unsupported core state machines into a new Plugin request instead of generating one-off code."
+description: 'Build and package single-file playable ads. Use four reusable Mahjong modes when they match, and let the model generate directly when no template can express the requested core gameplay.'
 ---
 
 # Mahjong Pair-Match Playable
@@ -15,12 +15,12 @@ This Skill is the Agent instruction layer inside the versioned `mahjong-pair-mat
 
 If the user has not already chosen or described a mechanic, the first question must be: **选择哪一种玩法，或者描述你想参考的玩法？** Offer these routes:
 
-| Mode | User-facing name | Core behavior |
-| --- | --- | --- |
-| `center_collision` | 中心碰撞 | Two matching tiles converge at center, collide, fracture, and disappear. |
-| `top_rack` | 上方牌架 | Any visible tile enters an initially empty four-slot rack; matching rack tiles break and clear. |
-| `gravity_fill` | 下落补位 | Matching grid tiles disappear; affected columns fall and refill from above. |
-| `perspective_3d` | 3D纵深 | Select matching top faces from a deep tile wall; excavated positions reveal an untinted lower layer. |
+| Mode               | User-facing name | Core behavior                                                                                        |
+| ------------------ | ---------------- | ---------------------------------------------------------------------------------------------------- |
+| `center_collision` | 中心碰撞         | Two matching tiles converge at center, collide, fracture, and disappear.                             |
+| `top_rack`         | 上方牌架         | Any visible tile enters an initially empty four-slot rack; matching rack tiles break and clear.      |
+| `gravity_fill`     | 下落补位         | Matching grid tiles disappear; affected columns fall and refill from above.                          |
+| `perspective_3d`   | 3D纵深           | Select matching top faces from a deep tile wall; excavated positions reveal an untinted lower layer. |
 
 When the user already names an included mode, do not ask again. Load only that mode's reference:
 
@@ -29,21 +29,26 @@ When the user already names an included mode, do not ask again. Load only that m
 - `gravity_fill`: read [references/modes/gravity_fill.md](references/modes/gravity_fill.md)
 - `perspective_3d`: read [references/modes/perspective_3d.md](references/modes/perspective_3d.md)
 
-Classify a supported request as an exact or approximate match and report confidence plus every known difference. When the win/loss rules, core state machine, or input model cannot be expressed by an included mode, return a structured new Plugin requirement. Never force it into an included mode or generate one-off code.
+Classify every request as `exact`, `approximate`, or `freeform` and report confidence plus every known difference:
+
+- `exact`: operation, state machine, and ending are fully expressed by an included mode.
+- `approximate`: the core state machine matches, but camera, 3D depth, animation, Boss wrapper, or reward presentation differs. List the differences for user confirmation.
+- `freeform`: the core input model, state machine, or win/loss rules cannot be expressed by an included mode. Use the closest mode only as a workspace scaffold, then let the build model implement the confirmed gameplay directly. Do not create a new Plugin request.
 
 ## 2. One consolidated confirmation
 
-After the gameplay route is known, read [references/configuration-checklist.md](references/configuration-checklist.md). Inspect any user-supplied files, then present one consolidated confirmation table covering gameplay, every visual/audio asset, end card, copy, store destination, and technical delivery.
+After the gameplay route is known, read [references/configuration-checklist.md](references/configuration-checklist.md). Inspect production files made available inside the build workspace, then present one consolidated confirmation table covering gameplay, every visual/audio asset, end card, copy, store destination, and technical delivery.
 
-- Label each resource as `用户上传`, `内置默认`, `待上传`, or `待生成` and show the exact file or proposed treatment.
+- Label each resource as `用户上传`, `内置默认`, or `待上传` and show the exact file or proposed treatment.
 - When no assets are supplied, propose bundled defaults rather than asking a chain of asset questions. Tell the user they may upload replacements before confirming.
-- When AI generation is requested, include the exact prompt, dimensions, transparency, style, and quantity in this same confirmation. Do not generate before approval.
+- AI media generation is disabled in the current POC. Keep its UI action disabled, never return `待生成`, and offer bundled defaults or local upload instead.
+- Homepage and confirmation-stage `referenceImage`/`referenceVideo` attachments are metadata-only context in the current POC. Acknowledge their filenames when useful, but never claim to have inspected their contents and never treat them as production assets.
 - For an included mode, keep its encoded gameplay defaults unless the user overrides them.
 - Ask the user to approve or amend the whole table once. Do not start implementation before that approval. Do not reintroduce the old eight-stage confirmation sequence.
 
 ## 3. Generate after approval
 
-For an included mode, use the chosen template immediately after the consolidated confirmation is approved.
+For `exact` and `approximate` routes, use the chosen template immediately after the consolidated confirmation is approved. For `freeform`, create the requested implementation directly in `output.html`; do not run the registered template build command.
 
 Default direct-generation behavior:
 
@@ -57,6 +62,8 @@ Default direct-generation behavior:
 
 4. Use supplied campaign assets when available. Fill optional gaps with bundled defaults. Before generating any new image, still confirm its prompt, dimensions, transparency, style, and quantity.
 5. Report placeholder branding or store URLs clearly. External publishing, uploads, and store navigation require their own authorization.
+
+For a `freeform` route, the output must still be one offline responsive Canvas HTML under 5 MiB, start muted, keep the first interaction inside gameplay, support the `playable:set-muted` parent-message contract, and expose `window.__PLAYABLE__`. Run `node assets/starter/work/test-freeform-playable.mjs output.html` before returning the artifact.
 
 ## Shared technical contract
 

@@ -153,6 +153,7 @@ export async function runPlayableBuild(
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
+  const freeform = confirmation.routing.match === 'freeform'
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
 
   dependencies.abortSignal?.throwIfAborted()
@@ -235,7 +236,7 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else {
+    } else if (!freeform) {
       await dependencies.logger?.info('Building playable artifact')
       await requireSuccessfulCommand(
         sandbox,
@@ -256,7 +257,9 @@ export async function runPlayableBuild(
     await requireSuccessfulCommand(
       sandbox,
       {
-        command: MAHJONG_PLAYABLE_PLUGIN.commands.validate,
+        command: freeform
+          ? MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform
+          : MAHJONG_PLAYABLE_PLUGIN.commands.validate,
         workingDirectory: workspace,
         abortSignal: dependencies.abortSignal,
       },

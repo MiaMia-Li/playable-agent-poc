@@ -1,9 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Loader2, Plus, Sparkles } from 'lucide-react'
+import { ArrowRight, FileImage, FileVideo, Loader2, Paperclip, Plus, Sparkles, X } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
 import type { ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
 import { User } from '@/components/auth/user'
@@ -15,6 +15,13 @@ import { ApiKeyDialog } from './api-key-dialog'
 import { ChatWorkspace } from './chat-workspace'
 import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
+import {
+  MAX_ASSET_BYTES,
+  MAX_HOME_ATTACHMENTS,
+  PLAYABLE_REFERENCE_ACCEPT,
+  referenceSlotForMimeType,
+} from '@/lib/playable/asset-policy'
+import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 
 interface PlayableWorkspaceProps {
   taskId: string
@@ -27,6 +34,7 @@ interface PlayableWorkspaceProps {
   localDemo?: boolean
   localCodex?: boolean
   initialConversation?: ConversationMessage[]
+  initialAssets?: SafePlayableAsset[]
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -52,6 +60,7 @@ export function PlayableWorkspace({
   localDemo = false,
   localCodex = false,
   initialConversation = [],
+  initialAssets = [],
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
@@ -155,6 +164,7 @@ export function PlayableWorkspace({
           onRequireApiKey={requireApiKey}
           autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
           initialConversation={initialConversation}
+          initialAssets={initialAssets}
         />
         <PlayablePreview
           taskId={taskId}
@@ -206,7 +216,9 @@ const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
 
 export function PlayableHome({ user, authProvider, localDemo = false, localCodex = false }: PlayableHomeProps) {
   const router = useRouter()
+  const attachmentInput = useRef<HTMLInputElement>(null)
   const [prompt, setPrompt] = useState('')
+  const [attachments, setAttachments] = useState<File[]>([])
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
   const [loading, setLoading] = useState(Boolean(user))
   const [creating, setCreating] = useState(false)
@@ -225,8 +237,8 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
   }, [user])
 
   async function createPlayable() {
-    const content = prompt.trim()
-    if (!content || creating) return
+    const content = prompt.trim() || '请根据上传的参考素材制作试玩'
+    if ((!prompt.trim() && attachments.length === 0) || creating) return
     setCreating(true)
     setError('')
     try {
@@ -237,11 +249,40 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
       })
       if (!response.ok) throw new Error(response.status === 401 ? '请先登录' : '创建试玩失败')
       const body = (await response.json()) as { task: { id: string } }
+      for (const file of attachments) {
+        const slot = referenceSlotForMimeType(file.type)
+        if (!slot) throw new Error('参考素材格式不受支持')
+        const uploadBody = new FormData()
+        uploadBody.set('slot', slot)
+        uploadBody.set('file', file)
+        const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(body.task.id)}/assets`, {
+          method: 'POST',
+          body: uploadBody,
+        })
+        if (!uploadResponse.ok) throw new Error('参考素材上传失败')
+      }
       router.push(`/tasks/${body.task.id}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建试玩失败')
       setCreating(false)
     }
+  }
+
+  function addAttachments(files: FileList | null) {
+    if (!files) return
+    const accepted: File[] = []
+    for (const file of Array.from(files)) {
+      if (!referenceSlotForMimeType(file.type)) {
+        setError('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
+        continue
+      }
+      if (file.size <= 0 || file.size > MAX_ASSET_BYTES) {
+        setError('单个参考素材不能超过 4 MiB')
+        continue
+      }
+      accepted.push(file)
+    }
+    setAttachments((current) => [...current, ...accepted].slice(0, MAX_HOME_ATTACHMENTS))
   }
 
   return (
@@ -277,8 +318,62 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
               onChange={(event) => setPrompt(event.target.value)}
               disabled={!user || creating}
             />
-            <div className="flex justify-end">
-              <Button onClick={() => void createPlayable()} disabled={!user || !prompt.trim() || creating}>
+            {attachments.length > 0 && (
+              <ul className="mb-2 flex flex-wrap gap-2 px-1" aria-label="已选择的参考素材">
+                {attachments.map((file, index) => (
+                  <li
+                    key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                    className="bg-muted flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs"
+                  >
+                    {file.type.startsWith('video/') ? (
+                      <FileVideo className="size-3.5 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <FileImage className="size-3.5 shrink-0" aria-hidden="true" />
+                    )}
+                    <span className="max-w-44 truncate">{file.name}</span>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-5"
+                      aria-label={`移除参考素材 ${file.name}`}
+                      disabled={creating}
+                      onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    >
+                      <X aria-hidden="true" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
+                onClick={() => attachmentInput.current?.click()}
+              >
+                <Paperclip aria-hidden="true" />
+                添加图片/视频
+              </Button>
+              <input
+                ref={attachmentInput}
+                className="sr-only"
+                type="file"
+                multiple
+                accept={PLAYABLE_REFERENCE_ACCEPT}
+                aria-label="上传参考图片或视频"
+                disabled={!user || creating}
+                onChange={(event) => {
+                  addAttachments(event.target.files)
+                  event.target.value = ''
+                }}
+              />
+              <Button
+                onClick={() => void createPlayable()}
+                disabled={!user || (!prompt.trim() && attachments.length === 0) || creating}
+              >
                 {creating ? <Loader2 className="animate-spin" /> : <Plus />}
                 新建试玩
               </Button>

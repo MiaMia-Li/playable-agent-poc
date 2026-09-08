@@ -60,6 +60,15 @@ describe('confirmation proposal schema', () => {
     })
   })
 
+  it.each([
+    ['exact with differences', { match: 'exact', confidence: 1, differences: ['unexpected'] }, false],
+    ['approximate without differences', { match: 'approximate', confidence: 0.8, differences: [] }, false],
+    ['freeform without differences', { match: 'freeform', confidence: 0.1, differences: [] }, false],
+    ['freeform with a reason', { match: 'freeform', confidence: 0.1, differences: ['状态机不受支持'] }, true],
+  ] as const)('validates routing details for %s', (_case, routing, expected) => {
+    expect(confirmationProposalSchema.safeParse({ ...validProposal, routing }).success).toBe(expected)
+  })
+
   it.each(['center_collision', 'top_rack', 'gravity_fill', 'perspective_3d'] as const)(
     'accepts approved mode %s',
     (mode) => {
@@ -179,22 +188,24 @@ describe('playable agent reply schema', () => {
     expect(playableAgentReplySchema.parse(reply)).toEqual(reply)
   })
 
-  it('returns a structured Plugin request when the state machine is unsupported', () => {
+  it('returns a freeform confirmation when the state machine is unsupported', () => {
     expect(
       parsePlayableAgentOutput({
-        kind: 'plugin_request',
-        message: '需要新增 Plugin。',
-        reasoning: '核心状态机不受支持。',
+        kind: 'confirmation',
+        message: '将由大模型自由生成。',
+        reasoning: '核心状态机无法由现有模板表达。',
         options: [],
-        confirmation: null,
-        pluginRequest: {
-          summary: '跑酷玩法',
-          reason: '不是配对消除状态机',
-          requiredStateMachine: ['移动', '障碍碰撞', '失败重开'],
-          source: 'text-description',
+        confirmation: {
+          ...validProposal,
+          routing: {
+            match: 'freeform',
+            confidence: 0.1,
+            differences: ['持续移动和障碍碰撞不受现有模板支持'],
+          },
+          gameplay: '持续移动、躲避障碍并到达终点',
         },
       }),
-    ).toMatchObject({ kind: 'plugin_request', pluginRequest: { summary: '跑酷玩法' } })
+    ).toMatchObject({ kind: 'confirmation', confirmation: { routing: { match: 'freeform' } } })
   })
 })
 

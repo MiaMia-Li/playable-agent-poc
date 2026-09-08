@@ -1,11 +1,15 @@
 {
   "id": "mahjong-pair-match-playable",
   "name": "麻将配对试玩",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "runtimeVersion": "2",
   "skillRoot": "skills/mahjong-pair-match-playable",
   "modes": ["center_collision", "top_rack", "gravity_fill", "perspective_3d"],
   "assetSlots": ["tileFaces", "backgroundBoard", "animationEffects", "audio", "endCard"],
+  "capabilities": {
+    "localUpload": true,
+    "aiMediaGeneration": false
+  },
   "delivery": {
     "networks": ["applovin"],
     "entrypoint": "playable.html",
@@ -13,8 +17,9 @@
   },
   "commands": {
     "build": "node assets/starter/build-playable.mjs \"$PLAYABLE_MODE\" output.html \"$PLAYABLE_STORE_URL\"",
-    "validate": "node assets/starter/work/test-playable.mjs output.html"
+    "validate": "node assets/starter/work/test-playable.mjs output.html",
+    "validateFreeform": "node assets/starter/work/test-freeform-playable.mjs output.html"
   },
   "exploration": ["theme", "assets", "copy", "level", "pacing", "animation", "local-interaction"],
-  "requiresNewPlugin": ["win-or-loss-rules", "core-state-machine", "unsupported-input-model"]
+  "freeformFallback": ["win-or-loss-rules", "core-state-machine", "unsupported-input-model"]
 }

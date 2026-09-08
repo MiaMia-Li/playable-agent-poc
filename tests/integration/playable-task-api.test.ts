@@ -111,13 +111,6 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
-  async setNeedsPlugin(taskId: string, userId: string): Promise<boolean> {
-    const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
-    task.phase = 'needs_plugin'
-    return true
-  }
-
   async claimBuild(
     taskId: string,
     userId: string,
@@ -416,16 +409,19 @@ describe('playable task API', () => {
     expect(harness.repository.messages.map(({ role }) => role)).toEqual(['user', 'agent'])
   })
 
-  it('records unsupported state machines as new Plugin requests instead of forcing a build', async () => {
+  it('returns a confirmable freeform route for unsupported state machines', async () => {
     vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
-      kind: 'plugin_request',
-      message: '当前模板无法表达跑酷状态机，需要新增 Plugin。',
+      kind: 'confirmation',
+      message: '当前模板无法表达跑酷状态机，将由大模型自由生成。',
       reasoning: '核心输入和失败条件不属于麻将配对。',
-      pluginRequest: {
-        summary: '制作跑酷试玩',
-        reason: '核心状态机不匹配',
-        requiredStateMachine: ['持续移动', '障碍碰撞', '失败重开'],
-        source: 'text-description',
+      confirmation: {
+        ...confirmation,
+        routing: {
+          match: 'freeform',
+          confidence: 0.1,
+          differences: ['持续移动、障碍碰撞和失败重开不受现有模板支持'],
+        },
+        gameplay: '持续移动、躲避障碍并到达终点',
       },
     })
 
@@ -435,9 +431,13 @@ describe('playable task API', () => {
     )
     const body = await response.text()
 
-    expect(body).toContain('"type":"plugin_request"')
-    expect(harness.repository.tasks.get('owned')?.phase).toBe('needs_plugin')
-    expect(harness.repository.events.at(-1)).toMatchObject({ type: 'plugin_requested', phase: 'needs_plugin' })
+    expect(body).toContain('"type":"confirmation"')
+    expect(body).toContain('"match":"freeform"')
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('awaiting_confirmation')
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'confirmation_proposed',
+      phase: 'awaiting_confirmation',
+    })
     expect(harness.scheduled).toHaveLength(0)
   })
 
@@ -610,9 +610,8 @@ describe('playable task API', () => {
     expect(harness.scheduled).toHaveLength(0)
   })
 
-  it('requires a separate media API key only when the confirmed plan contains AI-generated media', async () => {
+  it('rejects AI-generated media while allowing bundled assets to build', async () => {
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
-    harness.setMediaApiKey(undefined)
     const generatedConfirmation: ConfirmationProposal = {
       ...confirmation,
       resources: {
@@ -626,7 +625,8 @@ describe('playable task API', () => {
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
 
-    expect(generatedResponse.status).toBe(428)
+    expect(generatedResponse.status).toBe(400)
+    await expect(generatedResponse.json()).resolves.toEqual({ error: 'AI media generation is not supported' })
     expect(harness.scheduled).toHaveLength(0)
 
     const bundledResponse = await harness.handlers.confirm(
@@ -864,7 +864,20 @@ describe('playable task API', () => {
       storageKey,
       createdAt: new Date(0),
     })
+    const referenceStorageKey = 'users/user-1/tasks/owned/assets/reference-1'
+    harness.repository.assets.push({
+      id: 'reference-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 3,
+      storageKey: referenceStorageKey,
+      createdAt: new Date(0),
+    })
     harness.artifacts.set(storageKey, new Uint8Array([1, 2, 3]))
+    harness.artifacts.set(referenceStorageKey, new Uint8Array([4, 5, 6]))
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html: '<script>window.__PLAYABLE__={}</script>',
       assetManifest: {
@@ -898,6 +911,7 @@ describe('playable task API', () => {
         assets: [expect.objectContaining({ id: 'asset-1', bytes: new Uint8Array([1, 2, 3]) })],
       }),
     )
+    expect(harness.artifactStore.get).not.toHaveBeenCalledWith(referenceStorageKey)
     const manifest = new TextDecoder().decode(
       harness.artifacts.get('users/user-1/tasks/owned/asset-build/asset-manifest.json'),
     )
@@ -906,7 +920,7 @@ describe('playable task API', () => {
     expect(manifest).not.toContain('sk-test-secret')
   })
 
-  it('generates AI-selected media only inside the confirmed build and passes it to the agent', async () => {
+  it('fails safely when a legacy build reaches the worker with AI-generated media', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'
     task.confirmation = {
@@ -916,15 +930,7 @@ describe('playable task API', () => {
         tileFaces: { status: '待生成', treatment: '生成农场动物牌面' },
       },
     }
-    const generatedAsset = {
-      id: 'generated-1',
-      slot: 'tileFaces' as const,
-      filename: 'tileFaces-ai.png',
-      mimeType: 'image/png',
-      size: 3,
-      bytes: new Uint8Array([7, 8, 9]),
-    }
-    const mediaGenerator = vi.fn(async () => [generatedAsset])
+    const mediaGenerator = vi.fn(async () => [])
 
     await runConfirmedBuild({
       task,
@@ -936,8 +942,9 @@ describe('playable task API', () => {
       mediaGenerator,
     })
 
-    expect(mediaGenerator).toHaveBeenCalledOnce()
-    expect(harness.agent.build).toHaveBeenCalledWith(expect.objectContaining({ assets: [generatedAsset] }))
+    expect(mediaGenerator).not.toHaveBeenCalled()
+    expect(harness.agent.build).not.toHaveBeenCalled()
+    expect(task.phase).toBe('failed')
   })
 
   it('marks a failed build without replacing the last published artifact', async () => {

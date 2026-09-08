@@ -50,6 +50,42 @@ describe('playable asset upload', () => {
     expect(JSON.stringify(body)).not.toContain('blob')
   })
 
+  it('accepts image and video files in their dedicated reference slots', async () => {
+    const imageHarness = harness()
+    const videoHarness = harness()
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const imageResponse = await imageHarness.handler(
+      uploadRequest(new File(['image'], 'reference.webp', { type: 'image/webp' }), 'referenceImage'),
+      context,
+    )
+    const videoResponse = await videoHarness.handler(
+      uploadRequest(new File(['video'], 'reference.webm', { type: 'video/webm' }), 'referenceVideo'),
+      context,
+    )
+
+    expect(imageResponse.status).toBe(201)
+    expect(videoResponse.status).toBe(201)
+    await expect(imageResponse.json()).resolves.toEqual({
+      asset: {
+        id: 'asset-1',
+        slot: 'referenceImage',
+        filename: 'reference.webp',
+        mimeType: 'image/webp',
+        size: 5,
+      },
+    })
+    await expect(videoResponse.json()).resolves.toEqual({
+      asset: {
+        id: 'asset-1',
+        slot: 'referenceVideo',
+        filename: 'reference.webm',
+        mimeType: 'video/webm',
+        size: 5,
+      },
+    })
+  })
+
   it('uses indistinguishable 404s for missing and foreign tasks', async () => {
     const missing = harness()
     const foreign = harness('user-2')
@@ -67,12 +103,17 @@ describe('playable asset upload', () => {
     const responses = await Promise.all([
       handler(uploadRequest(new File(['x'], 'x.svg', { type: 'image/svg+xml' })), context),
       handler(uploadRequest(new File(['x'], 'x.png', { type: 'image/png' }), 'everything'), context),
+      handler(uploadRequest(new File(['x'], 'x.mp4', { type: 'video/mp4' }), 'backgroundBoard'), context),
+      handler(uploadRequest(new File(['x'], 'x.png', { type: 'image/png' }), 'referenceVideo'), context),
       handler(
-        uploadRequest(new File([new Uint8Array(MAX_ASSET_BYTES + 1)], 'large.mp4', { type: 'video/mp4' })),
+        uploadRequest(
+          new File([new Uint8Array(MAX_ASSET_BYTES + 1)], 'large.mp4', { type: 'video/mp4' }),
+          'referenceVideo',
+        ),
         context,
       ),
     ])
-    expect(responses.map((response) => response.status)).toEqual([415, 400, 413])
+    expect(responses.map((response) => response.status)).toEqual([415, 400, 415, 415, 413])
     expect(store.put).not.toHaveBeenCalled()
   })
 })

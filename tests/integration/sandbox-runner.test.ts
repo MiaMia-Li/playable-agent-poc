@@ -290,7 +290,7 @@ describe('runPlayableBuild', () => {
       entrypoint: 'playable.html',
       plugin: {
         id: 'mahjong-pair-match-playable',
-        version: '1.0.0',
+        version: '1.1.0',
         runtimeVersion: '2',
       },
     })
@@ -355,6 +355,41 @@ describe('runPlayableBuild', () => {
     expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
     expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(true)
   }, 30_000)
+
+  it('uses the agent artifact and generic validation for a freeform route', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-freeform-build-test')
+    input.confirmation = {
+      ...input.confirmation,
+      routing: { match: 'freeform', confidence: 0.1, differences: ['核心状态机不受模板支持'] },
+      gameplay: '自由移动并击败 Boss',
+    }
+    const freeformHtml = [
+      '<meta name="viewport" content="width=device-width">',
+      '<canvas></canvas>',
+      '<script>',
+      'const state={audio:{muted:true}}; window.__PLAYABLE__=state;',
+      "addEventListener('pointerdown',()=>{});",
+      "addEventListener('message',event=>{if(event.data?.type==='playable:set-muted')state.audio.muted=event.data.muted});",
+      "function openStore(){mraid.open('https://example.com/store')}",
+      '</script>',
+    ].join('')
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ sandbox: agentSandbox, workspace, abortSignal }) => {
+        await agentSandbox.writeTextFile({
+          path: path.join(workspace, 'output.html'),
+          content: freeformHtml,
+          abortSignal,
+        })
+      },
+    })
+
+    expect(result.html).toBe(freeformHtml)
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+    expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(true)
+  })
 
   it('returns no artifact and destroys the sandbox when validation fails', async () => {
     const sandbox = await createLocalSandbox()

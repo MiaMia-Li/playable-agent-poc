@@ -12,6 +12,8 @@ import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
 import { generatePlayableMediaAssets } from './media-generation'
 import { createAssetSourceManifest, createProductionConfig } from './production-contract'
+import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
+import { isPlayableResourceAssetSlot } from './asset-policy'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -51,7 +53,6 @@ export interface PlayableTaskRepository {
   listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]>
   setDraft(taskId: string, userId: string): Promise<boolean>
   setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
-  setNeedsPlugin(taskId: string, userId: string): Promise<boolean>
   claimBuild(
     taskId: string,
     userId: string,
@@ -241,10 +242,20 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       ...(mediaApiKey ? [mediaApiKey] : []),
     ])
+    if (
+      !MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration &&
+      Object.values(sanitizedConfirmation.resources).some((resource) => resource.status === '待生成')
+    ) {
+      throw new Error('AI media generation is not supported')
+    }
     const storedAssets = await repository.listAssets(task.id, task.userId)
     const uploadedAssets = await Promise.all(
       storedAssets
-        .filter((asset) => sanitizedConfirmation.resources[asset.slot].status === '用户上传')
+        .filter(
+          (asset): asset is PlayableAsset & { slot: keyof ConfirmationProposal['resources'] } =>
+            isPlayableResourceAssetSlot(asset.slot) &&
+            sanitizedConfirmation.resources[asset.slot].status === '用户上传',
+        )
         .map(async (asset) => {
           const stream = await artifactStore.get(asset.storageKey)
           if (!stream) throw new Error('Uploaded asset is missing')
@@ -426,23 +437,6 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              if (validatedReply.kind === 'plugin_request') {
-                const transitioned = await dependencies.repository.setNeedsPlugin(access.task.id, access.userId)
-                if (!transitioned) throw new Error('Task phase conflict')
-                await dependencies.repository.appendEvent({
-                  taskId: access.task.id,
-                  type: 'plugin_requested',
-                  phase: 'needs_plugin',
-                  message: 'A new playable Plugin is required',
-                })
-                enqueue({
-                  type: 'plugin_request',
-                  message: validatedReply.message,
-                  reasoning: validatedReply.reasoning,
-                  pluginRequest: validatedReply.pluginRequest,
-                })
-                return
-              }
               const validated = validatedReply.confirmation
               const transitioned = await dependencies.repository.setAwaitingConfirmation(
                 access.task.id,
@@ -505,6 +499,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return jsonError(400, 'Pending uploads')
       }
       const needsGeneratedMedia = Object.values(sanitized.resources).some((resource) => resource.status === '待生成')
+      if (!MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration && needsGeneratedMedia) {
+        return jsonError(400, 'AI media generation is not supported')
+      }
       const mediaApiKey = needsGeneratedMedia
         ? await (dependencies.readMediaApiKey ?? dependencies.readApiKey)(request, access.userId)
         : undefined

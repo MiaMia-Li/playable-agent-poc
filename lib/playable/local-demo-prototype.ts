@@ -59,7 +59,7 @@ function selectMode(prompt: string): PlayableModeId | undefined {
   return undefined
 }
 
-type AssetStrategy = 'generated' | 'generated_images' | 'bundled' | 'uploaded'
+type AssetStrategy = 'bundled' | 'uploaded'
 
 function conversationText(input: AgentInput): string {
   return [
@@ -77,8 +77,6 @@ function hasVisualTheme(prompt: string): boolean {
 
 function selectAssetStrategy(prompt: string): AssetStrategy | undefined {
   const normalized = prompt.toLowerCase()
-  if (normalized.includes('图片 ai') || normalized.includes('图片ai')) return 'generated_images'
-  if (normalized.includes('ai') && (normalized.includes('生成') || normalized.includes('素材'))) return 'generated'
   if (normalized.includes('上传') || normalized.includes('本地素材')) return 'uploaded'
   if (normalized.includes('内置') || normalized.includes('默认素材')) return 'bundled'
   return undefined
@@ -95,39 +93,78 @@ function hasLaunchDetails(prompt: string): boolean {
   return copyReady && linkReady
 }
 
-function createProposal(mode: PlayableModeId, assetStrategy: AssetStrategy): ConfirmationProposal {
-  const generated = assetStrategy === 'generated' || assetStrategy === 'generated_images'
+function hasUnsupportedCoreGameplay(prompt: string): boolean {
+  const normalized = prompt.toLowerCase()
+  return ['跑酷', '射击', '赛车', '塔防', '平台跳跃', '实时战斗', '自由移动', '自定义状态机', '自定义胜负规则'].some(
+    (keyword) => normalized.includes(keyword),
+  )
+}
+
+function classifyRouting(prompt: string, selectedMode?: PlayableModeId): ConfirmationProposal['routing'] {
+  if (hasUnsupportedCoreGameplay(prompt)) {
+    return {
+      match: 'freeform',
+      confidence: 0.2,
+      differences: ['现有模板无法表达该核心输入、状态机或胜负规则，将由大模型自由生成'],
+    }
+  }
+
+  if (!selectedMode) {
+    return { match: 'exact', confidence: 1, differences: [] }
+  }
+
+  const differences: string[] = []
+  const normalized = prompt.toLowerCase()
+  if (normalized.includes('boss') || normalized.includes('闯关')) {
+    differences.push('Boss 生命值与关卡推进不属于模板核心，由大模型在现有玩法上补充')
+  }
+  if ((normalized.includes('3d') || normalized.includes('纵深')) && selectedMode !== 'perspective_3d') {
+    differences.push('所选模板不是完整 3D 实现，将近似处理镜头和纵深表现')
+  }
+  if (normalized.includes('镜头')) differences.push('镜头表现将按模板能力近似实现')
+  if (normalized.includes('奖励')) differences.push('奖励表现将复用模板能力近似实现')
+
+  return differences.length
+    ? { match: 'approximate', confidence: 0.72, differences }
+    : { match: 'exact', confidence: 1, differences: [] }
+}
+
+function requestedGameplay(input: AgentInput): string {
+  const initialRequest = input.history?.find((turn) => turn.role === 'user')?.content ?? input.prompt
+  return `由大模型根据需求自由实现：${initialRequest.slice(0, 240)}`
+}
+
+function createProposal(
+  mode: PlayableModeId,
+  assetStrategy: AssetStrategy,
+  routing: ConfirmationProposal['routing'],
+  freeformGameplay?: string,
+): ConfirmationProposal {
   const uploaded = assetStrategy === 'uploaded'
-  const imageResource = (treatment: string) =>
+  const imageResource = () =>
     uploaded
       ? ({ status: '待上传', treatment: '等待用户上传对应图片素材' } as const)
-      : generated
-        ? ({ status: '待生成', treatment } as const)
-        : ({ status: '内置默认', treatment: '使用 Skill 内置图片素材' } as const)
+      : ({ status: '内置默认', treatment: '使用 Skill 内置图片素材' } as const)
   const audioResource = uploaded
     ? ({ status: '待上传', treatment: '等待用户上传音频素材' } as const)
-    : assetStrategy === 'generated'
-      ? ({ status: '待生成', treatment: '根据标题和 CTA 生成简短中文宣传配音' } as const)
-      : ({ status: '内置默认', treatment: '使用内置音频并默认静音' } as const)
+    : ({ status: '内置默认', treatment: '使用内置音频并默认静音' } as const)
   return {
-    routing: {
-      match: 'exact',
-      confidence: 1,
-      differences: [],
-    },
+    routing,
     mode,
-    gameplay: {
-      center_collision: '选择两张相同麻将牌，牌面向中心碰撞并消除计分。',
-      top_rack: '选择可见麻将牌进入上方牌架，相同牌配对后自动清除。',
-      gravity_fill: '选择相同麻将牌消除，空位由上方牌面下落补齐。',
-      perspective_3d: '选择立体牌墙暴露的顶面，消除后逐层揭示下方麻将牌。',
-    }[mode],
+    gameplay:
+      freeformGameplay ??
+      {
+        center_collision: '选择两张相同麻将牌，牌面向中心碰撞并消除计分。',
+        top_rack: '选择可见麻将牌进入上方牌架，相同牌配对后自动清除。',
+        gravity_fill: '选择相同麻将牌消除，空位由上方牌面下落补齐。',
+        perspective_3d: '选择立体牌墙暴露的顶面，消除后逐层揭示下方麻将牌。',
+      }[mode],
     resources: {
-      tileFaces: imageResource('生成符合当前主题的清晰麻将牌面图集，透明背景'),
-      backgroundBoard: imageResource('生成符合当前主题的竖屏背景与棋盘'),
-      animationEffects: imageResource('生成符合当前主题的透明配对与消除特效'),
+      tileFaces: imageResource(),
+      backgroundBoard: imageResource(),
+      animationEffects: imageResource(),
       audio: audioResource,
-      endCard: imageResource('生成符合当前主题的竖屏结束卡背景'),
+      endCard: imageResource(),
     },
     copy: {
       title: '麻将配对挑战',
@@ -146,30 +183,48 @@ function createProposal(mode: PlayableModeId, assetStrategy: AssetStrategy): Con
   }
 }
 
+function createLocalFreeformPlayable(storeUrl: string): string {
+  const safeStoreUrl = JSON.stringify(storeUrl).replaceAll('<', '\\u003c')
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>自由生成试玩</title>
+  <style>
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#152238;color:#fff;font-family:system-ui,sans-serif}body{display:grid;place-items:center}#wrap{position:relative;width:min(100vw,56.25vh);aspect-ratio:9/16;max-height:100vh;background:linear-gradient(#263c62,#10192b);overflow:hidden}canvas{width:100%;height:100%;touch-action:none}#end{position:absolute;inset:0;display:none;place-items:center;background:#101827dd;text-align:center}#end.show{display:grid}button{border:0;border-radius:999px;padding:14px 28px;background:#ffcf4a;color:#172033;font-weight:800}
+  </style>
+</head>
+<body>
+  <main id="wrap"><canvas id="game" width="360" height="640"></canvas><section id="end"><div><h1>挑战成功</h1><p>你击败了 Boss</p><button id="cta">立即试玩</button></div></section></main>
+  <script>
+    const STORE_URL=${safeStoreUrl};
+    const canvas=document.getElementById('game'),ctx=canvas.getContext('2d'),end=document.getElementById('end');
+    const state={mode:'freeform',health:6,interactions:0,completed:false,audio:{muted:true,unlocked:false}};
+    window.__PLAYABLE__={...state,audio:state.audio,snapshot:()=>({...state,audio:{...state.audio}})};
+    function sync(){Object.assign(window.__PLAYABLE__,state)}
+    function draw(){ctx.clearRect(0,0,360,640);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='700 24px system-ui';ctx.fillText('点击攻击 Boss',180,72);ctx.fillStyle='#ef5b5b';ctx.beginPath();ctx.arc(180,300,92,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.font='800 42px system-ui';ctx.fillText('BOSS',180,314);ctx.fillStyle='#273653';ctx.fillRect(55,450,250,22);ctx.fillStyle='#65df84';ctx.fillRect(55,450,250*(state.health/6),22);ctx.font='600 18px system-ui';ctx.fillStyle='#fff';ctx.fillText('剩余生命 '+state.health,180,510)}
+    canvas.addEventListener('pointerdown',()=>{if(state.completed)return;state.interactions++;state.audio.unlocked=true;state.health--;if(state.health<=0){state.health=0;state.completed=true;end.classList.add('show')}sync();draw()});
+    document.getElementById('cta').addEventListener('click',()=>{if(!state.completed)return;if(window.mraid&&typeof window.mraid.open==='function')window.mraid.open(STORE_URL);else window.open(STORE_URL,'_blank','noopener')});
+    window.addEventListener('message',event=>{if(event.source!==window.parent||event.data?.type!=='playable:set-muted'||typeof event.data.muted!=='boolean')return;state.audio.muted=event.data.muted;sync()});
+    draw();
+  </script>
+</body>
+</html>`
+}
+
 class LocalDemoAgent implements PlayableAgentAdapter {
   async proposeConfirmation(input: AgentInput): Promise<PlayableAgentReply> {
     const context = conversationText(input)
-    if (['跑酷', '射击', '胜负规则', '自定义状态机'].some((keyword) => context.includes(keyword))) {
-      return {
-        kind: 'plugin_request',
-        message: '这个需求的核心状态机不属于当前麻将配对 Plugin，已整理为新增 Plugin 需求，不会生成一次性代码。',
-        reasoning: '当前四个模板只能表达麻将配对、牌架、下落补位和纵深揭层。',
-        pluginRequest: {
-          summary: input.prompt,
-          reason: '核心操作或胜负状态机无法由现有模板表达',
-          requiredStateMachine: ['定义输入方式', '定义核心循环', '定义胜负与结束条件'],
-          source: 'text-description',
-        },
-      }
-    }
-    const mode =
+    const selectedMode =
       selectMode(input.prompt) ??
       [...(input.history ?? [])]
         .reverse()
         .filter((turn) => turn.role === 'user')
         .map((turn) => selectMode(turn.content))
         .find(Boolean)
-    if (!mode) {
+    const freeform = hasUnsupportedCoreGameplay(context)
+    if (!selectedMode && !freeform) {
       return {
         kind: 'clarification',
         message: '我已经记下视觉主题。接下来请选择一种核心玩法，之后我会整理完整构建方案。',
@@ -202,6 +257,8 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         ],
       }
     }
+    const mode = selectedMode ?? 'center_collision'
+    const routing = classifyRouting(context, selectedMode)
     if (!hasVisualTheme(context)) {
       return {
         kind: 'clarification',
@@ -234,20 +291,8 @@ class LocalDemoAgent implements PlayableAgentAdapter {
       return {
         kind: 'clarification',
         message: '玩法已经明确。接下来请选择图片和音频素材的准备方式。',
-        reasoning: '构建前需要确认素材由 AI 生成、使用内置资源，还是由你上传。',
+        reasoning: '当前版本暂不支持 AI 素材生成，请选择内置资源或本地上传。',
         options: [
-          {
-            id: 'all_generated',
-            label: '全部 AI 生成',
-            description: '生成主题图片，并为标题和 CTA 生成配音',
-            value: '图片和音频素材全部使用 AI 生成',
-          },
-          {
-            id: 'generated_images',
-            label: '图片 AI 生成',
-            description: '生成主题图片，音频使用内置默认',
-            value: '图片 AI 生成，音频使用内置默认',
-          },
           {
             id: 'bundled',
             label: '全部内置默认',
@@ -280,9 +325,24 @@ class LocalDemoAgent implements PlayableAgentAdapter {
     }
     return {
       kind: 'confirmation',
-      message: '玩法和视觉方向已经明确。我整理了完整方案，你可以继续调整每类素材的来源。',
-      reasoning: `已根据对话选择${mode}玩法，并为未指定的素材保留内置默认。`,
-      confirmation: createProposal(mode, assetStrategy),
+      message:
+        routing.match === 'freeform'
+          ? '现有模板无法表达这个核心玩法，将由大模型自由生成。请确认素材与交付方案。'
+          : routing.match === 'approximate'
+            ? '核心玩法可以复用现有模板，差异部分将近似实现。请确认后开始构建。'
+            : '玩法与现有模板完全匹配。请确认后开始构建。',
+      reasoning:
+        routing.match === 'freeform'
+          ? '核心输入、状态机或胜负规则超出现有模板范围。'
+          : routing.match === 'approximate'
+            ? '核心状态机一致，但存在模板无法完全复现的表现差异。'
+            : '操作、状态机和结束条件均可由现有模板表达。',
+      confirmation: createProposal(
+        mode,
+        assetStrategy,
+        routing,
+        routing.match === 'freeform' ? requestedGameplay(input) : undefined,
+      ),
     }
   }
 
@@ -302,17 +362,22 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         await writeFile(assetPath, asset.bytes)
       }
       await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(assetManifest), 'utf8')
-      await execFileAsync(
-        process.execPath,
-        [
-          path.join(starterRoot, 'build-playable.mjs'),
-          input.confirmation.mode,
-          outputPath,
-          input.confirmation.storeUrl,
-        ],
-        { cwd: workspace },
-      )
-      await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-playable.mjs'), outputPath])
+      if (input.confirmation.routing.match === 'freeform') {
+        await writeFile(outputPath, createLocalFreeformPlayable(input.confirmation.storeUrl), 'utf8')
+        await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-freeform-playable.mjs'), outputPath])
+      } else {
+        await execFileAsync(
+          process.execPath,
+          [
+            path.join(starterRoot, 'build-playable.mjs'),
+            input.confirmation.mode,
+            outputPath,
+            input.confirmation.storeUrl,
+          ],
+          { cwd: workspace },
+        )
+        await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-playable.mjs'), outputPath])
+      }
       const html = await readFile(outputPath, 'utf8')
       return {
         html,
@@ -401,13 +466,6 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
-    return true
-  }
-
-  async setNeedsPlugin(taskId: string, userId: string): Promise<boolean> {
-    const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
-    task.phase = 'needs_plugin'
     return true
   }
 

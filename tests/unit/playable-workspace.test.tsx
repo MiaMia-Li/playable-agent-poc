@@ -127,8 +127,26 @@ describe('PlayableWorkspace', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ storeUrl: 'https://example.com/store' }))
   })
 
+  it('labels unsupported gameplay as direct freeform generation', () => {
+    render(
+      <ConfirmationTable
+        proposal={{
+          ...proposal,
+          routing: { match: 'freeform', confidence: 0.1, differences: ['核心状态机不受模板支持'] },
+          gameplay: '自由移动并击败 Boss',
+        }}
+        onChange={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('自由生成')).toBeInTheDocument()
+    expect(screen.getByText('参考脚手架')).toBeInTheDocument()
+    expect(screen.getByText(/不受参考模板状态机限制/)).toBeInTheDocument()
+  })
+
   it('polls authoritative task state immediately and ignores backward phase responses', async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({
         task: {
           phase: 'awaiting_confirmation',
@@ -194,6 +212,42 @@ describe('PlayableWorkspace', () => {
         },
       }),
     )
+  })
+
+  it('uploads a reference video without assigning it to a production resource slot', async () => {
+    const onProposal = vi.fn()
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        asset: {
+          id: 'reference-1',
+          slot: 'referenceVideo',
+          filename: 'reference.webm',
+          mimeType: 'video/webm',
+          size: 5,
+        },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace
+        taskId="task-7"
+        phase="awaiting_confirmation"
+        proposal={proposal}
+        onProposal={onProposal}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('选择参考视频'), {
+      target: { files: [new File(['video'], 'reference.webm', { type: 'video/webm' })] },
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const [, options] = fetchMock.mock.calls[0]
+    expect((options?.body as FormData).get('slot')).toBe('referenceVideo')
+    expect(await screen.findByText('reference.webm')).toBeInTheDocument()
+    expect(onProposal).not.toHaveBeenCalled()
   })
 
   it('parses a final NDJSON frame, reports malformed frames, and posts confirmation', async () => {
@@ -297,33 +351,55 @@ describe('PlayableWorkspace', () => {
     )
   })
 
-  it('lets users choose built-in, AI-generated, or uploaded media before confirmation', () => {
+  it('keeps AI generation disabled while allowing local uploads before confirmation', () => {
     const onChange = vi.fn()
+    const onUpload = vi.fn()
     render(
       <ConfirmationTable
         proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
         onChange={onChange}
         onConfirm={vi.fn()}
+        onUpload={onUpload}
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'AI 生成牌面素材' }))
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resources: expect.objectContaining({
-          tileFaces: expect.objectContaining({ status: '待生成' }),
-        }),
-      }),
+    expect(screen.getByRole('button', { name: 'AI 生成牌面素材（暂不支持）' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'AI 生成背景与棋盘（暂不支持）' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'AI 生成动画与特效（暂不支持）' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'AI 生成音频（暂不支持）' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'AI 生成结束卡（暂不支持）' })).toBeDisabled()
+
+    const backgroundInput = screen.getByLabelText('为背景与棋盘上传素材')
+    expect(backgroundInput).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp,image/gif')
+    fireEvent.change(backgroundInput, {
+      target: { files: [new File(['image'], 'board.png', { type: 'image/png' })] },
+    })
+    expect(onUpload).toHaveBeenCalledWith('backgroundBoard', expect.objectContaining({ name: 'board.png' }))
+
+    expect(screen.getByRole('button', { name: '上传参考图片' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '上传参考视频' })).toBeEnabled()
+    expect(screen.getByLabelText('选择参考图片')).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp,image/gif')
+    expect(screen.getByLabelText('选择参考视频')).toHaveAttribute('accept', 'video/mp4,video/webm')
+  })
+
+  it('blocks a legacy AI-generated plan until the user chooses an available asset source', () => {
+    render(
+      <ConfirmationTable
+        proposal={{
+          ...proposal,
+          storeUrl: 'https://example.com/store',
+          resources: {
+            ...proposal.resources,
+            tileFaces: { status: '待生成', treatment: '生成主题牌面' },
+          },
+        }}
+        onChange={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '本地上传背景与棋盘' }))
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resources: expect.objectContaining({
-          backgroundBoard: expect.objectContaining({ status: '待上传' }),
-        }),
-      }),
-    )
+    expect(screen.getByText('AI 素材生成暂不支持，请改用内置默认或本地上传。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认方案并开始构建' })).toBeDisabled()
   })
 
   it('automatically submits the initial prompt once in local Codex mode', async () => {

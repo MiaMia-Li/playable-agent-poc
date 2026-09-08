@@ -39,7 +39,7 @@ const confirmationReply = {
 
 describe('CodexCliPlayableAgent', () => {
   it('uses a read-only Codex invocation and validates the structured proposal', async () => {
-    const invokeCodex = vi.fn(async () => ({ ...confirmationReply, options: [], pluginRequest: null }))
+    const invokeCodex = vi.fn(async () => ({ ...confirmationReply, options: [] }))
     const agent = new CodexCliPlayableAgent({ invokeCodex })
 
     await expect(
@@ -58,6 +58,11 @@ describe('CodexCliPlayableAgent', () => {
     expect(JSON.stringify(invocation.schema)).not.toContain('"oneOf"')
     expect(invocation.prompt).toContain('Do not return confirmation until')
     expect(invocation.prompt).toContain('image and audio asset source')
+    expect(invocation.prompt).toContain('AI media generation is currently disabled')
+    expect(invocation.prompt).toContain('Never return status 待生成')
+    expect(invocation.prompt).toContain('referenceImage and referenceVideo entries provide metadata only')
+    expect(invocation.prompt).toContain('exact, approximate, or freeform')
+    expect(invocation.prompt).toContain('Never return plugin_request')
     expect(invocation.prompt).toContain('HTTPS store URL')
   })
 
@@ -83,5 +88,28 @@ describe('CodexCliPlayableAgent', () => {
       }),
     )
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
+  })
+
+  it('asks Codex to create output.html directly for a freeform route', async () => {
+    const invokeCodex = vi.fn(async () => ({ completed: true }))
+    const result: BuildResult = {
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
+    }
+    const buildRunner = vi.fn(async () => result)
+
+    await new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build({
+      taskId: 'task-cli-freeform',
+      apiKey: 'local-marker',
+      confirmation: {
+        ...proposal,
+        routing: { match: 'freeform', confidence: 0.1, differences: ['状态机不受支持'] },
+        gameplay: '自由移动并击败 Boss',
+      },
+    })
+
+    expect(invokeCodex).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: expect.stringContaining('Create the requested game directly in output.html') }),
+    )
   })
 })

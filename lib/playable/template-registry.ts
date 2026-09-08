@@ -10,6 +10,10 @@ export interface PlayablePluginManifest {
   skillRoot: string
   modes: PlayableModeId[]
   assetSlots: string[]
+  capabilities: {
+    localUpload: boolean
+    aiMediaGeneration: boolean
+  }
   delivery: {
     networks: string[]
     entrypoint: 'playable.html'
@@ -18,9 +22,10 @@ export interface PlayablePluginManifest {
   commands: {
     build: string
     validate: string
+    validateFreeform: string
   }
   exploration: string[]
-  requiresNewPlugin: string[]
+  freeformFallback: string[]
 }
 
 const playablePluginManifestSchema = z.strictObject({
@@ -31,6 +36,10 @@ const playablePluginManifestSchema = z.strictObject({
   skillRoot: z.string().trim().min(1),
   modes: z.array(z.enum(playableModeIds)).min(1),
   assetSlots: z.array(z.string().trim().min(1)).min(1),
+  capabilities: z.strictObject({
+    localUpload: z.boolean(),
+    aiMediaGeneration: z.boolean(),
+  }),
   delivery: z.strictObject({
     networks: z.array(z.string().trim().min(1)).min(1),
     entrypoint: z.literal('playable.html'),
@@ -39,9 +48,10 @@ const playablePluginManifestSchema = z.strictObject({
   commands: z.strictObject({
     build: z.string().trim().min(1),
     validate: z.string().trim().min(1),
+    validateFreeform: z.string().trim().min(1),
   }),
   exploration: z.array(z.string().trim().min(1)),
-  requiresNewPlugin: z.array(z.string().trim().min(1)),
+  freeformFallback: z.array(z.string().trim().min(1)),
 })
 
 export const MAHJONG_PLAYABLE_PLUGIN: PlayablePluginManifest = playablePluginManifestSchema.parse(pluginManifest)

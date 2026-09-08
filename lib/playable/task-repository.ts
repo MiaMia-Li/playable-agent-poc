@@ -96,17 +96,6 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
-  async setNeedsPlugin(taskId: string, userId: string): Promise<boolean> {
-    const updated = await db
-      .update(tasks)
-      .set({ phase: 'needs_plugin', updatedAt: new Date() })
-      .where(
-        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
-      )
-      .returning({ id: tasks.id })
-    return updated.length === 1
-  }
-
   async claimBuild(
     taskId: string,
     userId: string,

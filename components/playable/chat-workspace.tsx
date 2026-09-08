@@ -4,7 +4,9 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, Loader2, Sparkles, Square } from 'lucide-react'
 import type { ClarificationOption, ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
-import type { PlayableAssetSlot } from '@/lib/playable/task-assets'
+import type { PlayableAssetSlot } from '@/lib/playable/asset-policy'
+import { isPlayableResourceAssetSlot } from '@/lib/playable/asset-policy'
+import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { ConfirmationTable } from './confirmation-table'
@@ -39,6 +41,7 @@ interface ChatWorkspaceProps {
   onRequireApiKey: () => void
   autoSubmitInitialPrompt?: boolean
   initialConversation?: ConversationMessage[]
+  initialAssets?: SafePlayableAsset[]
 }
 
 export interface ConversationMessage {
@@ -60,6 +63,7 @@ export function ChatWorkspace({
   onRequireApiKey,
   autoSubmitInitialPrompt = false,
   initialConversation = [],
+  initialAssets = [],
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -72,7 +76,7 @@ export function ChatWorkspace({
   const [sending, setSending] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [uploadingSlot, setUploadingSlot] = useState<PlayableAssetSlot>()
-  const [selectedAssets, setSelectedAssets] = useState<string[]>([])
+  const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [error, setError] = useState('')
   const streamController = useRef<AbortController | undefined>(undefined)
   const autoSubmitted = useRef(false)
@@ -148,19 +152,6 @@ export function ChatWorkspace({
                 status: 'sent',
               },
             ])
-          } else if (event.type === 'plugin_request' && event.message) {
-            onProposal(undefined)
-            onPhase('needs_plugin')
-            setConversation((items) => [
-              ...items,
-              {
-                id: Date.now() + 1,
-                role: 'assistant',
-                content: event.message!,
-                reasoning: event.reasoning,
-                status: 'sent',
-              },
-            ])
           } else if (event.type === 'error') {
             throw new Error(event.message || '无法生成确认方案')
           }
@@ -213,15 +204,17 @@ export function ChatWorkspace({
         body,
       })
       if (!response.ok) throw new Error('素材上传失败')
-      const result = (await response.json()) as { asset: { filename: string; slot: PlayableAssetSlot } }
-      onProposal({
-        ...proposal,
-        resources: {
-          ...proposal.resources,
-          [result.asset.slot]: { status: '用户上传', treatment: result.asset.filename },
-        },
-      })
-      setSelectedAssets((items) => [...items, `${phaseNames[phase]}：${result.asset.filename}`])
+      const result = (await response.json()) as { asset: SafePlayableAsset }
+      if (isPlayableResourceAssetSlot(result.asset.slot)) {
+        onProposal({
+          ...proposal,
+          resources: {
+            ...proposal.resources,
+            [result.asset.slot]: { status: '用户上传', treatment: result.asset.filename },
+          },
+        })
+      }
+      setSelectedAssets((items) => [...items, result.asset])
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '素材上传失败')
     } finally {
@@ -327,7 +320,7 @@ export function ChatWorkspace({
         ))}
 
         <div className="sr-only" aria-live="polite">
-          {selectedAssets.length ? `已选择素材：${selectedAssets.at(-1)}` : ''}
+          {selectedAssets.length ? `已选择素材：${selectedAssets.at(-1)?.filename}` : ''}
         </div>
 
         {sending && (
@@ -353,6 +346,7 @@ export function ChatWorkspace({
             disabled={phase !== 'awaiting_confirmation'}
             uploadingSlot={uploadingSlot}
             onUpload={upload}
+            uploadedAssets={selectedAssets}
           />
         ) : !sending ? (
           <section aria-label="确认方案" className="border-muted-foreground/20 rounded-xl border border-dashed p-4">

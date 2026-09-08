@@ -31,11 +31,20 @@ export function isAbsoluteHttpsUrl(value: string): boolean {
   }
 }
 
-const routingDecisionSchema = z.strictObject({
-  match: z.enum(['exact', 'approximate']),
-  confidence: z.number().min(0).max(1),
-  differences: z.array(z.string().trim().min(1)).max(12),
-})
+const routingDecisionSchema = z
+  .strictObject({
+    match: z.enum(['exact', 'approximate', 'freeform']),
+    confidence: z.number().min(0).max(1),
+    differences: z.array(z.string().trim().min(1)).max(12),
+  })
+  .superRefine((routing, context) => {
+    if (routing.match === 'exact' && routing.differences.length > 0) {
+      context.addIssue({ code: 'custom', path: ['differences'], message: 'Exact routes cannot contain differences' })
+    }
+    if (routing.match !== 'exact' && routing.differences.length === 0) {
+      context.addIssue({ code: 'custom', path: ['differences'], message: 'Non-exact routes must list differences' })
+    }
+  })
 
 const confirmationProposalShape = {
   mode: z.enum(playableModeIds),
@@ -80,13 +89,6 @@ export const clarificationOptionSchema = z.strictObject({
   value: z.string().trim().min(1),
 })
 
-export const pluginRequestSchema = z.strictObject({
-  summary: z.string().trim().min(1),
-  reason: z.string().trim().min(1),
-  requiredStateMachine: z.array(z.string().trim().min(1)).min(1).max(12),
-  source: z.enum(['text-description', 'reference-video']),
-})
-
 export const playableAgentReplySchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('clarification'),
@@ -100,31 +102,22 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     reasoning: z.string().trim().min(1),
     confirmation: confirmationProposalSchema,
   }),
-  z.strictObject({
-    kind: z.literal('plugin_request'),
-    message: z.string().trim().min(1),
-    reasoning: z.string().trim().min(1),
-    pluginRequest: pluginRequestSchema,
-  }),
 ])
 
 // The OpenAI structured-output subset does not permit `oneOf`. Keep a flat
 // transport object, then restore the strict discriminated union at the boundary.
 export const playableAgentOutputSchema = z.strictObject({
-  kind: z.enum(['clarification', 'confirmation', 'plugin_request']),
+  kind: z.enum(['clarification', 'confirmation']),
   message: z.string().trim().min(1),
   reasoning: z.string().trim().min(1),
   options: z.array(clarificationOptionSchema).max(6),
   confirmation: generatedConfirmationProposalSchema.nullable(),
-  pluginRequest: pluginRequestSchema.nullable(),
 })
 
 export function parsePlayableAgentOutput(value: unknown): PlayableAgentReply {
   const output = playableAgentOutputSchema.parse(value)
   if (output.kind === 'clarification') {
-    if (output.confirmation !== null || output.pluginRequest !== null) {
-      throw new Error('Clarification output contains another result')
-    }
+    if (output.confirmation !== null) throw new Error('Clarification output contains another result')
     return playableAgentReplySchema.parse({
       kind: output.kind,
       message: output.message,
@@ -132,18 +125,7 @@ export function parsePlayableAgentOutput(value: unknown): PlayableAgentReply {
       options: output.options,
     })
   }
-  if (output.kind === 'plugin_request') {
-    if (output.confirmation !== null || output.pluginRequest === null || output.options.length > 0) {
-      throw new Error('Plugin request output is incomplete')
-    }
-    return playableAgentReplySchema.parse({
-      kind: output.kind,
-      message: output.message,
-      reasoning: output.reasoning,
-      pluginRequest: output.pluginRequest,
-    })
-  }
-  if (output.confirmation === null || output.pluginRequest !== null || output.options.length > 0) {
+  if (output.confirmation === null || output.options.length > 0) {
     throw new Error('Confirmation output is incomplete')
   }
   return playableAgentReplySchema.parse({
@@ -157,5 +139,4 @@ export function parsePlayableAgentOutput(value: unknown): PlayableAgentReply {
 export type PlayableTaskPhase = z.infer<typeof playableTaskPhaseSchema>
 export type ConfirmationProposal = z.infer<typeof confirmationProposalSchema>
 export type ClarificationOption = z.infer<typeof clarificationOptionSchema>
-export type PluginRequest = z.infer<typeof pluginRequestSchema>
 export type PlayableAgentReply = z.infer<typeof playableAgentReplySchema>

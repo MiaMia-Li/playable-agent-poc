@@ -179,11 +179,13 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           'Act as a conversational playable producer and return one response matching the supplied JSON schema. Do not inspect workspace files.',
           'Collect requirements over multiple turns. Ask one focused clarification at a time and do not repeat questions already answered in history.',
           'If the gameplay mechanic is ambiguous, return kind clarification and offer exactly these four modes: center_collision, top_rack, gravity_fill, perspective_3d.',
-          'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
-          'When asking about assets, offer AI generation, bundled defaults, and local upload choices. The user may choose different sources for images and audio.',
-          'For clarification, set confirmation and pluginRequest to null and provide one to six options. For confirmation, set options to an empty array, pluginRequest to null, and provide the complete confirmation object.',
+          'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
+          'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
+          'Uploaded referenceImage and referenceVideo entries provide metadata only in this POC. You may acknowledge their filenames, but never claim to have inspected their visual or audio content.',
+          'For clarification, set confirmation to null and provide one to six options. For confirmation, set options to an empty array and provide the complete confirmation object.',
           'Only use status 内置默认 after the user explicitly selects or approves defaults. Preserve every collected choice in the final confirmation.',
-          'Classify the route as exact or approximate, provide confidence from 0 to 1, and list known differences. If the core state machine is unsupported, return plugin_request with confirmation null, no options, and a structured new Plugin requirement.',
+          'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by a registered mode. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
+          'If the core input model, state machine, or win/loss rules cannot be represented by a registered mode, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
           'Include a concise visible message and decision rationale.',
           'Use concise Chinese gameplay and copy. Default CTA is 立即试玩 and locale is zh-CN.',
           'Use https://example.com/app when no store URL is supplied.',
@@ -225,16 +227,29 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         reasoningEffort: 'medium',
         abortSignal: controller.signal,
         schema: codexOutputSchema(completionSchema),
-        prompt: [
-          'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
-          'Build the approved playable in this workspace and run the required behavioral test.',
-          'Write the final single-file playable to output.html.',
-          'For a registered mode, use its existing template immediately; do not rewrite the large shared runtime.',
-          'Use uploaded files only for their declared resource slots.',
-          'Do not modify confirmed-config.json or asset-manifest.json.',
-          'Do not access files outside this workspace or make network requests.',
-          'When the playable passes, return {"completed":true}.',
-        ].join('\n'),
+        prompt:
+          input.confirmation.routing.match === 'freeform'
+            ? [
+                'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+                'The confirmed route is freeform because no registered template can express the requested core gameplay.',
+                'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
+                'Produce one offline responsive Canvas HTML under 5 MiB with no external resources.',
+                'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
+                'Use uploaded files only for their declared resource slots.',
+                'Do not modify confirmed-config.json or asset-manifest.json.',
+                'Do not access files outside this workspace or make network requests.',
+                'Run the freeform validation command. When it passes, return {"completed":true}.',
+              ].join('\n')
+            : [
+                'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+                'Build the approved playable in this workspace and run the required behavioral test.',
+                'Write the final single-file playable to output.html.',
+                'For a registered mode, use its existing template immediately; do not rewrite the large shared runtime.',
+                'Use uploaded files only for their declared resource slots.',
+                'Do not modify confirmed-config.json or asset-manifest.json.',
+                'Do not access files outside this workspace or make network requests.',
+                'When the playable passes, return {"completed":true}.',
+              ].join('\n'),
       })
       if (!completionSchema.safeParse(completion).success) {
         console.error('Codex CLI build completion was invalid')

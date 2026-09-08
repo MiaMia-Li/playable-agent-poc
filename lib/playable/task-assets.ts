@@ -1,23 +1,10 @@
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
+import { isMimeTypeAllowedForSlot, isPlayableAssetSlot, MAX_ASSET_BYTES, type PlayableAssetSlot } from './asset-policy'
 
-export const playableAssetSlots = ['tileFaces', 'backgroundBoard', 'animationEffects', 'audio', 'endCard'] as const
-export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
-
-export const MAX_ASSET_BYTES = 4 * 1024 * 1024
-const ALLOWED_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-  'audio/mpeg',
-  'audio/wav',
-  'audio/ogg',
-  'audio/mp4',
-  'video/mp4',
-  'video/webm',
-])
+export { MAX_ASSET_BYTES, playableAssetSlots } from './asset-policy'
+export type { PlayableAssetSlot } from './asset-policy'
 
 export interface PlayableAsset {
   id: string
@@ -63,14 +50,10 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     const form = await request.formData().catch(() => undefined)
     const file = form?.get('file')
     const slot = form?.get('slot')
-    if (
-      !(file instanceof File) ||
-      typeof slot !== 'string' ||
-      !playableAssetSlots.includes(slot as PlayableAssetSlot)
-    ) {
+    if (!(file instanceof File) || typeof slot !== 'string' || !isPlayableAssetSlot(slot)) {
       return Response.json({ error: 'Invalid request' }, { status: 400 })
     }
-    if (!ALLOWED_MIME_TYPES.has(file.type)) {
+    if (!isMimeTypeAllowedForSlot(slot, file.type)) {
       return Response.json({ error: 'Unsupported media type' }, { status: 415 })
     }
     if (file.size <= 0 || file.size > MAX_ASSET_BYTES) {
@@ -86,7 +69,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       id,
       taskId,
       userId,
-      slot: slot as PlayableAssetSlot,
+      slot,
       filename: filename || 'asset',
       mimeType: file.type,
       size: file.size,

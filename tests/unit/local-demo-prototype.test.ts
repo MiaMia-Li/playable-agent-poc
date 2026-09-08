@@ -102,6 +102,43 @@ describe('local demo prototype', () => {
     }
   })
 
+  it('marks presentation-only Boss changes as an approximate template match', async () => {
+    const reply = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: 'local-approximate',
+      prompt: '经典国风主题，中心碰撞闯关并战胜 Boss，使用内置默认素材、默认文案和测试链接',
+      apiKey: 'sk-test-local-demo',
+    })
+
+    expect(reply.kind).toBe('confirmation')
+    if (reply.kind !== 'confirmation') throw new Error('Expected a confirmation reply')
+    expect(reply.confirmation.routing.match).toBe('approximate')
+    expect(reply.confirmation.routing.differences).toContain(
+      'Boss 生命值与关卡推进不属于模板核心，由大模型在现有玩法上补充',
+    )
+  })
+
+  it('routes unsupported core gameplay to direct freeform generation', async () => {
+    const reply = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: 'local-freeform',
+      prompt: '霓虹风格跑酷，躲避障碍后到达终点，使用内置默认素材、默认文案和测试链接',
+      apiKey: 'sk-test-local-demo',
+    })
+
+    expect(reply.kind).toBe('confirmation')
+    if (reply.kind !== 'confirmation') throw new Error('Expected a confirmation reply')
+    expect(reply.confirmation.routing.match).toBe('freeform')
+    expect(reply.message).toContain('大模型自由生成')
+
+    const result = await localDemoRuntime.agent.build({
+      taskId: 'local-freeform',
+      apiKey: 'sk-test-local-demo',
+      confirmation: reply.confirmation,
+      assets: [],
+    })
+    expect(result.validation.passed).toBe(true)
+    expect(result.html).toContain("mode:'freeform'")
+  })
+
   it('builds and behavior-checks an offline playable with the vendored Skill', async () => {
     const reply = await localDemoRuntime.agent.proposeConfirmation({
       taskId: 'local-task',
@@ -148,16 +185,17 @@ describe('local demo prototype', () => {
     expect(assets.every((asset) => asset.bytes.byteLength > 0)).toBe(true)
   })
 
-  it('carries the collected AI asset strategy into the final confirmation table', async () => {
+  it('does not expose AI media generation as a selectable asset strategy', async () => {
     const reply = await localDemoRuntime.agent.proposeConfirmation({
       taskId: 'local-generated-plan',
       prompt: '经典国风主题，中心碰撞玩法，图片和音频素材全部使用 AI 生成，使用默认文案和测试链接',
       apiKey: 'sk-test-local-demo',
     })
 
-    expect(reply.kind).toBe('confirmation')
-    if (reply.kind !== 'confirmation') throw new Error('Expected a confirmation reply')
-    expect(Object.values(reply.confirmation.resources).every((resource) => resource.status === '待生成')).toBe(true)
+    expect(reply.kind).toBe('clarification')
+    if (reply.kind !== 'clarification') throw new Error('Expected a clarification reply')
+    expect(reply.reasoning).toContain('暂不支持 AI 素材生成')
+    expect(reply.options.map((option) => option.id)).toEqual(['bundled', 'uploaded'])
   })
 
   it('cannot bypass authentication in production', () => {

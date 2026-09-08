@@ -23,7 +23,10 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const storedMessages = await repository.listMessages(task.id)
+  const [storedMessages, initialAssets] = await Promise.all([
+    repository.listMessages(task.id),
+    repository.listAssets(task.id, session.user.id),
+  ])
   const initialConversation = storedMessages.flatMap((stored): ConversationMessage[] => {
     if (stored.role === 'user') {
       return [{ id: stored.id, role: 'user', content: stored.content, status: 'sent' }]
@@ -53,6 +56,13 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialPhase={task.phase}
       initialProposal={task.phase === 'draft' ? undefined : (task.confirmation ?? undefined)}
       initialConversation={initialConversation}
+      initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size }) => ({
+        id,
+        slot,
+        filename,
+        mimeType,
+        size,
+      }))}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialApiKeyConfigured={localDemo || localCodex ? true : undefined}

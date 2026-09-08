@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { REFERENCE_VIDEOS } from '@/lib/playable/reference-videos'
-import { getPlayableMode, PLAYABLE_MODES } from '@/lib/playable/template-registry'
+import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from '@/lib/playable/template-registry'
 import { playableModeIds } from '@/lib/playable/types'
 
 describe('template registry', () => {
@@ -10,7 +10,7 @@ describe('template registry', () => {
         id: 'center_collision',
         label: '中心碰撞',
         pluginId: 'mahjong-pair-match-playable',
-        pluginVersion: '1.0.0',
+        pluginVersion: '1.1.0',
         runtimeVersion: '2',
         description: '相同牌向中心碰撞、破碎并计分',
         configPath: 'skills/mahjong-pair-match-playable/assets/templates/center_collision/config.json',
@@ -20,7 +20,7 @@ describe('template registry', () => {
         id: 'top_rack',
         label: '上方牌架',
         pluginId: 'mahjong-pair-match-playable',
-        pluginVersion: '1.0.0',
+        pluginVersion: '1.1.0',
         runtimeVersion: '2',
         description: '可见牌进入四槽牌架，配对后清除',
         configPath: 'skills/mahjong-pair-match-playable/assets/templates/top_rack/config.json',
@@ -30,7 +30,7 @@ describe('template registry', () => {
         id: 'gravity_fill',
         label: '下落补位',
         pluginId: 'mahjong-pair-match-playable',
-        pluginVersion: '1.0.0',
+        pluginVersion: '1.1.0',
         runtimeVersion: '2',
         description: '网格配对消除后列下落并从上方补位',
         configPath: 'skills/mahjong-pair-match-playable/assets/templates/gravity_fill/config.json',
@@ -40,7 +40,7 @@ describe('template registry', () => {
         id: 'perspective_3d',
         label: '3D 纵深',
         pluginId: 'mahjong-pair-match-playable',
-        pluginVersion: '1.0.0',
+        pluginVersion: '1.1.0',
         runtimeVersion: '2',
         description: '移除立体牌墙顶面并揭示下层',
         configPath: 'skills/mahjong-pair-match-playable/assets/templates/perspective_3d/config.json',
@@ -51,6 +51,22 @@ describe('template registry', () => {
 
   it('derives the registry from the authoritative playable mode IDs', () => {
     expect(PLAYABLE_MODES.map(({ id }) => id)).toEqual(playableModeIds)
+  })
+
+  it('exposes local uploads while keeping AI media generation disabled', () => {
+    expect(MAHJONG_PLAYABLE_PLUGIN.capabilities).toEqual({
+      localUpload: true,
+      aiMediaGeneration: false,
+    })
+  })
+
+  it('declares a direct-generation fallback and its generic validation command', () => {
+    expect(MAHJONG_PLAYABLE_PLUGIN.freeformFallback).toEqual([
+      'win-or-loss-rules',
+      'core-state-machine',
+      'unsupported-input-model',
+    ])
+    expect(MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform).toContain('test-freeform-playable.mjs')
   })
 
   it('looks up every approved mode', () => {

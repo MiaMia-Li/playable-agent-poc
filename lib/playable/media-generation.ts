@@ -1,6 +1,6 @@
 import { generateId as defaultGenerateId } from '@/lib/utils/id'
 import type { ConfirmedBuildInput, PlayableBuildAsset } from './playable-agent-adapter'
-import type { PlayableAssetSlot } from './task-assets'
+import type { PlayableResourceAssetSlot } from './asset-policy'
 import { MAX_ASSET_BYTES } from './task-assets'
 
 const IMAGE_MODEL = 'gpt-image-2'
@@ -13,7 +13,9 @@ interface MediaGenerationDependencies {
   generateId?: () => string
 }
 
-const imageSettings: Partial<Record<PlayableAssetSlot, { size: string; background: 'transparent' | 'opaque' }>> = {
+const imageSettings: Partial<
+  Record<PlayableResourceAssetSlot, { size: string; background: 'transparent' | 'opaque' }>
+> = {
   tileFaces: { size: '1024x1024', background: 'transparent' },
   backgroundBoard: { size: '1024x1536', background: 'opaque' },
   animationEffects: { size: '1024x1024', background: 'transparent' },
@@ -73,7 +75,7 @@ async function generateSpeech(
   return validateGeneratedBytes(new Uint8Array(await response.arrayBuffer()))
 }
 
-function imagePrompt(input: MediaGenerationInput, slot: PlayableAssetSlot, treatment: string): string {
+function imagePrompt(input: MediaGenerationInput, slot: PlayableResourceAssetSlot, treatment: string): string {
   return [
     `为 360×640 竖屏试玩广告创作 ${slot} 素材。`,
     `主题标题：${input.confirmation.copy.title}。`,
@@ -92,7 +94,7 @@ export async function generatePlayableMediaAssets(
   const generated: PlayableBuildAsset[] = []
 
   for (const [slotValue, resource] of Object.entries(input.confirmation.resources)) {
-    const slot = slotValue as PlayableAssetSlot
+    const slot = slotValue as PlayableResourceAssetSlot
     if (resource.status !== '待生成') continue
     const id = nextId()
     if (slot === 'audio') {
