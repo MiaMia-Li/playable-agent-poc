@@ -10,6 +10,8 @@ import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 
+Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+
 const proposal: ConfirmationProposal = {
   routing: { match: 'approximate', confidence: 0.8, differences: ['奖励表现使用模板默认效果'] },
   mode: 'top_rack',
@@ -148,9 +150,7 @@ describe('PlayableWorkspace', () => {
 
     expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent(
-      '需求整理等待确认构建中验证中待验收已交付',
-    )
+    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('方案生成中可试玩')
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '竖屏预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '横屏预览' })).toBeInTheDocument()
@@ -269,7 +269,7 @@ describe('PlayableWorkspace', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith('/api/playable-tasks/task-7/events', { cache: 'no-store' }),
     )
-    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('当前状态：构建中')
+    expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('当前状态：生成试玩')
     expect(screen.getByRole('region', { name: '确认方案' })).toHaveTextContent('top_rack')
     expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
   })
@@ -627,26 +627,120 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByTitle('Playable preview')).not.toBe(oldFrame)
   })
 
-  it('requires explicit human acceptance and can reopen an accepted artifact for revision', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ task: { id: 'task-7' } }))
+  it('loads and switches between successful playable versions', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          builds: [
+            {
+              id: 'build-1',
+              status: 'succeeded',
+              version: 1,
+              current: false,
+              createdAt: new Date(1).toISOString(),
+              completedAt: new Date(2).toISOString(),
+            },
+            {
+              id: 'build-2',
+              status: 'succeeded',
+              version: 2,
+              current: true,
+              createdAt: new Date(3).toISOString(),
+              completedAt: new Date(4).toISOString(),
+            },
+          ],
+        }),
+      ),
+    )
+    render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-2" />)
+
+    await waitFor(() =>
+      expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+        'src',
+        '/api/playable-tasks/task-7/artifact?kind=playable&version=build-2',
+      ),
+    )
+    fireEvent.click(screen.getByLabelText('选择试玩版本'))
+    fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
+    await waitFor(() =>
+      expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+        'src',
+        '/api/playable-tasks/task-7/artifact?kind=playable&version=build-1',
+      ),
+    )
+  })
+
+  it('keeps the previous version visible and can retry a failed build', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/versions')) {
+        return Response.json({
+          builds: [
+            {
+              id: 'build-1',
+              status: 'succeeded',
+              version: 1,
+              current: true,
+              createdAt: new Date(1).toISOString(),
+              completedAt: new Date(2).toISOString(),
+            },
+          ],
+        })
+      }
+      return Response.json({ task: { phase: 'building' } }, { status: 202 })
+    })
     vi.stubGlobal('fetch', fetchMock)
     const onPhase = vi.fn()
-    const { rerender } = render(
-      <PlayablePreview taskId="task-7" phase="reviewing" hasArtifact artifactVersion="build-1" onPhase={onPhase} />,
+    render(
+      <PlayablePreview
+        taskId="task-7"
+        phase="failed"
+        hasArtifact
+        artifactVersion="build-1"
+        confirmation={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onPhase={onPhase}
+      />,
     )
+
+    expect(screen.getByText('本次构建失败，正在展示上一成功版本。')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试构建' }))
+    await waitFor(() => expect(onPhase).toHaveBeenCalledWith('building'))
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks/task-7/confirm',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('keeps natural-language chat available after a successful build', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(`${JSON.stringify({ type: 'informational', message: '可以继续修改当前试玩。' })}\n`),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace
+        taskId="task-ready"
+        phase="ready"
+        proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByLabelText('试玩需求')).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '把标题改得更轻松' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    expect(await screen.findByText('可以继续修改当前试玩。')).toBeInTheDocument()
+  })
+
+  it('makes a successful artifact downloadable without a separate acceptance action', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ builds: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-1" />)
 
     expect(screen.getByRole('group', { name: '预览控制' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: '验收通过' }))
-    await waitFor(() => expect(onPhase).toHaveBeenCalledWith('ready'))
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/playable-tasks/task-7/review',
-      expect.objectContaining({ body: JSON.stringify({ action: 'accept' }) }),
-    )
-
-    rerender(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-1" onPhase={onPhase} />)
     expect(screen.getByRole('button', { name: '下载交付物' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '返回修改' }))
-    await waitFor(() => expect(onPhase).toHaveBeenCalledWith('awaiting_confirmation'))
+    expect(screen.queryByRole('button', { name: '验收通过' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '返回修改' })).not.toBeInTheDocument()
   })
 })

@@ -30,14 +30,15 @@ async function main() {
   if (!(await repository.setAwaitingConfirmation(task.id, userId, reply.confirmation))) {
     throw new Error('Unable to save confirmation')
   }
-  const claimed = await repository.claimBuild(task.id, userId, reply.confirmation)
+  const buildId = generateId()
+  const claimed = await repository.claimBuild(task.id, userId, reply.confirmation, buildId)
   if (!claimed) throw new Error('Unable to claim playable build')
 
   console.log('Building with Codex CLI and Vercel Sandbox')
   await runConfirmedBuild({
     task: claimed,
     apiKey,
-    buildId: generateId(),
+    buildId,
     repository,
     agent,
     artifactStore,

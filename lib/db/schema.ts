@@ -425,6 +425,29 @@ export const playableTaskEvents = pgTable(
   }),
 )
 
+export const playableTaskBuilds = pgTable(
+  'playable_task_builds',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    status: text('status', {
+      enum: ['building', 'failed', 'succeeded'],
+    })
+      .notNull()
+      .default('building'),
+    confirmation: jsonb('confirmation').notNull(),
+    artifactKey: text('artifact_key').unique(),
+    validation: jsonb('validation'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    completedAt: timestamp('completed_at'),
+  },
+  (table) => ({
+    taskCreatedIndex: index('playable_task_builds_task_created_idx').on(table.taskId, table.createdAt),
+  }),
+)
+
 export const playableTaskAssets = pgTable(
   'playable_task_assets',
   {

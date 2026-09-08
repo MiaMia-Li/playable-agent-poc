@@ -4,6 +4,7 @@ import {
   createPlayableTaskHandlers,
   runConfirmedBuild,
   type BackgroundScheduler,
+  type PlayableBuildRecord,
   type PlayableTaskRecord,
   type PlayableTaskRepository,
 } from '@/lib/playable/task-api'
@@ -68,6 +69,7 @@ class MemoryRepository implements PlayableTaskRepository {
   events: EventRecord[] = []
   latestAssignments: string[] = []
   assets: PlayableAsset[] = []
+  builds: PlayableBuildRecord[] = []
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -100,14 +102,14 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.requirementBrief = brief
     return true
   }
 
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
     return true
@@ -115,7 +117,7 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.phase = 'draft'
     return true
   }
@@ -124,11 +126,20 @@ class MemoryRepository implements PlayableTaskRepository {
     taskId: string,
     userId: string,
     value: ConfirmationProposal,
+    buildId: string,
   ): Promise<PlayableTaskRecord | undefined> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || task.phase !== 'awaiting_confirmation') return
+    if (!task || !['awaiting_confirmation', 'failed'].includes(task.phase)) return
     task.phase = 'building'
     task.confirmation = value
+    this.builds.push({
+      id: buildId,
+      taskId,
+      status: 'building',
+      confirmation: value,
+      artifactKey: null,
+      createdAt: new Date(),
+    })
     return { ...task }
   }
 
@@ -145,15 +156,34 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async publishArtifact(
     taskId: string,
+    buildId: string,
     expectedPhase: 'validating',
     artifactKey: string,
     validation: unknown,
   ): Promise<boolean> {
     const task = this.tasks.get(taskId)
     if (!task || task.phase !== expectedPhase) return false
-    task.phase = 'reviewing'
+    task.phase = 'ready'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (build) {
+      build.status = 'succeeded'
+      build.artifactKey = artifactKey
+      build.validation = validation
+      build.completedAt = new Date()
+    } else if (task.confirmation) {
+      this.builds.push({
+        id: buildId,
+        taskId,
+        status: 'succeeded',
+        confirmation: task.confirmation,
+        artifactKey,
+        validation,
+        createdAt: new Date(),
+        completedAt: new Date(),
+      })
+    }
     this.latestAssignments.push(artifactKey)
     return true
   }
@@ -172,9 +202,22 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
-  async markFailed(taskId: string): Promise<void> {
+  async markFailed(taskId: string, buildId: string): Promise<void> {
     const task = this.tasks.get(taskId)
     if (task && ['building', 'validating'].includes(task.phase)) task.phase = 'failed'
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (build?.status === 'building') {
+      build.status = 'failed'
+      build.completedAt = new Date()
+    }
+  }
+
+  async listBuilds(taskId: string): Promise<PlayableBuildRecord[]> {
+    return this.builds.filter((build) => build.taskId === taskId)
+  }
+
+  async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
+    return this.builds.find((build) => build.taskId === taskId && build.id === buildId)
   }
 
   async appendEvent(event: Omit<EventRecord, 'id' | 'createdAt'>): Promise<void> {
@@ -949,7 +992,7 @@ describe('playable task API', () => {
     await harness.scheduled[0]()
 
     const task = harness.repository.tasks.get('owned')
-    expect(task?.phase).toBe('reviewing')
+    expect(task?.phase).toBe('ready')
     expect(task?.latestArtifactKey).toMatch(/^users\/user-1\/tasks\/owned\/random-\d+\/playable\.html$/)
     expect([...harness.artifacts.keys()].sort()).toEqual([
       expect.stringMatching(/asset-manifest\.json$/),
@@ -958,6 +1001,9 @@ describe('playable task API', () => {
       expect.stringMatching(/validation-report\.json$/),
     ])
     expect(harness.repository.latestAssignments).toHaveLength(1)
+    expect(harness.repository.builds).toEqual([
+      expect.objectContaining({ status: 'succeeded', artifactKey: task?.latestArtifactKey }),
+    ])
   })
 
   it('loads owned private asset bytes for the build and persists the returned truthful manifest', async () => {
@@ -1131,7 +1177,7 @@ describe('playable task API', () => {
       artifactStore: harness.artifactStore,
     })
 
-    expect(task.phase).toBe('reviewing')
+    expect(task.phase).toBe('ready')
     expect(new TextDecoder().decode(harness.artifacts.get('users/user-1/tasks/owned/safe-build/playable.html'))).toBe(
       html,
     )
@@ -1276,9 +1322,9 @@ describe('playable task API', () => {
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
   })
 
-  it('requires human approval before downloads and exposes the complete delivery set after approval', async () => {
+  it('exposes the complete delivery set immediately after a successful build', async () => {
     const task = harness.repository.tasks.get('owned')!
-    task.phase = 'reviewing'
+    task.phase = 'ready'
     task.confirmation = confirmation
     task.latestArtifactKey = 'users/user-1/tasks/owned/build/playable.html'
     harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>preview</html>'))
@@ -1287,20 +1333,11 @@ describe('playable task API', () => {
       new TextEncoder().encode('{"core":{}}'),
     )
 
-    const blocked = await harness.handlers.artifact(
+    const playable = await harness.handlers.artifact(
       request('/api/playable-tasks/owned/artifact?kind=playable&download=1'),
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
-    expect(blocked.status).toBe(409)
-
-    const accepted = await harness.handlers.review(
-      request('/api/playable-tasks/owned/review', 'POST', { action: 'accept' }),
-      {
-        params: Promise.resolve({ taskId: 'owned' }),
-      },
-    )
-    expect(accepted.status).toBe(200)
-    expect(task.phase).toBe('ready')
+    expect(playable.status).toBe(200)
 
     const config = await harness.handlers.artifact(
       request('/api/playable-tasks/owned/artifact?kind=config&download=1'),
@@ -1310,15 +1347,74 @@ describe('playable task API', () => {
     expect(config.headers.get('content-disposition')).toBe('attachment; filename="production-config.json"')
     expect(await config.text()).toBe('{"core":{}}')
 
-    const reopened = await harness.handlers.review(
-      request('/api/playable-tasks/owned/review', 'POST', { action: 'revise' }),
+    expect(task.latestArtifactKey).toBe('users/user-1/tasks/owned/build/playable.html')
+  })
+
+  it('lists successful versions and streams a selected historical artifact', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build-2/playable.html'
+    harness.repository.builds.push(
       {
-        params: Promise.resolve({ taskId: 'owned' }),
+        id: 'build-1',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: 'users/user-1/tasks/owned/build-1/playable.html',
+        createdAt: new Date(1),
+        completedAt: new Date(2),
+      },
+      {
+        id: 'failed-build',
+        taskId: 'owned',
+        status: 'failed',
+        confirmation,
+        artifactKey: null,
+        createdAt: new Date(3),
+        completedAt: new Date(4),
+      },
+      {
+        id: 'build-2',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: task.latestArtifactKey,
+        createdAt: new Date(5),
+        completedAt: new Date(6),
       },
     )
-    expect(reopened.status).toBe(200)
-    expect(task.phase).toBe('awaiting_confirmation')
-    expect(task.latestArtifactKey).toBe('users/user-1/tasks/owned/build/playable.html')
+    harness.artifacts.set(
+      'users/user-1/tasks/owned/build-1/playable.html',
+      new TextEncoder().encode('<html>version one</html>'),
+    )
+
+    const versions = await harness.handlers.versions(request('/api/playable-tasks/owned/versions'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    const versionsBody = await versions.json()
+    expect(versionsBody).toEqual({
+      builds: [
+        expect.objectContaining({ id: 'build-1', status: 'succeeded', version: 1, current: false }),
+        expect.objectContaining({ id: 'failed-build', status: 'failed', version: null, current: false }),
+        expect.objectContaining({ id: 'build-2', status: 'succeeded', version: 2, current: true }),
+      ],
+    })
+    expect(JSON.stringify(versionsBody)).not.toContain('artifactKey')
+    expect(JSON.stringify(versionsBody)).not.toContain('confirmation')
+    expect(JSON.stringify(versionsBody)).not.toContain('users/user-1')
+
+    const historical = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&version=build-1'),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(historical.status).toBe(200)
+    expect(await historical.text()).toBe('<html>version one</html>')
+
+    const failedVersion = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&version=failed-build'),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(failedVersion.status).toBe(404)
   })
 
   it.each(['failed', 'validating'] as const)(

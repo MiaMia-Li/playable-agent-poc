@@ -50,6 +50,19 @@ export interface PlayableTaskMessageRecord {
   createdAt: Date
 }
 
+export type PlayableBuildStatus = 'building' | 'failed' | 'succeeded'
+
+export interface PlayableBuildRecord {
+  id: string
+  taskId: string
+  status: PlayableBuildStatus
+  confirmation: ConfirmationProposal
+  artifactKey: string | null
+  validation?: unknown
+  createdAt: Date
+  completedAt?: Date | null
+}
+
 export interface PlayableTaskRepository {
   createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord>
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
@@ -62,17 +75,21 @@ export interface PlayableTaskRepository {
     taskId: string,
     userId: string,
     confirmation: ConfirmationProposal,
+    buildId: string,
   ): Promise<PlayableTaskRecord | undefined>
   compareAndSetPhase(taskId: string, expected: PlayableTaskPhase, next: PlayableTaskPhase): Promise<boolean>
   publishArtifact(
     taskId: string,
+    buildId: string,
     expectedPhase: 'validating',
     artifactKey: string,
     validation: unknown,
   ): Promise<boolean>
   acceptArtifact(taskId: string, userId: string): Promise<boolean>
   requestRevision(taskId: string, userId: string): Promise<boolean>
-  markFailed(taskId: string): Promise<void>
+  markFailed(taskId: string, buildId: string): Promise<void>
+  listBuilds(taskId: string): Promise<PlayableBuildRecord[]>
+  findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined>
   appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void>
   listEvents(taskId: string): Promise<PlayableEventRecord[]>
   listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]>
@@ -286,9 +303,9 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
   }
 }
 
-async function recordBuildFailure(repository: PlayableTaskRepository, taskId: string): Promise<void> {
+async function recordBuildFailure(repository: PlayableTaskRepository, taskId: string, buildId: string): Promise<void> {
   await Promise.allSettled([
-    repository.markFailed(taskId),
+    repository.markFailed(taskId, buildId),
     repository.appendEvent({
       taskId,
       type: 'build_failed',
@@ -328,7 +345,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
   const { task, apiKey, mediaApiKey, buildId, repository, agent, artifactStore } = dependencies
   const generationApiKey = mediaApiKey ?? apiKey
   if (!task.confirmation) {
-    await recordBuildFailure(repository, task.id)
+    await recordBuildFailure(repository, task.id, buildId)
     return
   }
 
@@ -399,7 +416,10 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
     if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
     const validating = await repository.compareAndSetPhase(task.id, 'building', 'validating')
-    if (!validating) return
+    if (!validating) {
+      await recordBuildFailure(repository, task.id, buildId)
+      return
+    }
 
     const prefix = artifactPrefix(task, buildId)
     const playableKey = `${prefix}/playable.html`
@@ -414,23 +434,23 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
 
     stage = 'publish'
-    const published = await repository.publishArtifact(task.id, 'validating', playableKey, validationReport)
+    const published = await repository.publishArtifact(task.id, buildId, 'validating', playableKey, validationReport)
     if (!published) {
-      await recordBuildFailure(repository, task.id)
+      await recordBuildFailure(repository, task.id, buildId)
       return
     }
     console.log('Playable artifacts published')
     await repository
       .appendEvent({
         taskId: task.id,
-        type: 'review_requested',
-        phase: 'reviewing',
-        message: 'Playable build is ready for review',
+        type: 'build_succeeded',
+        phase: 'ready',
+        message: 'Playable build is ready',
       })
       .catch(() => undefined)
   } catch {
     logConfirmedBuildFailure(stage)
-    await recordBuildFailure(repository, task.id)
+    await recordBuildFailure(repository, task.id, buildId)
   }
 }
 
@@ -470,7 +490,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (access instanceof Response) return access
       const body = (await request.json().catch(() => undefined)) as { message?: unknown } | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
-      if (!['draft', 'awaiting_confirmation'].includes(access.task.phase)) {
+      if (!['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(access.task.phase)) {
         return jsonError(409, 'Task phase conflict')
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
@@ -680,9 +700,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
 
-      const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, sanitized)
-      if (!claimed) return jsonError(409, 'Task phase conflict')
       const buildId = dependencies.generateId()
+      const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, sanitized, buildId)
+      if (!claimed) return jsonError(409, 'Task phase conflict')
       try {
         dependencies.schedule(async () => {
           await settleWithin(
@@ -706,7 +726,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           })
         })
       } catch {
-        await recordBuildFailure(dependencies.repository, claimed.id)
+        await recordBuildFailure(dependencies.repository, claimed.id, buildId)
         return jsonError(500, 'Unable to schedule build')
       }
       return Response.json({ task: { id: claimed.id, phase: 'building' } }, { status: 202 })
@@ -719,6 +739,29 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
       return Response.json(
         { task: safeTaskState(latestTask), events: events.map(eventJson) },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      )
+    },
+
+    async versions(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      const builds = await dependencies.repository.listBuilds(access.task.id)
+      let successfulVersion = 0
+      return Response.json(
+        {
+          builds: builds.map((build) => {
+            const version = build.status === 'succeeded' ? ++successfulVersion : null
+            return {
+              id: build.id,
+              status: build.status,
+              version,
+              current: Boolean(build.artifactKey && build.artifactKey === access.task.latestArtifactKey),
+              createdAt: build.createdAt.toISOString(),
+              completedAt: build.completedAt?.toISOString() ?? null,
+            }
+          }),
+        },
         { headers: { 'Cache-Control': 'private, no-store' } },
       )
     },
@@ -756,14 +799,20 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const url = new URL(request.url)
-      if (!access.task.latestArtifactKey) return jsonError(404, 'Not found')
+      const versionId = url.searchParams.get('version')
+      let artifactKey = access.task.latestArtifactKey
+      if (versionId) {
+        const build = await dependencies.repository.findBuild(access.task.id, versionId)
+        if (!build || build.status !== 'succeeded' || !build.artifactKey) return jsonError(404, 'Not found')
+        artifactKey = build.artifactKey
+      }
+      if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
       const download = url.searchParams.get('download') === '1'
-      if (download && access.task.phase !== 'ready') return jsonError(409, 'Artifact requires review approval')
-      const prefix = access.task.latestArtifactKey.slice(0, -'/playable.html'.length)
+      const prefix = artifactKey.slice(0, -'/playable.html'.length)
       const artifacts = {
         playable: {
-          key: access.task.latestArtifactKey,
+          key: artifactKey,
           contentType: 'text/html; charset=utf-8',
           filename: 'playable.html',
         },

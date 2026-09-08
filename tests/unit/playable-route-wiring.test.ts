@@ -182,6 +182,7 @@ describe('real playable task route wiring', () => {
     expect(infrastructure.artifactStore.put).toHaveBeenCalledTimes(4)
     expect(infrastructure.repository.publishArtifact).toHaveBeenCalledWith(
       'task-1',
+      'build-1',
       'validating',
       'users/user-1/tasks/task-1/build-1/playable.html',
       expect.objectContaining({ passed: true, behavior: 'passed', bytes: 42 }),

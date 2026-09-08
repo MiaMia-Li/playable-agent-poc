@@ -17,6 +17,7 @@ import type { ConfirmationProposal, PlayableAgentReply, PlayableTaskPhase, Requi
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import type {
+  PlayableBuildRecord,
   PlayableEventRecord,
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
@@ -567,6 +568,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
   private readonly events = new Map<string, PlayableEventRecord[]>()
   private readonly assets = new Map<string, PlayableAsset[]>()
   private readonly messages = new Map<string, PlayableTaskMessageRecord[]>()
+  private readonly builds = new Map<string, PlayableBuildRecord[]>()
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -604,21 +606,21 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.requirementBrief = structuredClone(brief)
     return true
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.phase = 'draft'
     return true
   }
 
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
     return true
@@ -628,11 +630,22 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     taskId: string,
     userId: string,
     confirmation: ConfirmationProposal,
+    buildId: string,
   ): Promise<PlayableTaskRecord | undefined> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || task.phase !== 'awaiting_confirmation') return
+    if (!task || !['awaiting_confirmation', 'failed'].includes(task.phase)) return
     task.phase = 'building'
     task.confirmation = confirmation
+    const builds = this.builds.get(taskId) ?? []
+    builds.push({
+      id: buildId,
+      taskId,
+      status: 'building',
+      confirmation: structuredClone(confirmation),
+      artifactKey: null,
+      createdAt: new Date(),
+    })
+    this.builds.set(taskId, builds)
     return task
   }
 
@@ -645,15 +658,23 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async publishArtifact(
     taskId: string,
+    buildId: string,
     expectedPhase: 'validating',
     artifactKey: string,
     validation: unknown,
   ): Promise<boolean> {
     const task = this.tasks.get(taskId)
     if (!task || task.phase !== expectedPhase) return false
-    task.phase = 'reviewing'
+    const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
+    if (!build || build.status !== 'building') return false
+    const completedAt = new Date()
+    task.phase = 'ready'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
+    build.status = 'succeeded'
+    build.artifactKey = artifactKey
+    build.validation = validation
+    build.completedAt = completedAt
     return true
   }
 
@@ -671,9 +692,22 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return true
   }
 
-  async markFailed(taskId: string): Promise<void> {
+  async markFailed(taskId: string, buildId: string): Promise<void> {
     const task = this.tasks.get(taskId)
     if (task && ['building', 'validating'].includes(task.phase)) task.phase = 'failed'
+    const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
+    if (build?.status === 'building') {
+      build.status = 'failed'
+      build.completedAt = new Date()
+    }
+  }
+
+  async listBuilds(taskId: string): Promise<PlayableBuildRecord[]> {
+    return this.builds.get(taskId) ?? []
+  }
+
+  async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
+    return this.builds.get(taskId)?.find((build) => build.id === buildId)
   }
 
   async appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void> {

@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
-import { playableTaskAssets, playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
+import { playableTaskAssets, playableTaskBuilds, playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
@@ -11,6 +11,7 @@ import {
   type RequirementBrief,
 } from './schemas'
 import type {
+  PlayableBuildRecord,
   PlayableEventRecord,
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
@@ -31,6 +32,19 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     latestValidation: row.latestValidation,
     title: row.title,
     createdAt: row.createdAt,
+  }
+}
+
+function toBuild(row: typeof playableTaskBuilds.$inferSelect): PlayableBuildRecord {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    status: row.status,
+    confirmation: confirmationProposalSchema.parse(row.confirmation),
+    artifactKey: row.artifactKey,
+    validation: row.validation,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
   }
 }
 
@@ -84,7 +98,11 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .update(tasks)
       .set({ requirementBrief: requirementBriefSchema.parse(brief), updatedAt: new Date() })
       .where(
-        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+        and(
+          eq(tasks.id, taskId),
+          eq(tasks.userId, userId),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+        ),
       )
       .returning({ id: tasks.id })
     return updated.length === 1
@@ -95,7 +113,11 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .update(tasks)
       .set({ phase: 'draft', updatedAt: new Date() })
       .where(
-        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+        and(
+          eq(tasks.id, taskId),
+          eq(tasks.userId, userId),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+        ),
       )
       .returning({ id: tasks.id })
     return updated.length === 1
@@ -106,7 +128,11 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .update(tasks)
       .set({ phase: 'awaiting_confirmation', confirmation, updatedAt: new Date() })
       .where(
-        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+        and(
+          eq(tasks.id, taskId),
+          eq(tasks.userId, userId),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+        ),
       )
       .returning({ id: tasks.id })
     return updated.length === 1
@@ -116,18 +142,34 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     taskId: string,
     userId: string,
     confirmation: ConfirmationProposal,
+    buildId: string,
   ): Promise<PlayableTaskRecord | undefined> {
-    const [task] = await db
-      .update(tasks)
-      .set({
-        phase: 'building',
-        playableMode: confirmation.mode,
-        confirmation,
-        updatedAt: new Date(),
+    return db.transaction(async (transaction) => {
+      const [task] = await transaction
+        .update(tasks)
+        .set({
+          phase: 'building',
+          playableMode: confirmation.mode,
+          confirmation,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            eq(tasks.userId, userId),
+            inArray(tasks.phase, ['awaiting_confirmation', 'failed']),
+          ),
+        )
+        .returning()
+      if (!task) return undefined
+      await transaction.insert(playableTaskBuilds).values({
+        id: buildId,
+        taskId,
+        status: 'building',
+        confirmation: confirmationProposalSchema.parse(confirmation),
       })
-      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), eq(tasks.phase, 'awaiting_confirmation')))
-      .returning()
-    return task ? toTask(task) : undefined
+      return toTask(task)
+    })
   }
 
   async compareAndSetPhase(taskId: string, expected: PlayableTaskPhase, next: PlayableTaskPhase): Promise<boolean> {
@@ -141,22 +183,39 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
 
   async publishArtifact(
     taskId: string,
+    buildId: string,
     expectedPhase: 'validating',
     artifactKey: string,
     validation: unknown,
   ): Promise<boolean> {
-    const updated = await db
-      .update(tasks)
-      .set({
-        phase: 'reviewing',
-        latestArtifactKey: artifactKey,
-        latestValidation: validation,
-        completedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, taskId), eq(tasks.phase, expectedPhase)))
-      .returning({ id: tasks.id })
-    return updated.length === 1
+    return db.transaction(async (transaction) => {
+      const completedAt = new Date()
+      const updatedTasks = await transaction
+        .update(tasks)
+        .set({
+          phase: 'ready',
+          latestArtifactKey: artifactKey,
+          latestValidation: validation,
+          completedAt,
+          updatedAt: completedAt,
+        })
+        .where(and(eq(tasks.id, taskId), eq(tasks.phase, expectedPhase)))
+        .returning({ id: tasks.id })
+      if (updatedTasks.length !== 1) return false
+      const updatedBuilds = await transaction
+        .update(playableTaskBuilds)
+        .set({ status: 'succeeded', artifactKey, validation, completedAt })
+        .where(
+          and(
+            eq(playableTaskBuilds.id, buildId),
+            eq(playableTaskBuilds.taskId, taskId),
+            eq(playableTaskBuilds.status, 'building'),
+          ),
+        )
+        .returning({ id: playableTaskBuilds.id })
+      if (updatedBuilds.length !== 1) throw new Error('Build record transition failed')
+      return true
+    })
   }
 
   async acceptArtifact(taskId: string, userId: string): Promise<boolean> {
@@ -179,11 +238,42 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
-  async markFailed(taskId: string): Promise<void> {
-    await db
-      .update(tasks)
-      .set({ phase: 'failed', updatedAt: new Date() })
-      .where(and(eq(tasks.id, taskId), inArray(tasks.phase, ['building', 'validating'])))
+  async markFailed(taskId: string, buildId: string): Promise<void> {
+    await db.transaction(async (transaction) => {
+      const completedAt = new Date()
+      await transaction
+        .update(tasks)
+        .set({ phase: 'failed', updatedAt: completedAt })
+        .where(and(eq(tasks.id, taskId), inArray(tasks.phase, ['building', 'validating'])))
+      await transaction
+        .update(playableTaskBuilds)
+        .set({ status: 'failed', completedAt })
+        .where(
+          and(
+            eq(playableTaskBuilds.id, buildId),
+            eq(playableTaskBuilds.taskId, taskId),
+            eq(playableTaskBuilds.status, 'building'),
+          ),
+        )
+    })
+  }
+
+  async listBuilds(taskId: string): Promise<PlayableBuildRecord[]> {
+    const rows = await db
+      .select()
+      .from(playableTaskBuilds)
+      .where(eq(playableTaskBuilds.taskId, taskId))
+      .orderBy(asc(playableTaskBuilds.createdAt))
+    return rows.map(toBuild)
+  }
+
+  async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
+    const [row] = await db
+      .select()
+      .from(playableTaskBuilds)
+      .where(and(eq(playableTaskBuilds.taskId, taskId), eq(playableTaskBuilds.id, buildId)))
+      .limit(1)
+    return row ? toBuild(row) : undefined
   }
 
   async appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void> {

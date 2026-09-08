@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SQL } from 'drizzle-orm'
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
-import { playableTaskAssets, playableTaskEvents } from '@/lib/db/schema'
+import { playableTaskAssets, playableTaskBuilds, playableTaskEvents } from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -31,11 +31,16 @@ const database = vi.hoisted(() => {
   const where = vi.fn((_condition: unknown) => ({ returning }))
   const set = vi.fn(() => ({ where }))
   const update = vi.fn(() => ({ set }))
-  return { update, set, where, returning }
+  const values = vi.fn()
+  const insert = vi.fn(() => ({ values }))
+  const transaction = vi.fn(async (operation: (client: { update: typeof update; insert: typeof insert }) => unknown) =>
+    operation({ update, insert }),
+  )
+  return { update, set, where, returning, insert, values, transaction }
 })
 
 vi.mock('@/lib/db/client', () => ({
-  db: { update: database.update },
+  db: { update: database.update, transaction: database.transaction },
 }))
 
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
@@ -72,15 +77,15 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
     ])
     const repository = new DatabasePlayableTaskRepository()
 
-    await expect(repository.claimBuild('task-1', 'user-1', confirmation)).resolves.toMatchObject({
+    await expect(repository.claimBuild('task-1', 'user-1', confirmation, 'build-1')).resolves.toMatchObject({
       phase: 'building',
     })
 
     const query = new PgDialect().sqlToQuery(database.where.mock.calls[0][0] as SQL)
     expect(query.sql).toContain('"tasks"."id" = $')
     expect(query.sql).toContain('"tasks"."user_id" = $')
-    expect(query.sql).toContain('"tasks"."phase" = $')
-    expect(query.params).toEqual(['task-1', 'user-1', 'awaiting_confirmation'])
+    expect(query.sql).toContain('"tasks"."phase" in ($')
+    expect(query.params).toEqual(['task-1', 'user-1', 'awaiting_confirmation', 'failed'])
     expect(database.set).toHaveBeenCalledWith(
       expect.objectContaining({
         phase: 'building',
@@ -91,11 +96,11 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
   })
 
   it('publishes with a validating compare-and-set instead of an unconditional update', async () => {
-    database.returning.mockResolvedValueOnce([{ id: 'task-1' }])
+    database.returning.mockResolvedValueOnce([{ id: 'task-1' }]).mockResolvedValueOnce([{ id: 'build-1' }])
     const repository = new DatabasePlayableTaskRepository()
 
     await expect(
-      repository.publishArtifact('task-1', 'validating', 'users/user-1/tasks/task-1/build/playable.html', {
+      repository.publishArtifact('task-1', 'build-1', 'validating', 'users/user-1/tasks/task-1/build/playable.html', {
         behavior: 'passed',
       }),
     ).resolves.toBe(true)
@@ -106,7 +111,7 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
     expect(query.params).toEqual(['task-1', 'validating'])
     expect(database.set).toHaveBeenCalledWith(
       expect.objectContaining({
-        phase: 'reviewing',
+        phase: 'ready',
         latestArtifactKey: 'users/user-1/tasks/task-1/build/playable.html',
       }),
     )
@@ -120,6 +125,16 @@ describe('playable task event storage', () => {
     )
 
     expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'created_at'])
+  })
+})
+
+describe('playable task build storage', () => {
+  it('indexes immutable build history by task and creation time', () => {
+    const config = getTableConfig(playableTaskBuilds)
+    const index = config.indexes.find((candidate) => candidate.config.name === 'playable_task_builds_task_created_idx')
+
+    expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'created_at'])
+    expect(config.columns.find((column) => column.name === 'artifact_key')?.isUnique).toBe(true)
   })
 })
 

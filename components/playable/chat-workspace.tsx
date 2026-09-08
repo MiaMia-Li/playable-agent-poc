@@ -25,22 +25,19 @@ import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable } from './confirmation-table'
 
 const stages = [
-  ['draft', '需求整理'],
-  ['awaiting_confirmation', '等待确认'],
-  ['building', '构建中'],
-  ['validating', '验证中'],
-  ['reviewing', '待验收'],
-  ['ready', '已交付'],
+  ['plan', '方案'],
+  ['generating', '生成中'],
+  ['playable', '可试玩'],
 ] as const
 const phaseNames: Record<PlayableTaskPhase, string> = {
-  draft: '需求整理',
-  awaiting_confirmation: '等待确认',
-  building: '构建中',
-  validating: '验证中',
-  reviewing: '等待人工验收',
-  ready: '已验收，可交付',
+  draft: '整理方案',
+  awaiting_confirmation: '方案待确认',
+  building: '生成试玩',
+  validating: '检查试玩',
+  reviewing: '试玩已生成',
+  ready: '可试玩',
   needs_plugin: '需要新增 Plugin',
-  failed: '构建失败',
+  failed: '本次生成失败',
   cancelled: '已取消',
 }
 const requirementToolLabels: Record<string, string> = {
@@ -186,7 +183,13 @@ export function ChatWorkspace({
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
   const autoSubmitted = useRef(false)
-  const canCompose = phase === 'draft' || phase === 'awaiting_confirmation'
+  const canCompose = ['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(phase)
+  const currentStage =
+    phase === 'building' || phase === 'validating' || phase === 'failed'
+      ? 'generating'
+      : phase === 'reviewing' || phase === 'ready'
+        ? 'playable'
+        : 'plan'
 
   useEffect(() => {
     if (!sending || !scrollContainer.current) return
@@ -434,12 +437,18 @@ export function ChatWorkspace({
     <section aria-label="需求对话" className="flex min-h-0 flex-col overflow-hidden">
       <div ref={scrollContainer} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pt-5 pb-1">
         <section aria-label="构建进度" className="bg-muted/50 rounded-xl p-3">
-          <ol className="grid grid-cols-6 gap-1">
+          <ol className="grid grid-cols-3 gap-1">
             {stages.map(([id, label]) => (
               <li
                 key={id}
-                aria-current={phase === id ? 'step' : undefined}
-                className={phase === id ? 'text-primary font-semibold' : 'text-muted-foreground'}
+                aria-current={currentStage === id ? 'step' : undefined}
+                className={
+                  currentStage === id
+                    ? phase === 'failed'
+                      ? 'text-destructive font-semibold'
+                      : 'text-primary font-semibold'
+                    : 'text-muted-foreground'
+                }
               >
                 <span className="mb-1 block h-1 rounded-full bg-current" />
                 <span className="text-[10px] sm:text-xs">{label}</span>
@@ -578,7 +587,7 @@ export function ChatWorkspace({
           />
         )}
 
-        {(phase === 'ready' || phase === 'needs_plugin' || phase === 'failed' || phase === 'cancelled') && (
+        {(phase === 'needs_plugin' || phase === 'cancelled') && (
           <Button asChild variant="outline" className="w-full">
             <Link href="/">新建试玩</Link>
           </Button>

@@ -5,7 +5,7 @@
 
 ## 1. 当前产品定位
 
-当前 POC 是一个面向 C6 麻将配对类试玩广告的生产工作台。用户通过对话描述需求，系统将需求路由到已注册的 Playable Plugin，生成结构化确认方案，并在隔离环境中构建和验证单文件 HTML。自动门禁通过后，用户需要进行人工验收，验收完成才能下载正式交付物。
+当前 POC 是一个面向 C6 麻将配对类试玩广告的生产工作台。用户通过对话描述需求，系统将需求路由到已注册的 Playable Plugin，生成结构化确认方案，并在隔离环境中构建和验证单文件 HTML。自动门禁通过后，系统保存新的成功版本，用户可以立即试玩、下载或继续修改。
 
 当前主链路如下：
 
@@ -17,8 +17,8 @@
   → 素材准备
   → 隔离构建
   → 自动质量门禁
-  → 人工验收
-  → 四件套交付
+  → 保存成功版本
+  → 试玩、下载或继续修改
 ```
 
 目前只注册了一个版本化 Plugin：`mahjong-pair-match-playable@1.1.0`，运行时版本为 `2`，支持 AppLovin 单 HTML 交付。
@@ -129,7 +129,7 @@
 
 ### 2.7 自动质量门禁
 
-只有所有自动门禁通过，构建结果才能进入人工验收阶段。
+只有所有自动门禁通过，构建结果才能发布为新的成功版本。
 
 当前自动检查包括：
 
@@ -148,17 +148,16 @@
 
 系统会生成结构化验证报告，记录 Plugin/运行时版本、包体大小以及每一个门禁的通过/失败状态。
 
-### 2.8 Preview、人工验收和交付
+### 2.8 Preview、版本和交付
 
-- 自动门禁通过后，任务进入 `reviewing`，不会直接标记为可交付。
+- 自动门禁通过后，任务直接进入 `ready`，可以立即试玩和下载。
 - Preview 支持竖屏、横屏容器切换、刷新和静音控制，默认保持静音。
 - Preview 使用 `iframe sandbox="allow-scripts"`，不授予同源、表单和顶层导航权限。
 - 服务端同时设置严格 CSP：禁止网络连接、外部资源、表单提交和父页面越权访问。
-- 用户可以选择：
-  - `验收通过`：任务进入 `ready`，开放下载。
-  - `返回修改`：任务回到 `awaiting_confirmation`，保留上一个成功版本供对比。
-- 新构建失败时不会清空上一个成功 Preview。
-- 只有任务所有者且任务已经人工验收，才能下载正式交付物。
+- 每次构建都有独立记录；成功构建按时间编号为 v1、v2、v3，并可切换预览和下载。
+- 新构建失败时不会清空或替换上一个成功 Preview。
+- 任务成功或失败后仍可继续自然语言对话；新方案确认后创建下一次构建。
+- 只有任务所有者才能查看版本、预览和下载交付物。
 - 当前交付四件套：
 
 | 文件                     | 作用                       |
@@ -199,10 +198,9 @@
 11. 服务端认领当前版本并准备用户上传素材。
 12. 系统创建隔离 Sandbox，复制只读 Plugin、确认配置和任务素材。
 13. Codex 在任务工作区执行构建，随后运行行为和安全检查。
-14. 全部门禁通过后，系统保存四件套产物，任务进入 `reviewing`。
-15. 用户在 Preview 中切换横竖屏、刷新、控制静音，并检查视觉、节奏、易理解性和品牌一致性。
-16. 用户点击“验收通过”，任务进入 `ready`。
-17. 用户下载 HTML、生产配置、素材清单和验证报告。
+14. 全部门禁通过后，系统保存四件套产物和成功版本记录，任务直接进入 `ready`。
+15. 用户在 Preview 中切换版本、横竖屏、刷新、控制静音，并检查视觉、节奏、易理解性和品牌一致性。
+16. 用户可以立即下载 HTML、生产配置、素材清单和验证报告，也可以继续对话修改下一版方案。
 
 ### 3.2 澄清分支
 
@@ -226,17 +224,17 @@ draft
   → Agent 标记为 freeform，并列出与参考模板的差异
   → 用户确认玩法方案
   → 大模型直接生成单文件 HTML
-  → 通过通用质量门禁后进入人工验收
+  → 通过通用质量门禁后成为可试玩版本
 ```
 
 参考模式只提供素材和工程脚手架，不限制自由生成的状态机。系统不会创建新增 Plugin 需求单，也不会阻断当前生产任务。
 
-### 3.5 构建失败和返修分支
+### 3.5 构建失败和继续修改分支
 
 - 构建或自动门禁失败：任务进入 `failed`。
 - 如果已有历史成功版本，右侧继续显示旧版本，不展示失败半成品。
-- 用户可以“返回修改”，重新进入确认阶段并提交新版本。
-- 已验收任务也可以返回修改，旧产物继续保留到新版本成功。
+- 用户可以直接重试构建，或在左侧继续描述需要修改的内容。
+- 可试玩任务也可以继续对话生成新方案，旧产物保留到新版本成功。
 
 ### 3.6 当前状态机
 
@@ -250,12 +248,11 @@ stateDiagram-v2
     awaiting_confirmation --> building: 用户确认构建
     building --> validating: 构建产物完成
     building --> failed: 构建失败
-    validating --> reviewing: 自动门禁通过
+    validating --> ready: 自动门禁通过并发布成功版本
     validating --> failed: 自动门禁失败
-    reviewing --> ready: 人工验收通过
-    reviewing --> awaiting_confirmation: 返回修改
-    ready --> awaiting_confirmation: 创建返修版本
-    failed --> awaiting_confirmation: 修正后重试
+    ready --> awaiting_confirmation: 对话生成新方案
+    failed --> awaiting_confirmation: 对话修正方案
+    failed --> building: 原方案重试
 ```
 
 Schema 中已经预留 `cancelled` 状态，但当前 Playable 页面还没有完整的持久化取消任务 API，因此没有把它画入已落地的状态流。
@@ -318,7 +315,7 @@ flowchart TB
 | `/api/playable-tasks/:taskId/assets`   | `POST`        | 上传任务素材                  |
 | `/api/playable-tasks/:taskId/confirm`  | `POST`        | 校验确认方案并异步开始构建    |
 | `/api/playable-tasks/:taskId/events`   | `GET`         | 查询任务状态、确认配置和事件  |
-| `/api/playable-tasks/:taskId/review`   | `POST`        | 验收通过或返回修改            |
+| `/api/playable-tasks/:taskId/versions` | `GET`         | 查询构建记录与成功版本        |
 | `/api/playable-tasks/:taskId/artifact` | `GET`         | 安全预览或下载指定交付物      |
 | `/api/session/openai-key`              | `POST/DELETE` | 设置或清除会话级 OpenAI Key   |
 | `/api/session/openai-key/check`        | `GET`         | 查询当前会话是否已配置 Key    |
@@ -364,10 +361,10 @@ ConfirmationProposal
 ### 4.7 并发和一致性
 
 - 关键状态变化使用数据库条件更新，相当于轻量 Compare-And-Set。
-- 只有 `awaiting_confirmation` 任务能够被认领为 `building`。
-- 只有 `building` 能进入 `validating`，只有 `validating` 能发布为 `reviewing`。
-- 只有 `reviewing` 能验收为 `ready`。
-- 任务状态已经变化时，重复确认或重复验收返回冲突，避免同一版本被多次认领。
+- 只有 `awaiting_confirmation` 或 `failed` 任务能够被认领为 `building`。
+- 构建认领与构建记录创建在同一事务中完成。
+- 只有 `building` 能进入 `validating`，只有 `validating` 能原子发布成功版本并进入 `ready`。
+- 任务状态已经变化时，重复确认返回冲突，避免同一次构建被多次认领。
 
 ### 4.8 测试和工程保障
 
@@ -379,9 +376,9 @@ ConfirmationProposal
 - 素材上传、大小、类型、归属和安全元数据。
 - 真实构建脚本、上传素材内联和确认文案内联。
 - Sandbox 主副本防篡改、凭证泄露、包体、离线资源和响应式门禁。
-- 任务状态并发、构建失败、人工验收、返修和下载权限。
+- 任务状态并发、构建失败、版本切换和下载权限。
 - Preview iframe 隔离、默认静音、刷新和历史成功版本保留。
-- 当前基线为 21 个测试文件、212 条自动化测试。
+- 当前基线为 23 个测试文件、241 条自动化测试。
 
 工程检查包括 Prettier、TypeScript、ESLint、Vitest 和 Next.js 生产构建。项目还要求所有日志只使用静态字符串，避免动态路径、用户信息、凭证或内部错误进入用户可见日志。
 
@@ -395,9 +392,9 @@ ConfirmationProposal
 - 确认后构建，模板构建和自由生成都不能绕过配置与质量门禁。
 - 用户上传和内置默认两类可用素材来源；AI 入口保留但置灰。
 - Vercel Sandbox 隔离执行和只读主模板保护。
-- 自动质量门禁、人工验收和验收后交付。
+- 自动质量门禁、成功版本记录和即时交付。
 - HTML、生产配置、素材清单和验证报告四件套。
-- 不支持模板的玩法由大模型自由生成，并沿用统一确认和验收流程。
+- 不支持模板的玩法由大模型自由生成，并沿用统一确认、版本和验证流程。
 
 ### 5.2 部分实现的部分
 
@@ -447,7 +444,7 @@ ConfirmationProposal
 4. **完成任务取消和幂等机制**
    - 增加持久化取消 API，让 `cancelled` 真正进入状态机。
    - 取消时终止 Agent、Sandbox、素材生成和后台任务。
-   - 为确认、验收和下载加入版本号或幂等键，避免旧页面操作新版本。
+   - 为确认操作加入幂等键，并继续完善版本化下载的并发保护，避免旧页面触发重复构建或误操作新版本。
 
 5. **加强数据库约束**
    - 为 Playable phase、mode 和关键 JSON 版本增加数据库约束或显式版本字段。
@@ -529,6 +526,6 @@ ConfirmationProposal
 | BYOK 会话                    | `lib/playable/byok-session.ts`                                             |
 | 对话 UI                      | `components/playable/chat-workspace.tsx`                                   |
 | 配置确认 UI                  | `components/playable/confirmation-table.tsx`                               |
-| Preview、验收和下载 UI       | `components/playable/playable-preview.tsx`                                 |
+| Preview、版本切换和下载 UI   | `components/playable/playable-preview.tsx`                                 |
 | Playable 构建脚本            | `skills/mahjong-pair-match-playable/assets/starter/build-playable.mjs`     |
 | Playable 行为测试            | `skills/mahjong-pair-match-playable/assets/starter/work/test-playable.mjs` |

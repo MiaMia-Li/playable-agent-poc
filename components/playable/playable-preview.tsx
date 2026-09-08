@@ -1,20 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  CheckCircle2,
-  Download,
-  FileJson2,
-  Monitor,
-  RefreshCw,
-  RotateCcw,
-  Smartphone,
-  Volume2,
-  VolumeX,
-} from 'lucide-react'
+import { Download, FileJson2, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
 import type { PlayableTaskPhase } from '@/lib/playable/schemas'
+import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
 interface PlayablePreviewProps {
@@ -22,7 +14,18 @@ interface PlayablePreviewProps {
   phase: PlayableTaskPhase
   hasArtifact?: boolean
   artifactVersion?: string | null
+  confirmation?: ConfirmationProposal
   onPhase?: (phase: PlayableTaskPhase) => void
+  onRequireApiKey?: () => void
+}
+
+interface PlayableBuildSummary {
+  id: string
+  status: 'building' | 'failed' | 'succeeded'
+  version: number | null
+  current: boolean
+  createdAt: string
+  completedAt: string | null
 }
 
 export function PlayablePreview({
@@ -30,51 +33,97 @@ export function PlayablePreview({
   phase,
   hasArtifact = phase === 'ready',
   artifactVersion = null,
+  confirmation,
   onPhase,
+  onRequireApiKey,
 }: PlayablePreviewProps) {
-  const authenticatedArtifactUrl = useMemo(
-    () => `/api/playable-tasks/${encodeURIComponent(taskId)}/artifact?kind=playable`,
-    [taskId],
-  )
+  const [builds, setBuilds] = useState<PlayableBuildSummary[]>([])
+  const [selectedBuildId, setSelectedBuildId] = useState<string>()
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait')
   const [muted, setMuted] = useState(true)
   const [manualVersion, setManualVersion] = useState(0)
-  const [reviewing, setReviewing] = useState(false)
-  const [reviewError, setReviewError] = useState('')
+  const [retrying, setRetrying] = useState(false)
+  const [actionError, setActionError] = useState('')
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const frameKey = `${artifactVersion ?? 'existing'}:${manualVersion}`
+  const successfulBuilds = builds.filter(
+    (build): build is PlayableBuildSummary & { version: number } =>
+      build.status === 'succeeded' && build.version !== null,
+  )
+  const selectedBuild = successfulBuilds.find((build) => build.id === selectedBuildId)
+  const displayedVersion = selectedBuild?.version ?? successfulBuilds.find((build) => build.current)?.version
+  const authenticatedArtifactUrl = useMemo(() => {
+    const parameters = new URLSearchParams({ kind: 'playable' })
+    if (selectedBuildId) parameters.set('version', selectedBuildId)
+    return `/api/playable-tasks/${encodeURIComponent(taskId)}/artifact?${parameters.toString()}`
+  }, [selectedBuildId, taskId])
+  const frameKey = `${selectedBuildId ?? artifactVersion ?? 'existing'}:${manualVersion}`
+
+  useEffect(() => {
+    if (!hasArtifact) return
+    let active = true
+    void fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/versions`, { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('无法加载版本记录')
+        return (await response.json()) as { builds?: PlayableBuildSummary[] }
+      })
+      .then(({ builds: responseBuilds }) => {
+        if (!active) return
+        const nextBuilds = responseBuilds ?? []
+        setBuilds(nextBuilds)
+        setSelectedBuildId(nextBuilds.find((build) => build.current)?.id)
+      })
+      .catch(() => {
+        if (active) setActionError('无法加载版本记录')
+      })
+    return () => {
+      active = false
+    }
+  }, [artifactVersion, hasArtifact, taskId])
 
   const postMute = (value: boolean) => {
     iframeRef.current?.contentWindow?.postMessage({ type: 'playable:set-muted', muted: value }, '*')
   }
   useEffect(() => postMute(muted), [muted, frameKey])
 
-  const size = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
+  const logicalSize = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
+  const displaySize = orientation === 'portrait' ? { width: 432, height: 768 } : { width: 768, height: 432 }
+  const displayRatio = displaySize.width / displaySize.height
   const emptyMessage =
     phase === 'failed'
-      ? '构建失败，请返回修改方案后重新构建。'
+      ? '本次构建失败，可以直接重试或在左侧修改方案。'
       : phase === 'building'
         ? 'Codex 正在构建试玩…'
         : phase === 'validating'
           ? '正在验证试玩…'
           : '确认方案并完成构建后，试玩将在这里出现。'
 
-  async function submitReview(action: 'accept' | 'revise') {
-    if (reviewing) return
-    setReviewing(true)
-    setReviewError('')
+  function artifactUrl(kind: 'playable' | 'config' | 'manifest' | 'validation', download = false) {
+    const parameters = new URLSearchParams({ kind })
+    if (selectedBuildId) parameters.set('version', selectedBuildId)
+    if (download) parameters.set('download', '1')
+    return `/api/playable-tasks/${encodeURIComponent(taskId)}/artifact?${parameters.toString()}`
+  }
+
+  async function retryBuild() {
+    if (retrying || phase !== 'failed' || !confirmation) return
+    setRetrying(true)
+    setActionError('')
     try {
-      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/review`, {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ confirmation }),
       })
-      if (!response.ok) throw new Error('无法更新验收状态')
-      onPhase?.(action === 'accept' ? 'ready' : 'awaiting_confirmation')
+      if (response.status === 428) {
+        onRequireApiKey?.()
+        throw new Error('请先配置 API Key')
+      }
+      if (!response.ok) throw new Error('无法重新构建')
+      onPhase?.('building')
     } catch (cause) {
-      setReviewError(cause instanceof Error ? cause.message : '无法更新验收状态')
+      setActionError(cause instanceof Error ? cause.message : '无法重新构建')
     } finally {
-      setReviewing(false)
+      setRetrying(false)
     }
   }
 
@@ -132,7 +181,7 @@ export function PlayablePreview({
           >
             {muted ? <VolumeX /> : <Volume2 />}
           </Button>
-          {hasArtifact && phase === 'ready' ? (
+          {hasArtifact ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button size="icon" variant="ghost" aria-label="下载交付物">
@@ -142,7 +191,7 @@ export function PlayablePreview({
               <DropdownMenuContent align="end">
                 {downloads.map(([kind, label]) => (
                   <DropdownMenuItem key={kind} asChild>
-                    <a href={`${authenticatedArtifactUrl.replace('kind=playable', `kind=${kind}`)}&download=1`}>
+                    <a href={artifactUrl(kind, true)}>
                       <FileJson2 aria-hidden="true" />
                       {label}
                     </a>
@@ -157,14 +206,44 @@ export function PlayablePreview({
           )}
         </div>
       </div>
+      {hasArtifact && (
+        <div className="flex shrink-0 items-center justify-center gap-2 px-4 pb-2">
+          <span className="text-muted-foreground text-xs">试玩版本</span>
+          {successfulBuilds.length > 1 ? (
+            <Select value={selectedBuildId} onValueChange={setSelectedBuildId}>
+              <SelectTrigger size="sm" className="w-28" aria-label="选择试玩版本">
+                <SelectValue placeholder={displayedVersion ? `v${displayedVersion}` : '当前版本'} />
+              </SelectTrigger>
+              <SelectContent>
+                {[...successfulBuilds].reverse().map((build) => (
+                  <SelectItem key={build.id} value={build.id}>
+                    v{build.version}
+                    {build.current ? ' · 当前' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <span className="text-xs font-medium">{displayedVersion ? `v${displayedVersion}` : '当前版本'}</span>
+          )}
+        </div>
+      )}
+      {phase === 'failed' && hasArtifact && (
+        <p className="text-muted-foreground shrink-0 px-4 pb-2 text-center text-xs">
+          本次构建失败，正在展示上一成功版本。
+        </p>
+      )}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 sm:p-6">
         <div
           className={cn(
             'bg-background relative shrink-0 overflow-hidden rounded-[1.75rem] border-[6px] border-foreground/90 shadow-2xl transition-[width,height] duration-300',
             muted && 'after:absolute after:right-3 after:top-3 after:size-2 after:rounded-full after:bg-amber-400',
           )}
-          style={{ width: size.width, height: size.height, maxWidth: '100%' }}
-          aria-label={`${orientation === 'portrait' ? '竖屏' : '横屏'}画布 ${size.width} × ${size.height}`}
+          style={{
+            width: `min(${displaySize.width}px, 100%, calc((100dvh - 10rem) * ${displayRatio}))`,
+            aspectRatio: `${displaySize.width} / ${displaySize.height}`,
+          }}
+          aria-label={`${orientation === 'portrait' ? '竖屏' : '横屏'}画布 ${logicalSize.width} × ${logicalSize.height}`}
         >
           {hasArtifact ? (
             <iframe
@@ -181,32 +260,30 @@ export function PlayablePreview({
               <Smartphone className="size-10 opacity-40" aria-hidden="true" />
               <p className="text-sm">{emptyMessage}</p>
               {phase === 'failed' && (
-                <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
-                  <RotateCcw aria-hidden="true" />
-                  返回修改
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={retrying || !confirmation}
+                  onClick={() => void retryBuild()}
+                >
+                  {retrying ? '正在重试…' : '重试构建'}
                 </Button>
               )}
             </div>
           )}
         </div>
       </div>
-      {hasArtifact && ['reviewing', 'ready', 'failed'].includes(phase) && (
+      {phase === 'failed' && hasArtifact && (
         <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 px-4 pb-4">
-          <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
-            <RotateCcw aria-hidden="true" />
-            返回修改
+          <Button size="sm" variant="outline" disabled={retrying || !confirmation} onClick={() => void retryBuild()}>
+            {retrying ? '正在重试…' : '重试构建'}
           </Button>
-          {phase === 'reviewing' && (
-            <Button size="sm" disabled={reviewing} onClick={() => void submitReview('accept')}>
-              <CheckCircle2 aria-hidden="true" />
-              验收通过
-            </Button>
-          )}
+          <span className="text-muted-foreground text-xs">也可以在左侧直接描述需要修改的内容。</span>
         </div>
       )}
-      {reviewError && (
+      {actionError && (
         <p className="text-destructive shrink-0 px-4 pb-3 text-center text-xs" role="alert">
-          {reviewError}
+          {actionError}
         </p>
       )}
     </section>

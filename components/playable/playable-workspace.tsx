@@ -181,7 +181,9 @@ export function PlayableWorkspace({
           phase={phase}
           hasArtifact={hasArtifact}
           artifactVersion={artifactVersion}
+          confirmation={proposalDraft}
           onPhase={setPhase}
+          onRequireApiKey={requireApiKey}
         />
       </div>
       {!localDemo && (
@@ -221,14 +223,14 @@ interface PlayableHomeProps {
 }
 
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
-  draft: '需求整理',
-  awaiting_confirmation: '等待确认',
-  building: '构建中',
-  validating: '验证中',
-  reviewing: '等待验收',
-  ready: '已交付',
+  draft: '整理方案',
+  awaiting_confirmation: '方案待确认',
+  building: '生成中',
+  validating: '检查中',
+  reviewing: '可试玩',
+  ready: '可试玩',
   needs_plugin: '需要新增 Plugin',
-  failed: '构建失败',
+  failed: '本次生成失败',
 }
 
 export function PlayableHome({

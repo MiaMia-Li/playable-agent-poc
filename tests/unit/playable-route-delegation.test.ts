@@ -8,6 +8,7 @@ const handlers = vi.hoisted(() => ({
   confirm: vi.fn(async () => new Response(null, { status: 202 })),
   review: vi.fn(async () => new Response(null)),
   events: vi.fn(async () => new Response(null)),
+  versions: vi.fn(async () => new Response(null)),
   artifact: vi.fn(async () => new Response(null)),
   asset: vi.fn(async () => new Response(null, { status: 201 })),
 }))
@@ -22,6 +23,7 @@ import { POST as message } from '@/app/api/playable-tasks/[taskId]/messages/rout
 import { POST as confirm } from '@/app/api/playable-tasks/[taskId]/confirm/route'
 import { POST as review } from '@/app/api/playable-tasks/[taskId]/review/route'
 import { GET as events } from '@/app/api/playable-tasks/[taskId]/events/route'
+import { GET as versions } from '@/app/api/playable-tasks/[taskId]/versions/route'
 import { GET as artifact } from '@/app/api/playable-tasks/[taskId]/artifact/route'
 import { POST as asset } from '@/app/api/playable-tasks/[taskId]/assets/route'
 
@@ -37,6 +39,7 @@ describe('playable route module delegation', () => {
     await confirm(request, context)
     await review(request, context)
     await events(request, context)
+    await versions(request, context)
     await artifact(request, context)
 
     expect(handlers.list).toHaveBeenCalledWith(request)
@@ -46,6 +49,7 @@ describe('playable route module delegation', () => {
     expect(handlers.confirm).toHaveBeenCalledWith(request, context)
     expect(handlers.review).toHaveBeenCalledWith(request, context)
     expect(handlers.events).toHaveBeenCalledWith(request, context)
+    expect(handlers.versions).toHaveBeenCalledWith(request, context)
     expect(handlers.artifact).toHaveBeenCalledWith(request, context)
   })
 })
