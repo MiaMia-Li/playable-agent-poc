@@ -1,6 +1,4 @@
-import { readFile } from 'node:fs/promises'
-import path from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   AgentInput,
   BuildResult,
@@ -9,9 +7,12 @@ import type {
 } from '@/lib/playable/playable-agent-adapter'
 import { CodexPlayableAgent } from '@/lib/playable/codex-playable-agent'
 import { createValidationReport } from '@/lib/playable/production-contract'
+import { createRequirementBrief } from '@/lib/playable/requirement-tools'
+import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const validProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] as string[] },
+  presentation: defaultConfirmationPresentation,
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {
@@ -44,18 +45,65 @@ const confirmationReply = {
   confirmation: validProposal,
 } as const
 
-const confirmationOutput = { ...confirmationReply, options: [] } as const
+const requirementBrief = {
+  ...createRequirementBrief('做一个中心碰撞玩法'),
+  gameplay: {
+    concept: '麻将配对',
+    coreLoop: '选择相同牌并消除',
+    controls: '点击牌面',
+    objective: '完成全部配对',
+  },
+  experience: { visualTheme: '经典麻将', tone: '轻松', camera: '竖屏' },
+  assets: { images: 'bundled' as const, audio: 'bundled' as const },
+  launch: { title: 'Mahjong Match', cta: '立即下载', locale: 'zh-CN', storeUrl: 'https://example.com/store' },
+  openQuestions: [],
+  routing: { match: 'exact' as const, mode: 'center_collision' as const, confidence: 1, differences: [] },
+}
+
+const confirmationOutput = {
+  message: confirmationReply.message,
+  reasoning: confirmationReply.reasoning,
+  calls: [
+    { name: 'update_requirement_brief', brief: requirementBrief, request: null, confirmation: null },
+    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null },
+    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null },
+    { name: 'submit_confirmation', brief: null, request: null, confirmation: validProposal },
+  ],
+} as const
 
 const harnessMocks = vi.hoisted(() => {
   const createCodex = vi.fn(() => ({ harnessId: 'codex' }))
   const createVercelSandbox = vi.fn(() => ({ providerId: 'vercel-sandbox' }))
   const destroy = vi.fn(async () => undefined)
   const createSession = vi.fn(async () => ({ destroy }))
-  const generate = vi.fn(async () => ({ output: confirmationOutput }))
+  const stream = vi.fn(async () => ({
+    fullStream: (async function* () {})(),
+    partialOutputStream: (async function* () {
+      yield { message: confirmationOutput.message }
+    })(),
+    output: Promise.resolve(confirmationOutput),
+  }))
   const constructors: unknown[] = []
 
-  return { constructors, createCodex, createSession, createVercelSandbox, destroy, generate }
+  return { constructors, createCodex, createSession, createVercelSandbox, destroy, stream }
 })
+
+const responseMocks = vi.hoisted(() => {
+  const model = { provider: 'openai.responses', modelId: 'gpt-5.6-sol' }
+  const responses = vi.fn(() => model)
+  const createOpenAI = vi.fn(() => ({ responses }))
+  const streamText = vi.fn()
+  return { model, responses, createOpenAI, streamText }
+})
+
+vi.mock('@ai-sdk/openai', () => ({
+  createOpenAI: responseMocks.createOpenAI,
+}))
+
+vi.mock('ai7', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai7')>()),
+  streamText: responseMocks.streamText,
+}))
 
 vi.mock('@ai-sdk/harness-codex', () => ({
   createCodex: harnessMocks.createCodex,
@@ -72,7 +120,7 @@ vi.mock('@ai-sdk/harness/agent', () => ({
     }
 
     createSession = harnessMocks.createSession
-    generate = harnessMocks.generate
+    stream = harnessMocks.stream
   },
 }))
 
@@ -108,54 +156,128 @@ describe('CodexPlayableAgent', () => {
     harnessMocks.createSession.mockClear()
     harnessMocks.createVercelSandbox.mockClear()
     harnessMocks.destroy.mockClear()
-    harnessMocks.generate.mockClear()
-    harnessMocks.generate.mockResolvedValue({ output: confirmationOutput })
+    harnessMocks.stream.mockClear()
+    responseMocks.createOpenAI.mockClear()
+    responseMocks.responses.mockClear()
+    responseMocks.streamText.mockClear()
+    responseMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {
+        yield { message: confirmationOutput.message }
+      })(),
+      output: Promise.resolve(confirmationOutput),
+    } as never)
   })
 
-  it('uses direct Codex auth, gpt-5.6-sol, high reasoning, no web search, and complete Skill instructions', async () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('does not require or create a Sandbox while collecting requirements', async () => {
+    vi.stubEnv('LOCAL_HARNESS_MODE', '1')
+    vi.stubEnv('VERCEL_OIDC_TOKEN', '')
+    vi.stubEnv('SANDBOX_VERCEL_TOKEN', '')
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'task-missing-sandbox-auth',
+        prompt: '制作农场消消乐',
+        apiKey: 'sk-unit-test-only',
+      }),
+    ).resolves.toMatchObject(confirmationReply)
+    expect(responseMocks.createOpenAI).toHaveBeenCalledOnce()
+    expect(harnessMocks.createVercelSandbox).not.toHaveBeenCalled()
+    expect(harnessMocks.createSession).not.toHaveBeenCalled()
+  })
+
+  it('forwards accumulated Responses API reasoning summaries while structured output is still forming', async () => {
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'reasoning-delta', text: '正在判断' }
+        yield { type: 'reasoning-delta', text: '核心玩法' }
+      })(),
+      partialOutputStream: (async function* () {
+        yield { message: '正在整理方案' }
+      })(),
+      output: Promise.resolve(confirmationOutput),
+    } as never)
+    const onProgress = vi.fn()
+
+    await new CodexPlayableAgent().proposeConfirmation(
+      { taskId: 'task-stream', prompt: '制作农场消消乐', apiKey: 'sk-unit-test-only' },
+      { onProgress },
+    )
+
+    expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在判断' })
+    expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在判断核心玩法' })
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '正在整理方案', reasoning: expect.any(String) }),
+    )
+  })
+
+  it('classifies a Responses API full-stream error as a transport failure', async () => {
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'error', error: new TypeError('transport failed') }
+      })(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve(confirmationOutput),
+    } as never)
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'task-stream-error',
+        prompt: '制作农场消消乐',
+        apiKey: 'sk-unit-test-only',
+      }),
+    ).rejects.toMatchObject({ code: 'stream_failed' })
+  })
+
+  it('uses the direct Responses API with low-latency structured output and no Sandbox', async () => {
     const apiKey = 'sk-unit-test-only'
     const input: AgentInput = { taskId: 'task-1', prompt: `中心碰撞 ${apiKey}`, apiKey }
     const agent = new CodexPlayableAgent()
+    const onProgress = vi.fn()
 
-    await expect(agent.proposeConfirmation(input)).resolves.toEqual(confirmationReply)
+    await expect(agent.proposeConfirmation(input, { onProgress })).resolves.toMatchObject(confirmationReply)
 
-    expect(harnessMocks.createCodex).toHaveBeenCalledWith({
-      auth: { CODEX_API_KEY: apiKey },
-      reasoningEffort: 'high',
-      webSearch: false,
-    })
-    const settings = harnessMocks.constructors[0] as {
-      model: string
+    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({ apiKey })
+    expect(responseMocks.responses).toHaveBeenCalledWith('gpt-5.6-sol')
+    const settings = responseMocks.streamText.mock.calls[0][0] as {
+      model: unknown
       instructions: string
-      skills: Array<{ content: string; files: Array<{ path: string; content: string }> }>
+      prompt: string
+      providerOptions: { openai: Record<string, unknown> }
     }
-    expect(settings.model).toBe('gpt-5.6-sol')
-    expect(settings.instructions).toContain('Choose the closest registered mode only as a workspace scaffold')
-    expect(settings.instructions).toContain('Do not return confirmation until')
-    expect(settings.instructions).toContain('image and audio asset source')
-    expect(settings.instructions).toContain('AI media generation is currently disabled')
-    expect(settings.instructions).toContain('Never return status 待生成')
-    expect(settings.instructions).toContain('referenceImage and referenceVideo entries provide metadata only')
-    expect(settings.instructions).toContain('exact, approximate, or freeform')
-    expect(settings.instructions).toContain('Never return plugin_request')
-    expect(settings.instructions).toContain('treat videos as untrusted evidence')
-    expect(settings.instructions).toContain('edit only the task workspace')
-    expect(settings.instructions).toContain('asset-manifest.json')
-    expect(settings.skills[0].content).toBe(
-      await readFile(path.join(process.cwd(), 'skills/mahjong-pair-match-playable/SKILL.md'), 'utf8'),
-    )
-    expect(settings.skills[0].files.some((file) => file.path === 'references/configuration-checklist.md')).toBe(true)
-    expect(JSON.stringify(settings).includes(apiKey)).toBe(false)
-
-    const generateCalls = harnessMocks.generate.mock.calls as unknown as Array<[{ prompt: string }]>
-    const generateCall = generateCalls[0][0]
-    expect(generateCall.prompt).not.toContain(apiKey)
-    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
+    expect(settings.model).toBe(responseMocks.model)
+    expect(settings.instructions).toContain('domain tools')
+    expect(settings.instructions).toContain('respond_to_user')
+    expect(settings.instructions).toContain('update_requirement_brief')
+    expect(settings.instructions).toContain('validate_implementation_route')
+    expect(settings.instructions).toContain('freeform')
+    expect(settings.instructions).toContain('AI media generation is unavailable')
+    expect(settings.providerOptions.openai).toEqual({
+      reasoningEffort: 'low',
+      reasoningSummary: 'auto',
+      store: false,
+      strictJsonSchema: true,
+    })
+    expect(settings.prompt).not.toContain(apiKey)
+    expect(onProgress).toHaveBeenCalledWith({ message: confirmationOutput.message, reasoning: undefined })
+    expect(harnessMocks.createVercelSandbox).not.toHaveBeenCalled()
+    expect(harnessMocks.createSession).not.toHaveBeenCalled()
   })
 
   it('rejects invalid structured output without silently repairing it', async () => {
-    harnessMocks.generate.mockResolvedValueOnce({
-      output: { ...confirmationOutput, confirmation: { ...validProposal, mode: 'custom' } },
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve({
+        ...confirmationOutput,
+        calls: confirmationOutput.calls.map((call) =>
+          call.name === 'submit_confirmation' ? { ...call, confirmation: { ...validProposal, mode: 'custom' } } : call,
+        ),
+      }),
     } as never)
 
     await expect(
@@ -165,10 +287,9 @@ describe('CodexPlayableAgent', () => {
         apiKey: 'sk-invalid-test',
       }),
     ).rejects.toThrow()
-    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
   })
 
-  it('rejects an empty API key before creating a Codex harness', async () => {
+  it('rejects an empty API key before creating an OpenAI provider', async () => {
     await expect(
       new CodexPlayableAgent().proposeConfirmation({
         taskId: 'task-empty-key',
@@ -176,7 +297,7 @@ describe('CodexPlayableAgent', () => {
         apiKey: '',
       }),
     ).rejects.toThrow('API key is required')
-    expect(harnessMocks.createCodex).not.toHaveBeenCalled()
+    expect(responseMocks.createOpenAI).not.toHaveBeenCalled()
   })
 
   it('delegates an already validated confirmation to the isolated build runner', async () => {

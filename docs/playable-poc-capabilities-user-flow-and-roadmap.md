@@ -38,9 +38,9 @@
 ### 2.2 任务和对话
 
 - 支持创建任务、查看任务列表、打开历史任务和恢复已有对话。
-- 支持多轮需求澄清，Agent 每轮可以返回一个问题和多个可选项。
-- 对话响应使用 NDJSON 流式返回，前端可以及时显示澄清、确认方案或错误。
-- 服务端持久化用户消息、Agent 结构化回复和任务事件。
+- 支持多轮需求澄清，Agent 可以请求文本、单选、多选、链接或审批输入。
+- 对话响应使用 NDJSON 流式返回，前端可以显示 Domain Tool 执行、动态提问、确认方案或错误。
+- 服务端持久化用户消息、Agent 结构化回复、实时 Requirement Brief 和任务事件。
 - 构建期间前端每 2 秒轮询任务事件和最新状态。
 - 用户可以中止当前 Agent 响应；当前只会中止活动中的 Agent 调用，尚未形成完整的持久化任务取消流程。
 
@@ -113,9 +113,9 @@
 ### 2.6 Agent 与隔离构建
 
 - 业务层只依赖 `PlayableAgentAdapter`，将对话、任务和构建领域逻辑与具体 Agent SDK 隔离。
-- 线上模式使用 AI SDK Harness、Codex Harness 和固定模型 `gpt-5.6-sol`。
-- 需求整理 Agent 不启用工具，只读取内置 Skill 和上下文并返回严格结构化结果。
-- 构建 Agent 只在任务工作区内使用 Bash，不能修改仓库中的 Plugin 主副本。
+- 线上需求整理使用 AI SDK 的 OpenAI Responses Provider 和固定模型 `gpt-5.6-sol`，直接返回结构化流；此阶段不创建 Sandbox。
+- 需求整理 Agent 先根据完整对话判断意图：咨询、闲聊和使用帮助通过 `respond_to_user` 直接回复，不修改 Brief 也不评估路由；游戏需求才使用应用层 Domain Tool 计划更新 Brief、检查素材、读取 Plugin 能力、验证实现路由并决定继续提问或提交方案；不开放 Bash。
+- 用户确认方案后，构建 Agent 才通过 Codex Harness 在任务工作区内使用 Bash，不能修改仓库中的 Plugin 主副本。
 - 每次构建创建独立 Vercel Sandbox，运行时为 Node.js 24。
 - Sandbox 中包含：
   - `skill-master`：复制后的只读 Plugin/Skill 主副本。
@@ -172,7 +172,7 @@
 
 | 模式            | Agent                         | 数据与产物                    | 构建环境       | 适用场景                   |
 | --------------- | ----------------------------- | ----------------------------- | -------------- | -------------------------- |
-| 正常模式        | Codex Harness + `gpt-5.6-sol` | PostgreSQL + 私有 Vercel Blob | Vercel Sandbox | 部署环境和真实用户         |
+| 正常模式        | Responses API 规划 + Codex Harness 构建 | PostgreSQL + 私有 Vercel Blob | 确认构建后创建 Vercel Sandbox | 部署环境和真实用户         |
 | 本地 Codex 模式 | 本机 Codex CLI                | 真实 PostgreSQL + 私有 Blob   | Vercel Sandbox | 无 OAuth 的真实联调        |
 | 本地 Demo 模式  | 确定性本地 Agent              | 内存任务库 + 内存产物库       | 本地临时目录   | 无外部凭证的 UI 和流程演示 |
 
@@ -186,8 +186,8 @@
 2. 用户配置自己的 OpenAI API Key；服务端验证 Key 和模型访问能力。
 3. 用户在首页输入玩法、美术主题或素材需求，可同时添加参考图片/视频；系统先创建任务并上传参考附件，再进入工作台。
 4. 系统进入任务工作台：左侧是对话和配置，右侧是 Preview。
-5. Agent 根据历史对话和已上传素材判断信息是否完整。
-6. 信息不足时，Agent 每次提出一个聚焦问题，并给出可选答案；用户继续补充。
+5. Agent 根据历史对话、持久化 Brief、已上传素材和 Plugin 能力，自主调用 Domain Tools 整理需求和验证实现路线。
+6. 信息不足时，Agent 动态请求文本、单选、多选、链接或审批输入；用户继续补充。
 7. 信息完整后，Agent 选择最合适的生产路径，并返回：
    - 精确匹配、近似匹配或自由生成。
    - 路由置信度。
@@ -208,9 +208,9 @@
 
 ```text
 draft
-  → Agent 判断信息不足
-  → clarification
-  → 用户选择选项或继续描述
+  → Agent 调用 Domain Tools 更新 Brief 并检查能力
+  → ask_user 动态请求所需输入
+  → 用户选择、输入或继续描述
   → draft
   → 直到可以生成完整确认方案
 ```
@@ -270,7 +270,8 @@ flowchart TB
     API[Next.js Route Handlers]
     DOMAIN[Task API + 状态机 + 生产契约]
     ADAPTER[PlayableAgentAdapter]
-    AGENT[Codex Harness / Codex CLI / Demo Agent]
+    AGENT[Responses Planner / Codex CLI / Demo Agent]
+    BUILD_AGENT[Codex Harness Build Agent]
     REGISTRY[TemplateRegistry + Plugin Manifest + Skill]
     BUILD[Vercel Sandbox + Build/Validation Pipeline]
     DATA[(PostgreSQL)]
@@ -281,7 +282,8 @@ flowchart TB
     DOMAIN --> ADAPTER
     ADAPTER --> AGENT
     AGENT --> REGISTRY
-    ADAPTER --> BUILD
+    ADAPTER --> BUILD_AGENT
+    BUILD_AGENT --> BUILD
     BUILD --> REGISTRY
     DOMAIN --> DATA
     DOMAIN --> BLOB
@@ -289,13 +291,15 @@ flowchart TB
     BLOB --> UI
 ```
 
-设计重点是让任务领域层只依赖 `PlayableAgentAdapter` 和稳定的生产契约。线上 Harness、本地 Codex CLI 和 Demo Agent 都实现同一接口，因此 UI、任务状态机和交付逻辑不需要感知具体执行器。
+设计重点是让任务领域层只依赖 `PlayableAgentAdapter` 和稳定的生产契约。线上 Responses Planner、本地 Codex CLI 和 Demo Agent 都实现同一接口，因此 UI、任务状态机和交付逻辑不需要感知具体执行器；线上 Codex Harness 仅在确认构建后执行。
 
 ### 4.2 核心数据契约
 
 | 契约        | 技术实现                              | 作用                           |
 | ----------- | ------------------------------------- | ------------------------------ |
-| Agent 回复  | Zod 严格 Schema + discriminated union | 限定澄清和确认两类结果         |
+| Tool 计划   | Zod 严格 Schema + Domain Tool 执行器  | 驱动 Brief、素材检查和路由验证 |
+| Agent 回复  | 自然对话、动态请求或严格确认方案 | 承载用户交互和构建边界         |
+| 需求 Brief  | `RequirementBrief` + Postgres JSONB   | 跨轮保存已知条件和待确认问题   |
 | 确认方案    | `ConfirmationProposal`                | 构建前唯一可信业务输入         |
 | Plugin 清单 | `plugin.json` + 运行时 Schema         | 集中声明版本、能力边界和命令   |
 | 生产配置    | `PlayableProductionConfig`            | 将对话结果转换为稳定的五组配置 |
@@ -403,7 +407,7 @@ ConfirmationProposal
 - 有响应式检查和横竖屏 Preview，但自动门禁只检查 viewport/Canvas 契约，没有做真实横竖屏视觉回归。
 - 有素材来源清单，但没有素材哈希、授权证明、版权范围、生成参数、变换链和复用缓存。
 - AI 图片和配音的底层预研代码已经存在，但产品入口、Agent 路由和服务端构建开关均关闭。
-- 有 Agent 的解析、路由、配置和构建职责，但当前由一个 Agent Adapter 和确定性服务编排完成，不是多个独立 Agent 组成的 Agent Team。
+- 需求 Agent 已通过应用层 Domain Tools 编排解析、Brief、路由和配置，构建仍由同一个 Agent Adapter 衔接，不是多个独立 Agent 组成的 Agent Team。
 - 有结构化验证报告，但失败时对用户展示的仍是通用错误，具体安全诊断没有形成可操作的脱敏报告。
 
 ### 5.3 尚未实现的部分
@@ -514,7 +518,7 @@ ConfirmationProposal
 | Agent 输出和任务状态 Schema  | `lib/playable/schemas.ts`                                                  |
 | 生产配置、素材清单、验证报告 | `lib/playable/production-contract.ts`                                      |
 | Agent 抽象接口               | `lib/playable/playable-agent-adapter.ts`                                   |
-| Codex Harness Agent          | `lib/playable/codex-playable-agent.ts`                                     |
+| Responses Planner / Codex Harness Build Agent | `lib/playable/codex-playable-agent.ts`                         |
 | 本地 Codex CLI Agent         | `lib/playable/codex-cli-playable-agent.ts`                                 |
 | Sandbox 构建和质量门禁       | `lib/playable/sandbox-runner.ts`                                           |
 | 素材上传                     | `lib/playable/task-assets.ts`                                              |

@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, FileImage, FileVideo, Loader2, Paperclip, Plus, Sparkles, X } from 'lucide-react'
+import { ArrowRight, Loader2, Paperclip, Plus, Sparkles } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
-import type { ConfirmationProposal, PlayableTaskPhase } from '@/lib/playable/schemas'
+import type { ConfirmationProposal, PlayableTaskPhase, RequirementBrief } from '@/lib/playable/schemas'
 import { User } from '@/components/auth/user'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import { ApiKeyDialog } from './api-key-dialog'
 import { ChatWorkspace } from './chat-workspace'
 import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
+import { AssetPreviewList } from './asset-preview-list'
 import {
   MAX_ASSET_BYTES,
   MAX_HOME_ATTACHMENTS,
@@ -29,10 +30,12 @@ interface PlayableWorkspaceProps {
   initialPrompt?: string
   initialPhase?: PlayableTaskPhase
   initialProposal?: ConfirmationProposal
+  initialBrief?: RequirementBrief
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
   localDemo?: boolean
   localCodex?: boolean
+  localHarness?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
 }
@@ -55,17 +58,20 @@ export function PlayableWorkspace({
   initialPrompt,
   initialPhase = 'draft',
   initialProposal,
+  initialBrief,
   initialHasArtifact = false,
   initialArtifactVersion = null,
   localDemo = false,
   localCodex = false,
+  localHarness = false,
   initialConversation = [],
   initialAssets = [],
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
-  const [proposal, setProposal] = useState(initialProposal)
+  const [proposalDraft, setProposalDraft] = useState(initialProposal)
+  const [brief, setBrief] = useState(initialBrief)
   const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
   const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
 
@@ -91,8 +97,9 @@ export function PlayableWorkspace({
   }, [initialApiKeyConfigured])
 
   useEffect(() => {
-    if (['reviewing', 'ready', 'needs_plugin', 'failed', 'cancelled'].includes(phase)) return
+    if (!['building', 'validating'].includes(phase)) return
     let active = true
+    let timeout: number | undefined
     const poll = async () => {
       try {
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/events`, {
@@ -104,31 +111,32 @@ export function PlayableWorkspace({
             phase: PlayableTaskPhase
             hasArtifact: boolean
             artifactVersion: string | null
-            confirmation: ConfirmationProposal | null
+            requirementBrief: RequirementBrief | null
           }
         }
         if (!active || !body.task) return
         setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
-        if (body.task.confirmation) setProposal(body.task.confirmation)
+        if (body.task.requirementBrief) setBrief(body.task.requirementBrief)
         setHasArtifact(body.task.hasArtifact)
         setArtifactVersion(body.task.artifactVersion)
       } catch {
         // A transient polling failure must not clear the last successful preview.
+      } finally {
+        if (active) timeout = window.setTimeout(poll, 2000)
       }
     }
     void poll()
-    const interval = window.setInterval(poll, 2000)
     return () => {
       active = false
-      window.clearInterval(interval)
+      if (timeout !== undefined) window.clearTimeout(timeout)
     }
   }, [phase, taskId])
 
   const requireApiKey = useCallback(() => setKeyDialogOpen(true), [])
 
   return (
-    <main className="bg-background flex min-h-dvh flex-col">
-      <div className="flex h-14 items-center justify-between border-b px-4 sm:px-6">
+    <main className="bg-background flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b px-4 sm:px-6">
         <Link href="/" className="flex items-center gap-2 font-semibold" aria-label="试玩工作台首页">
           <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
             <Sparkles className="size-4" />
@@ -137,11 +145,11 @@ export function PlayableWorkspace({
         </Link>
         {localDemo ? (
           <Badge variant="secondary">本地演示 · 数据不保存</Badge>
-        ) : localCodex ? (
+        ) : localCodex || localHarness ? (
           <div className="flex items-center gap-2">
-            <Badge variant="secondary">本地 Codex · 实际数据</Badge>
+            <Badge variant="secondary">{localHarness ? '本地 Harness · 线上 Agent' : '本地 Codex · 实际数据'}</Badge>
             <Button variant="outline" size="sm" onClick={requireApiKey}>
-              媒体 API Key
+              {localHarness ? 'API Key' : '媒体 API Key'}
             </Button>
           </div>
         ) : (
@@ -153,13 +161,15 @@ export function PlayableWorkspace({
           </div>
         )}
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(22rem,0.78fr)_minmax(32rem,1.22fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(22rem,0.78fr)_minmax(32rem,1.22fr)]">
         <ChatWorkspace
           taskId={taskId}
           initialPrompt={initialPrompt}
           phase={phase}
-          proposal={proposal}
-          onProposal={setProposal}
+          proposal={proposalDraft}
+          brief={brief}
+          onProposal={setProposalDraft}
+          onBrief={setBrief}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
           autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
@@ -196,11 +206,18 @@ interface PlayableTaskSummary {
   createdAt: string
 }
 
+interface HomeAttachment {
+  id: string
+  file: File
+  previewUrl?: string
+}
+
 interface PlayableHomeProps {
   user: Session['user'] | null
   authProvider: Session['authProvider'] | null
   localDemo?: boolean
   localCodex?: boolean
+  localHarness?: boolean
 }
 
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
@@ -214,15 +231,30 @@ const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
   failed: '构建失败',
 }
 
-export function PlayableHome({ user, authProvider, localDemo = false, localCodex = false }: PlayableHomeProps) {
+export function PlayableHome({
+  user,
+  authProvider,
+  localDemo = false,
+  localCodex = false,
+  localHarness = false,
+}: PlayableHomeProps) {
   const router = useRouter()
   const attachmentInput = useRef<HTMLInputElement>(null)
+  const attachmentSequence = useRef(0)
+  const attachmentUrls = useRef(new Set<string>())
   const [prompt, setPrompt] = useState('')
-  const [attachments, setAttachments] = useState<File[]>([])
+  const [attachments, setAttachments] = useState<HomeAttachment[]>([])
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
   const [loading, setLoading] = useState(Boolean(user))
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(
+    () => () => {
+      for (const url of attachmentUrls.current) URL.revokeObjectURL(url)
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!user) return
@@ -249,7 +281,7 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
       })
       if (!response.ok) throw new Error(response.status === 401 ? '请先登录' : '创建试玩失败')
       const body = (await response.json()) as { task: { id: string } }
-      for (const file of attachments) {
+      for (const { file } of attachments) {
         const slot = referenceSlotForMimeType(file.type)
         if (!slot) throw new Error('参考素材格式不受支持')
         const uploadBody = new FormData()
@@ -270,8 +302,13 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
 
   function addAttachments(files: FileList | null) {
     if (!files) return
-    const accepted: File[] = []
+    const accepted: HomeAttachment[] = []
+    const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachments.length)
     for (const file of Array.from(files)) {
+      if (accepted.length >= remaining) {
+        setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
+        break
+      }
       if (!referenceSlotForMimeType(file.type)) {
         setError('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
         continue
@@ -280,9 +317,23 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
         setError('单个参考素材不能超过 4 MiB')
         continue
       }
-      accepted.push(file)
+      const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined
+      if (previewUrl) attachmentUrls.current.add(previewUrl)
+      attachmentSequence.current += 1
+      accepted.push({ id: `attachment-${attachmentSequence.current}`, file, previewUrl })
     }
-    setAttachments((current) => [...current, ...accepted].slice(0, MAX_HOME_ATTACHMENTS))
+    setAttachments((current) => [...current, ...accepted])
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => {
+      const target = current.find((attachment) => attachment.id === id)
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl)
+        attachmentUrls.current.delete(target.previewUrl)
+      }
+      return current.filter((attachment) => attachment.id !== id)
+    })
   }
 
   return (
@@ -294,8 +345,14 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
           </span>
           Playable Studio
         </div>
-        {localDemo || localCodex ? (
-          <Badge variant="secondary">{localCodex ? '本地 Codex · 实际数据' : '本地演示 · 重启后清空'}</Badge>
+        {localDemo || localCodex || localHarness ? (
+          <Badge variant="secondary">
+            {localHarness
+              ? '本地 Harness · 线上 Agent'
+              : localCodex
+                ? '本地 Codex · 实际数据'
+                : '本地演示 · 重启后清空'}
+          </Badge>
         ) : (
           <User user={user} authProvider={authProvider} />
         )}
@@ -319,32 +376,20 @@ export function PlayableHome({ user, authProvider, localDemo = false, localCodex
               disabled={!user || creating}
             />
             {attachments.length > 0 && (
-              <ul className="mb-2 flex flex-wrap gap-2 px-1" aria-label="已选择的参考素材">
-                {attachments.map((file, index) => (
-                  <li
-                    key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
-                    className="bg-muted flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs"
-                  >
-                    {file.type.startsWith('video/') ? (
-                      <FileVideo className="size-3.5 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <FileImage className="size-3.5 shrink-0" aria-hidden="true" />
-                    )}
-                    <span className="max-w-44 truncate">{file.name}</span>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="size-5"
-                      aria-label={`移除参考素材 ${file.name}`}
-                      disabled={creating}
-                      onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                    >
-                      <X aria-hidden="true" />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
+              <div className="mb-3 px-1">
+                <AssetPreviewList
+                  ariaLabel="已选择的参考素材"
+                  items={attachments.map(({ id, file, previewUrl }) => ({
+                    id,
+                    filename: file.name,
+                    mimeType: file.type,
+                    size: file.size,
+                    previewUrl,
+                  }))}
+                  disabled={creating}
+                  onRemove={(item) => removeAttachment(item.id)}
+                />
+              </div>
             )}
             <div className="flex items-center justify-between gap-2">
               <Button

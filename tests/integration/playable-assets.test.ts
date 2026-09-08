@@ -14,11 +14,13 @@ function harness(owner = 'user-1') {
   const store = {
     put: vi.fn(async () => undefined),
     get: vi.fn(),
+    delete: vi.fn(async () => undefined),
   }
   const handler = createPlayableAssetHandler({
     authenticate: async () => owner,
     findOwnedTask: async (taskId, userId) => taskId === 'owned' && userId === 'user-1',
     saveAsset: async (asset) => void metadata.push(asset),
+    listAssets: async () => [],
     store,
     generateId: () => 'asset-1',
   })

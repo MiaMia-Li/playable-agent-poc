@@ -20,6 +20,16 @@ interface ApiKeyDialogProps {
   onOpenChange?: (open: boolean) => void
 }
 
+const apiKeyErrorMessages: Record<string, string> = {
+  invalid: 'API Key 无效，请检查后重试',
+  model_access: '该 API Key 无法访问当前模型',
+  quota: 'API 账户额度不足，请检查用量与账单设置',
+  rate_limited: '请求过于频繁，请稍后重试',
+  invalid_request: 'OpenAI 拒绝了验证请求，请稍后重试',
+  provider_unavailable: 'OpenAI 服务暂时不可用，请稍后重试',
+  network: '服务器无法连接 OpenAI，请检查网络或代理设置',
+}
+
 export function ApiKeyDialog({ open, onConfigured, onOpenChange }: ApiKeyDialogProps) {
   const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState('')
@@ -38,7 +48,7 @@ export function ApiKeyDialog({ open, onConfigured, onOpenChange }: ApiKeyDialogP
       })
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { reason?: string; error?: string } | null
-        throw new Error(body?.reason || body?.error || 'API Key 验证失败')
+        throw new Error((body?.reason && apiKeyErrorMessages[body.reason]) || body?.error || 'API Key 验证失败')
       }
       onConfigured()
     } catch (cause) {

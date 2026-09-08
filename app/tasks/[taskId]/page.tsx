@@ -4,7 +4,7 @@ import { getServerSession } from '@/lib/session/get-server-session'
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
 import { Metadata } from 'next'
 import { isLocalDemoMode, localDemoRuntime, localDemoSession } from '@/lib/playable/local-demo-prototype'
-import { isLocalCodexMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
+import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
 import { playableAgentReplySchema } from '@/lib/playable/schemas'
 import type { ConversationMessage } from '@/components/playable/chat-workspace'
 
@@ -18,7 +18,12 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const { taskId } = await params
   const localDemo = isLocalDemoMode()
   const localCodex = isLocalCodexMode()
-  const session = localDemo ? localDemoSession : localCodex ? localCodexSession : await getServerSession()
+  const localHarness = isLocalHarnessMode()
+  const session = localDemo
+    ? localDemoSession
+    : localCodex || localHarness
+      ? localCodexSession
+      : await getServerSession()
   if (!session?.user?.id) redirect('/')
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
@@ -41,6 +46,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
           content: parsed.data.message,
           reasoning: parsed.data.reasoning,
           options: parsed.data.kind === 'clarification' ? parsed.data.options : undefined,
+          request: parsed.data.kind === 'clarification' ? parsed.data.request : undefined,
           status: 'sent',
         },
       ]
@@ -55,6 +61,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialPrompt={task.prompt}
       initialPhase={task.phase}
       initialProposal={task.phase === 'draft' ? undefined : (task.confirmation ?? undefined)}
+      initialBrief={task.requirementBrief ?? undefined}
       initialConversation={initialConversation}
       initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size }) => ({
         id,
@@ -68,6 +75,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialApiKeyConfigured={localDemo || localCodex ? true : undefined}
       localDemo={localDemo}
       localCodex={localCodex}
+      localHarness={localHarness}
     />
   )
 }
@@ -76,7 +84,12 @@ export async function generateMetadata({ params }: TaskPageProps): Promise<Metad
   const { taskId } = await params
   const localDemo = isLocalDemoMode()
   const localCodex = isLocalCodexMode()
-  const session = localDemo ? localDemoSession : localCodex ? localCodexSession : await getServerSession()
+  const localHarness = isLocalHarnessMode()
+  const session = localDemo
+    ? localDemoSession
+    : localCodex || localHarness
+      ? localCodexSession
+      : await getServerSession()
 
   let pageTitle = `试玩 ${taskId}`
 

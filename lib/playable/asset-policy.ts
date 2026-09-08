@@ -15,6 +15,8 @@ export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
 
 export const MAX_ASSET_BYTES = 4 * 1024 * 1024
 export const MAX_HOME_ATTACHMENTS = 6
+export const MAX_ASSETS_PER_SLOT = 8
+export const MAX_TASK_ASSETS = 30
 
 export const PLAYABLE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 export const PLAYABLE_AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'] as const

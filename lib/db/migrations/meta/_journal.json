@@ -183,6 +183,13 @@
       "when": 1788771828838,
       "tag": "0025_playable_task_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788870707523,
+      "tag": "0026_odd_salo",
+      "breakpoints": true
     }
   ]
 }

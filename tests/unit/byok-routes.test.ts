@@ -82,6 +82,7 @@ describe('OpenAI key session routes', () => {
     expect(body).toEqual({ configured: true, model: 'gpt-5.6-sol' })
     expect(checkOpenAIKey).toHaveBeenCalledWith('sk-test-secret')
     expect(setCookie).toContain(`${OPENAI_KEY_COOKIE}=`)
+    expect(setCookie).toContain('Secure')
     expect(setCookie).not.toContain('sk-test-secret')
   })
 
@@ -99,6 +100,7 @@ describe('OpenAI key session routes', () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get('set-cookie')).toContain(`${OPENAI_KEY_COOKIE}=`)
+    expect(response.headers.get('set-cookie')).toContain('Secure')
   })
 
   it('does not set a cookie or echo provider details when validation fails', async () => {

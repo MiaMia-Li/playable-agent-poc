@@ -63,6 +63,7 @@ describe('OpenAI key session', () => {
     expect(setCookie).toContain('Path=/')
     expect(setCookie).toContain('Max-Age=7200')
     expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('Secure')
     expect(setCookie).toContain('SameSite=Strict')
     expect(setCookie).not.toContain(apiKey)
   })
@@ -73,7 +74,7 @@ describe('OpenAI key session', () => {
     clearOpenAIKeyCookie(response)
 
     expect(response.headers.get('set-cookie')).toContain(
-      `${OPENAI_KEY_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`,
+      `${OPENAI_KEY_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`,
     )
   })
 })
@@ -109,23 +110,17 @@ describe('OpenAI model access check', () => {
     vi.restoreAllMocks()
   })
 
-  it('makes only the required minimal gpt-5.6-sol Responses request', async () => {
+  it('checks gpt-5.6-sol access without making a generation request', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(checkOpenAIKey(apiKey)).resolves.toEqual({ ok: true })
-    expect(fetchMock).toHaveBeenCalledWith('https://api.openai.com/v1/responses', {
-      method: 'POST',
+    expect(fetchMock).toHaveBeenCalledWith('https://api.openai.com/v1/models/gpt-5.6-sol', {
+      method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
       },
       signal: expect.any(AbortSignal),
-      body: JSON.stringify({
-        model: 'gpt-5.6-sol',
-        input: 'Reply OK',
-        max_output_tokens: 2,
-      }),
     })
   })
 
@@ -161,6 +156,8 @@ describe('OpenAI model access check', () => {
     [404, { error: { code: 'model_not_found' } }, 'model_access'],
     [429, { error: { code: 'insufficient_quota' } }, 'quota'],
     [429, { error: { code: 'rate_limit_exceeded' } }, 'rate_limited'],
+    [400, { error: {} }, 'invalid_request'],
+    [500, { error: {} }, 'provider_unavailable'],
   ] as const)('maps provider status %s to a safe reason', async (status, body, reason) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(body, { status })))
 

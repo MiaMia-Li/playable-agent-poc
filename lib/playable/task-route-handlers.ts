@@ -6,13 +6,23 @@ import { readOpenAIKeyCookie } from './byok-session'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
-import { createPlayableAssetHandler } from './task-assets'
+import {
+  createPlayableAssetContentHandler,
+  createPlayableAssetDeleteHandler,
+  createPlayableAssetHandler,
+} from './task-assets'
 import { authenticateLocalDemo, isLocalDemoMode, localDemoRuntime, readLocalDemoApiKey } from './local-demo-prototype'
 import { CodexCliPlayableAgent } from './codex-cli-playable-agent'
-import { authenticateLocalCodex, isLocalCodexMode, readLocalCodexAuthMarker } from './local-codex-runtime'
+import {
+  authenticateLocalCodex,
+  isLocalCodexMode,
+  isLocalHarnessMode,
+  readLocalCodexAuthMarker,
+} from './local-codex-runtime'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
+const localHarness = isLocalHarnessMode()
 
 export const playableTaskRepository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
 export const playableArtifactStore = localDemo ? localDemoRuntime.artifactStore : new PrivateVercelArtifactStore()
@@ -24,7 +34,7 @@ const playableAgent = localDemo
 
 const authenticate = localDemo
   ? authenticateLocalDemo
-  : localCodex
+  : localCodex || localHarness
     ? authenticateLocalCodex
     : async (request: Parameters<typeof getSessionFromReq>[0]) => (await getSessionFromReq(request))?.user.id
 
@@ -44,6 +54,19 @@ export const playableAssetHandler = createPlayableAssetHandler({
   authenticate,
   findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
   saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
+  listAssets: (taskId, userId) => playableTaskRepository.listAssets(taskId, userId),
   store: playableArtifactStore,
   generateId,
 })
+
+const playableAssetAccessDependencies = {
+  authenticate,
+  findOwnedAsset: (taskId: string, userId: string, assetId: string) =>
+    playableTaskRepository.findOwnedAsset(taskId, userId, assetId),
+  deleteOwnedAsset: (taskId: string, userId: string, assetId: string) =>
+    playableTaskRepository.deleteOwnedAsset(taskId, userId, assetId),
+  store: playableArtifactStore,
+}
+
+export const playableAssetContentHandler = createPlayableAssetContentHandler(playableAssetAccessDependencies)
+export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler(playableAssetAccessDependencies)

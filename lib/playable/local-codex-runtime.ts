@@ -22,6 +22,14 @@ export function isLocalCodexMode(): boolean {
   return process.env.NODE_ENV !== 'production' && process.env.LOCAL_CODEX_MODE === '1'
 }
 
+export function isLocalHarnessMode(): boolean {
+  return process.env.NODE_ENV !== 'production' && process.env.LOCAL_HARNESS_MODE === '1'
+}
+
+export function isLocalPlayableAuthMode(): boolean {
+  return isLocalCodexMode() || isLocalHarnessMode()
+}
+
 let localUserReady: Promise<void> | undefined
 
 async function ensureLocalCodexUser(): Promise<void> {

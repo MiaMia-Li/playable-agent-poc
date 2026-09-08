@@ -50,6 +50,14 @@ export function PlayablePreview({
   useEffect(() => postMute(muted), [muted, frameKey])
 
   const size = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
+  const emptyMessage =
+    phase === 'failed'
+      ? '构建失败，请返回修改方案后重新构建。'
+      : phase === 'building'
+        ? 'Codex 正在构建试玩…'
+        : phase === 'validating'
+          ? '正在验证试玩…'
+          : '确认方案并完成构建后，试玩将在这里出现。'
 
   async function submitReview(action: 'accept' | 'revise') {
     if (reviewing) return
@@ -77,25 +85,16 @@ export function PlayablePreview({
     ['validation', '自检报告'],
   ] as const
   return (
-    <section aria-label="Preview" className="bg-muted/30 flex min-h-[32rem] flex-col overflow-hidden lg:min-h-0">
-      <header className="bg-background flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-        <div>
-          <h2 className="font-semibold">Preview</h2>
-          <p className="text-muted-foreground text-xs">
-            {phase === 'ready'
-              ? '已通过人工验收，可下载交付物'
-              : phase === 'reviewing'
-                ? '自动门禁已通过，请完成人工验收'
-                : phase === 'failed'
-                  ? hasArtifact
-                    ? '本次构建失败，保留上次成功版本'
-                    : '构建失败'
-                  : hasArtifact
-                    ? '正在构建新版本，显示上次成功版本'
-                    : '构建完成后自动显示'}
-          </p>
-        </div>
-        <div className="flex items-center gap-1" role="group" aria-label="预览控制">
+    <section
+      aria-label="Preview"
+      className="bg-muted/30 flex min-h-[32rem] flex-col overflow-hidden lg:min-h-0 lg:border-l"
+    >
+      <div className="flex shrink-0 justify-center px-4 py-3">
+        <div
+          className="bg-background/80 flex items-center gap-1 rounded-md border p-1"
+          role="group"
+          aria-label="预览控制"
+        >
           <Button
             size="icon"
             variant={orientation === 'portrait' ? 'secondary' : 'ghost'}
@@ -157,34 +156,8 @@ export function PlayablePreview({
             </Button>
           )}
         </div>
-      </header>
-      {((hasArtifact && ['reviewing', 'ready'].includes(phase)) || phase === 'failed') && (
-        <div className="bg-background flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-          <p className="text-muted-foreground text-xs">
-            {phase === 'reviewing'
-              ? '请检查视觉质感、节奏、易理解性和品牌一致性。'
-              : '可以保留当前成功版本并继续调整方案。'}
-          </p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
-              <RotateCcw aria-hidden="true" />
-              返回修改
-            </Button>
-            {phase === 'reviewing' && (
-              <Button size="sm" disabled={reviewing} onClick={() => void submitReview('accept')}>
-                <CheckCircle2 aria-hidden="true" />
-                验收通过
-              </Button>
-            )}
-          </div>
-          {reviewError && (
-            <p className="text-destructive basis-full text-xs" role="alert">
-              {reviewError}
-            </p>
-          )}
-        </div>
-      )}
-      <div className="flex flex-1 items-center justify-center overflow-auto p-4 sm:p-6">
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 sm:p-6">
         <div
           className={cn(
             'bg-background relative shrink-0 overflow-hidden rounded-[1.75rem] border-[6px] border-foreground/90 shadow-2xl transition-[width,height] duration-300',
@@ -206,11 +179,36 @@ export function PlayablePreview({
           ) : (
             <div className="text-muted-foreground flex size-full flex-col items-center justify-center gap-3 px-8 text-center">
               <Smartphone className="size-10 opacity-40" aria-hidden="true" />
-              <p className="text-sm">确认方案并完成构建后，试玩将在这里出现。</p>
+              <p className="text-sm">{emptyMessage}</p>
+              {phase === 'failed' && (
+                <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
+                  <RotateCcw aria-hidden="true" />
+                  返回修改
+                </Button>
+              )}
             </div>
           )}
         </div>
       </div>
+      {hasArtifact && ['reviewing', 'ready', 'failed'].includes(phase) && (
+        <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 px-4 pb-4">
+          <Button size="sm" variant="outline" disabled={reviewing} onClick={() => void submitReview('revise')}>
+            <RotateCcw aria-hidden="true" />
+            返回修改
+          </Button>
+          {phase === 'reviewing' && (
+            <Button size="sm" disabled={reviewing} onClick={() => void submitReview('accept')}>
+              <CheckCircle2 aria-hidden="true" />
+              验收通过
+            </Button>
+          )}
+        </div>
+      )}
+      {reviewError && (
+        <p className="text-destructive shrink-0 px-4 pb-3 text-center text-xs" role="alert">
+          {reviewError}
+        </p>
+      )}
     </section>
   )
 }

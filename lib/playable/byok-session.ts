@@ -20,7 +20,7 @@ interface CookieRequest {
 }
 
 function cookieSecurityAttributes(): string {
-  return `HttpOnly; ${process.env.NODE_ENV === 'production' ? 'Secure; ' : ''}SameSite=Strict`
+  return 'HttpOnly; Secure; SameSite=Strict'
 }
 
 export async function encryptOpenAIKey(userId: string, apiKey: string, secret?: string): Promise<string> {

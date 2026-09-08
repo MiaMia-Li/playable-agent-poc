@@ -8,10 +8,11 @@ import {
   type PlayableTaskRepository,
 } from '@/lib/playable/task-api'
 import { PrivateVercelArtifactStore, type ArtifactStore, type PrivateBlobClient } from '@/lib/playable/artifact-store'
-import type { ConfirmationProposal, PlayableAgentReply } from '@/lib/playable/schemas'
-import type { PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
+import type { ConfirmationProposal, PlayableAgentReply, RequirementBrief } from '@/lib/playable/schemas'
+import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
+import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -74,6 +75,7 @@ class MemoryRepository implements PlayableTaskRepository {
       userId: input.userId,
       prompt: input.prompt,
       phase: 'draft',
+      requirementBrief: null,
       confirmation: null,
       latestArtifactKey: null,
     }
@@ -94,6 +96,13 @@ class MemoryRepository implements PlayableTaskRepository {
     return this.messages
       .filter((message) => message.taskId === taskId)
       .map((message, index) => ({ ...message, id: `message-${index + 1}`, createdAt: new Date(index) }))
+  }
+
+  async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    task.requirementBrief = brief
+    return true
   }
 
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
@@ -187,6 +196,18 @@ class MemoryRepository implements PlayableTaskRepository {
   async listAssets(taskId: string, userId: string) {
     return this.assets.filter((asset) => asset.taskId === taskId && asset.userId === userId)
   }
+
+  async findOwnedAsset(taskId: string, userId: string, assetId: string) {
+    return this.assets.find((asset) => asset.taskId === taskId && asset.userId === userId && asset.id === assetId)
+  }
+
+  async deleteOwnedAsset(taskId: string, userId: string, assetId: string) {
+    const index = this.assets.findIndex(
+      (asset) => asset.taskId === taskId && asset.userId === userId && asset.id === assetId,
+    )
+    if (index < 0) return undefined
+    return this.assets.splice(index, 1)[0]
+  }
 }
 
 function createHarness() {
@@ -196,6 +217,7 @@ function createHarness() {
     userId: 'user-1',
     prompt: 'Build a game',
     phase: 'draft',
+    requirementBrief: null,
     confirmation: null,
     latestArtifactKey: null,
   })
@@ -204,6 +226,7 @@ function createHarness() {
     userId: 'user-2',
     prompt: 'Secret task',
     phase: 'ready',
+    requirementBrief: null,
     confirmation,
     latestArtifactKey: 'users/user-2/tasks/foreign/build/playable.html',
   })
@@ -226,6 +249,9 @@ function createHarness() {
     get: vi.fn(async (key) => {
       const value = artifacts.get(key)
       return value ? byteStream(value) : undefined
+    }),
+    delete: vi.fn(async (key) => {
+      artifacts.delete(key)
     }),
   }
   let authenticatedUserId: string | undefined = 'user-1'
@@ -367,7 +393,56 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
 
+  it('forwards sanitized partial agent output before the validated final event', async () => {
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      options?.onProgress?.({ message: '方案正在整理', reasoning: '正在匹配可用玩法' })
+      return confirmationReply
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const events = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; message?: string })
+
+    expect(events.map(({ type }) => type)).toContain('assistant_progress')
+    expect(events.find(({ type }) => type === 'assistant_progress')?.message).toBe('方案正在整理')
+    expect(events.at(-1)?.type).toBe('confirmation')
+  })
+
+  it('streams an informational answer without changing phase or routing the brief', async () => {
+    const emptyBrief = createRequirementBrief()
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'informational',
+      message: '我是试玩创作助手，可以通过对话整理需求并构建试玩。',
+      reasoning: '这是能力咨询，不需要评估游戏路由。',
+      brief: emptyBrief,
+      tools: ['respond_to_user'],
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '你是谁，能做什么？' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const body = await response.text()
+
+    expect(body).toContain('"type":"informational"')
+    expect(body).toContain('"tool":"respond_to_user"')
+    expect(body).not.toContain('validate_implementation_route')
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
+    expect(harness.repository.tasks.get('owned')?.requirementBrief).toEqual(emptyBrief)
+    expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
+  })
+
   it('keeps an ambiguous theme in draft and streams a clarification with full conversation context', async () => {
+    const requirementBrief = {
+      ...createRequirementBrief('制作一个农场消消乐风格'),
+      experience: { visualTheme: '农场', tone: '轻松', camera: '' },
+      openQuestions: ['选择核心玩法'],
+    }
     const clarification = {
       kind: 'clarification',
       message: '农场主题已经记下了，请选择一种核心玩法。',
@@ -386,6 +461,27 @@ describe('playable task API', () => {
           value: '选择下落补位玩法',
         },
       ],
+      request: {
+        type: 'single_select',
+        question: '请选择核心玩法。',
+        options: [
+          {
+            id: 'center_collision',
+            label: '中心碰撞',
+            description: '相同元素飞向中心碰撞消除',
+            value: '选择中心碰撞玩法',
+          },
+          {
+            id: 'gravity_fill',
+            label: '下落补位',
+            description: '消除后元素从上方下落补位',
+            value: '选择下落补位玩法',
+          },
+        ],
+        allowCustom: true,
+      },
+      brief: requirementBrief,
+      tools: ['update_requirement_brief', 'list_playable_capabilities', 'ask_user'],
     } as const
     vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce(clarification as never)
 
@@ -396,15 +492,18 @@ describe('playable task API', () => {
     const body = await response.text()
 
     expect(body).toContain('"type":"clarification"')
+    expect(body).toContain('"type":"tool_completed"')
     expect(body).toContain('农场主题已经记下了')
     expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
     expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
+    expect(harness.repository.tasks.get('owned')?.requirementBrief).toEqual(requirementBrief)
     expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
       expect.objectContaining({
         history: [],
         confirmation: null,
         assets: [],
       }),
+      expect.objectContaining({ onProgress: expect.any(Function) }),
     )
     expect(harness.repository.messages.map(({ role }) => role)).toEqual(['user', 'agent'])
   })
@@ -473,7 +572,10 @@ describe('playable task API', () => {
         { params: Promise.resolve({ taskId: 'owned' }) },
       )
     ).text()
-    expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(expect.objectContaining({ confirmation }))
+    expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ confirmation }),
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
   })
 
   it('passes prior turns, the current proposal, and safe uploaded-asset metadata into follow-up messages', async () => {
@@ -521,6 +623,7 @@ describe('playable task API', () => {
         confirmation,
         assets: [{ id: 'asset-1', slot: 'audio', filename: 'farm.mp3', mimeType: 'audio/mpeg', size: 3 }],
       }),
+      expect.objectContaining({ onProgress: expect.any(Function) }),
     )
     expect(JSON.stringify(vi.mocked(harness.agent.proposeConfirmation).mock.calls)).not.toContain('private-storage-key')
   })
@@ -557,9 +660,24 @@ describe('playable task API', () => {
 
     const body = await response.text()
     expect(body).toContain('"type":"error"')
-    expect(body).toContain('助手暂时无法继续整理需求，请重试')
+    expect(body).toContain('Agent 返回的需求方案未通过校验，请重试')
     expect(harness.repository.messages).toHaveLength(1)
     expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
+  })
+
+  it('returns an actionable local Harness configuration error and emits only a static diagnostic', async () => {
+    vi.mocked(harness.agent.proposeConfirmation).mockRejectedValueOnce(new PlayableAgentError('sandbox_configuration'))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: 'Make a game' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const body = await response.text()
+
+    expect(body).toContain('本地 Harness 缺少 Vercel Sandbox 凭据，请配置后重启服务')
+    expect(errorSpy).toHaveBeenCalledWith('Playable requirement processing failed: sandbox credentials unavailable')
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('sk-test-secret')
   })
 
   it('cancels an in-flight message stream without writing to a closed controller or leaking a rejection', async () => {
@@ -732,7 +850,7 @@ describe('playable task API', () => {
       params: Promise.resolve({ taskId: 'owned' }),
     })
     expect(await response.json()).toEqual({
-      task: { phase: 'building', hasArtifact: false, artifactVersion: null, confirmation },
+      task: { phase: 'building', hasArtifact: false, artifactVersion: null, requirementBrief: null, confirmation },
       events: [],
     })
   })
@@ -1248,6 +1366,7 @@ describe('PrivateVercelArtifactStore', () => {
         pathname: 'users/u/tasks/t/b/playable.html',
       })),
       get: vi.fn(async () => ({ stream: sourceStream })),
+      del: vi.fn(async () => undefined),
     }
     const store = new PrivateVercelArtifactStore(blobClient)
 
@@ -1262,5 +1381,7 @@ describe('PrivateVercelArtifactStore', () => {
       contentType: 'text/html',
     })
     expect(blobClient.get).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html', { access: 'private' })
+    await expect(store.delete('users/u/tasks/t/b/playable.html')).resolves.toBeUndefined()
+    expect(blobClient.del).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html')
   })
 })

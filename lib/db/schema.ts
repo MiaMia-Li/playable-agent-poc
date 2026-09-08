@@ -1,6 +1,6 @@
 import { pgTable, text, timestamp, integer, jsonb, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
-import { confirmationProposalSchema, playableTaskPhaseSchema } from '@/lib/playable/schemas'
+import { confirmationProposalSchema, playableTaskPhaseSchema, requirementBriefSchema } from '@/lib/playable/schemas'
 import { playableModeIds } from '@/lib/playable/types'
 
 // Log entry types
@@ -111,6 +111,7 @@ export const tasks = pgTable('tasks', {
   mcpServerIds: jsonb('mcp_server_ids').$type<string[]>(),
   playableMode: text('playable_mode'),
   phase: text('phase').notNull().default('draft'),
+  requirementBrief: jsonb('requirement_brief'),
   confirmation: jsonb('confirmation'),
   latestArtifactKey: text('latest_artifact_key'),
   latestValidation: jsonb('latest_validation'),
@@ -149,6 +150,7 @@ export const insertTaskSchema = z.object({
   mcpServerIds: z.array(z.string()).optional(),
   playableMode: z.enum(playableModeIds).optional(),
   phase: playableTaskPhaseSchema.default('draft'),
+  requirementBrief: requirementBriefSchema.optional(),
   confirmation: confirmationProposalSchema.optional(),
   latestArtifactKey: z.string().optional(),
   latestValidation: z.unknown().optional(),
@@ -186,6 +188,7 @@ export const selectTaskSchema = z.object({
   mcpServerIds: z.array(z.string()).nullable(),
   playableMode: z.enum(playableModeIds).nullable().optional(),
   phase: playableTaskPhaseSchema.optional(),
+  requirementBrief: requirementBriefSchema.nullable().optional(),
   confirmation: confirmationProposalSchema.nullable().optional(),
   latestArtifactKey: z.string().nullable().optional(),
   latestValidation: z.unknown().nullable().optional(),

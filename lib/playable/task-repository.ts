@@ -5,8 +5,10 @@ import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
   playableTaskPhaseSchema,
+  requirementBriefSchema,
   type ConfirmationProposal,
   type PlayableTaskPhase,
+  type RequirementBrief,
 } from './schemas'
 import type {
   PlayableEventRecord,
@@ -15,6 +17,7 @@ import type {
   PlayableTaskRepository,
 } from './task-api'
 import type { PlayableAsset } from './task-assets'
+import { createRequirementBrief } from './requirement-tools'
 
 function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
   return {
@@ -22,6 +25,7 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     userId: row.userId,
     prompt: row.prompt,
     phase: playableTaskPhaseSchema.parse(row.phase),
+    requirementBrief: row.requirementBrief ? requirementBriefSchema.parse(row.requirementBrief) : null,
     confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
     latestArtifactKey: row.latestArtifactKey,
     latestValidation: row.latestValidation,
@@ -41,6 +45,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         selectedAgent: 'codex',
         status: 'pending',
         phase: 'draft',
+        requirementBrief: createRequirementBrief(),
         progress: 0,
         logs: [],
       })
@@ -72,6 +77,17 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
 
   async listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]> {
     return db.select().from(taskMessages).where(eq(taskMessages.taskId, taskId)).orderBy(asc(taskMessages.createdAt))
+  }
+
+  async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ requirementBrief: requirementBriefSchema.parse(brief), updatedAt: new Date() })
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), inArray(tasks.phase, ['draft', 'awaiting_confirmation'])),
+      )
+      .returning({ id: tasks.id })
+    return updated.length === 1
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
@@ -207,5 +223,34 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .where(and(eq(playableTaskAssets.taskId, taskId), eq(playableTaskAssets.userId, userId)))
       .orderBy(asc(playableTaskAssets.createdAt))
     return rows as PlayableAsset[]
+  }
+
+  async findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined> {
+    const [asset] = await db
+      .select()
+      .from(playableTaskAssets)
+      .where(
+        and(
+          eq(playableTaskAssets.id, assetId),
+          eq(playableTaskAssets.taskId, taskId),
+          eq(playableTaskAssets.userId, userId),
+        ),
+      )
+      .limit(1)
+    return asset as PlayableAsset | undefined
+  }
+
+  async deleteOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined> {
+    const [asset] = await db
+      .delete(playableTaskAssets)
+      .where(
+        and(
+          eq(playableTaskAssets.id, assetId),
+          eq(playableTaskAssets.taskId, taskId),
+          eq(playableTaskAssets.userId, userId),
+        ),
+      )
+      .returning()
+    return asset as PlayableAsset | undefined
   }
 }

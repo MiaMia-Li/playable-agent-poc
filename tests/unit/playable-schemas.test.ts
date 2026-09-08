@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   confirmationProposalSchema,
+  defaultConfirmationPresentation,
   parsePlayableAgentOutput,
   playableAgentReplySchema,
   playableTaskPhases,
@@ -8,6 +9,7 @@ import {
 
 const validProposal = {
   routing: { match: 'approximate', confidence: 0.84, differences: ['奖励表现使用模板默认效果'] },
+  presentation: defaultConfirmationPresentation,
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {
@@ -39,7 +41,16 @@ describe('confirmation proposal schema', () => {
 
     expect(parsed).toEqual(validProposal)
     expect(parsed.storeUrl).toBe(validProposal.storeUrl)
-    expect(Object.keys(parsed)).toEqual(['routing', 'mode', 'gameplay', 'resources', 'copy', 'storeUrl', 'delivery'])
+    expect(Object.keys(parsed)).toEqual([
+      'routing',
+      'presentation',
+      'mode',
+      'gameplay',
+      'resources',
+      'copy',
+      'storeUrl',
+      'delivery',
+    ])
     expect(Object.keys(parsed.resources)).toEqual([
       'tileFaces',
       'backgroundBoard',

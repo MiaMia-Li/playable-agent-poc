@@ -6,6 +6,7 @@
     "test": "vitest run",
     "dev": "next dev --webpack",
     "demo": "LOCAL_DEMO_MODE=1 next dev --webpack",
+    "local:harness": "LOCAL_HARNESS_MODE=1 next dev --webpack",
     "local:codex": "LOCAL_CODEX_MODE=1 next dev --webpack",
     "smoke:local-codex": "LOCAL_CODEX_MODE=1 node --env-file=.env.local --import tsx scripts/smoke-local-codex.ts",
     "build": "next build --turbopack",
@@ -23,6 +24,7 @@
   "dependencies": {
     "@ai-sdk/harness": "^1.0.102",
     "@ai-sdk/harness-codex": "^1.0.104",
+    "@ai-sdk/openai": "^4.0.60",
     "@ai-sdk/sandbox-vercel": "^1.0.102",
     "@git-diff-view/file": "^0.0.32",
     "@git-diff-view/react": "^0.0.32",

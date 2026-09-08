@@ -1,8 +1,9 @@
-import { get as getBlob, put as putBlob } from '@vercel/blob'
+import { del as deleteBlob, get as getBlob, put as putBlob } from '@vercel/blob'
 
 export interface ArtifactStore {
   put(key: string, value: string | Uint8Array, contentType: string): Promise<void>
   get(key: string): Promise<ReadableStream<Uint8Array> | undefined>
+  delete(key: string): Promise<void>
 }
 
 export interface PrivateBlobClient {
@@ -17,6 +18,7 @@ export interface PrivateBlobClient {
     },
   ): PromiseLike<{ url: string; pathname: string }>
   get(pathname: string, options: { access: 'private' }): PromiseLike<{ stream: ReadableStream<Uint8Array> } | null>
+  del(pathname: string): PromiseLike<void>
 }
 
 const vercelBlobClient: PrivateBlobClient = {
@@ -25,6 +27,7 @@ const vercelBlobClient: PrivateBlobClient = {
     const result = await getBlob(pathname, options)
     return result?.stream ? { stream: result.stream } : null
   },
+  del: (pathname) => deleteBlob(pathname),
 }
 
 export class PrivateVercelArtifactStore implements ArtifactStore {
@@ -43,5 +46,9 @@ export class PrivateVercelArtifactStore implements ArtifactStore {
     const result = await this.client.get(key, { access: 'private' })
     if (!result) return
     return result.stream
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.del(key)
   }
 }

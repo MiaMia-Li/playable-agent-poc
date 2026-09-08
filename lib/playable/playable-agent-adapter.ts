@@ -1,4 +1,4 @@
-import type { ConfirmationProposal, PlayableAgentReply } from './schemas'
+import type { ConfirmationProposal, PlayableAgentReply, RequirementBrief } from './schemas'
 import type { PlayableResourceAssetSlot } from './asset-policy'
 import type { SafePlayableAsset } from './task-assets'
 
@@ -60,7 +60,30 @@ export interface AgentInput {
   apiKey: string
   history?: AgentConversationTurn[]
   confirmation?: ConfirmationProposal | null
+  brief?: RequirementBrief | null
   assets?: SafePlayableAsset[]
+}
+
+export interface AgentReplyProgress {
+  message?: string
+  reasoning?: string
+}
+
+export interface AgentReplyOptions {
+  onProgress?: (progress: AgentReplyProgress) => void
+}
+
+export type PlayableAgentErrorCode =
+  | 'sandbox_configuration'
+  | 'session_start_failed'
+  | 'stream_failed'
+  | 'output_invalid'
+
+export class PlayableAgentError extends Error {
+  constructor(readonly code: PlayableAgentErrorCode) {
+    super('Playable agent operation failed')
+    this.name = 'PlayableAgentError'
+  }
 }
 
 export interface ConfirmedBuildInput {
@@ -77,7 +100,7 @@ export interface BuildResult {
 }
 
 export interface PlayableAgentAdapter {
-  proposeConfirmation(input: AgentInput): Promise<PlayableAgentReply>
+  proposeConfirmation(input: AgentInput, options?: AgentReplyOptions): Promise<PlayableAgentReply>
   build(input: ConfirmedBuildInput): Promise<BuildResult>
   cancel(taskId: string): Promise<void>
 }

@@ -4,7 +4,17 @@ export const OPENAI_KEY_CHECK_TIMEOUT_MS = 10_000
 
 export type KeyCheckResult =
   | { ok: true }
-  | { ok: false; reason: 'invalid' | 'model_access' | 'quota' | 'rate_limited' | 'network' }
+  | {
+      ok: false
+      reason:
+        | 'invalid'
+        | 'model_access'
+        | 'quota'
+        | 'rate_limited'
+        | 'invalid_request'
+        | 'provider_unavailable'
+        | 'network'
+    }
 
 interface OpenAIErrorBody {
   error?: {
@@ -24,7 +34,8 @@ function classifyProviderFailure(status: number, code?: string): KeyCheckResult 
   if (status === 401) return { ok: false, reason: 'invalid' }
   if (status === 403 || status === 404) return { ok: false, reason: 'model_access' }
   if (status === 429) return { ok: false, reason: 'rate_limited' }
-  return { ok: false, reason: 'network' }
+  if (status === 400 || status === 409 || status === 422) return { ok: false, reason: 'invalid_request' }
+  return { ok: false, reason: 'provider_unavailable' }
 }
 
 export async function checkOpenAIKey(apiKey: string): Promise<KeyCheckResult> {
@@ -32,18 +43,12 @@ export async function checkOpenAIKey(apiKey: string): Promise<KeyCheckResult> {
   const timeout = setTimeout(() => controller.abort(), OPENAI_KEY_CHECK_TIMEOUT_MS)
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
+    const response = await fetch(`https://api.openai.com/v1/models/${encodeURIComponent(PLAYABLE_OPENAI_MODEL)}`, {
+      method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
       },
       signal: controller.signal,
-      body: JSON.stringify({
-        model: PLAYABLE_OPENAI_MODEL,
-        input: 'Reply OK',
-        max_output_tokens: 2,
-      }),
     })
 
     if (response.ok) return { ok: true }

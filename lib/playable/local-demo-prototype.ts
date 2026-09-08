@@ -13,7 +13,7 @@ import type {
   PlayableAssetManifest,
   PlayableBuildAsset,
 } from './playable-agent-adapter'
-import type { ConfirmationProposal, PlayableAgentReply, PlayableTaskPhase } from './schemas'
+import type { ConfirmationProposal, PlayableAgentReply, PlayableTaskPhase, RequirementBrief } from './schemas'
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import type {
@@ -23,6 +23,7 @@ import type {
   PlayableTaskRepository,
 } from './task-api'
 import type { PlayableModeId } from './types'
+import { createRequirementBrief } from './requirement-tools'
 
 const execFileAsync = promisify(execFile)
 const localDemoUserId = 'local-demo-user'
@@ -150,6 +151,30 @@ function createProposal(
     : ({ status: '内置默认', treatment: '使用内置音频并默认静音' } as const)
   return {
     routing,
+    presentation:
+      routing.match === 'freeform'
+        ? {
+            assetFields: [
+              { slot: 'tileFaces', label: '角色与交互对象' },
+              { slot: 'backgroundBoard', label: '场景背景' },
+              { slot: 'animationEffects', label: '动画与特效' },
+              { slot: 'audio', label: '音频' },
+              { slot: 'endCard', label: '结束画面' },
+            ],
+            copyFields: ['title', 'cta'],
+            showReferenceAssets: true,
+          }
+        : {
+            assetFields: [
+              { slot: 'tileFaces', label: '牌面素材' },
+              { slot: 'backgroundBoard', label: '背景与棋盘' },
+              { slot: 'animationEffects', label: '动画与特效' },
+              { slot: 'audio', label: '音频' },
+              { slot: 'endCard', label: '结束卡' },
+            ],
+            copyFields: ['title', 'cta', 'disclaimer', 'locale'],
+            showReferenceAssets: true,
+          },
     mode,
     gameplay:
       freeformGameplay ??
@@ -216,6 +241,11 @@ function createLocalFreeformPlayable(storeUrl: string): string {
 class LocalDemoAgent implements PlayableAgentAdapter {
   async proposeConfirmation(input: AgentInput): Promise<PlayableAgentReply> {
     const context = conversationText(input)
+    const brief: RequirementBrief = input.brief
+      ? structuredClone(input.brief)
+      : createRequirementBrief(input.history?.find((turn) => turn.role === 'user')?.content ?? input.prompt)
+    brief.summary = context.slice(0, 600)
+    brief.gameplay.concept = context.slice(0, 500)
     const selectedMode =
       selectMode(input.prompt) ??
       [...(input.history ?? [])]
@@ -225,6 +255,7 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         .find(Boolean)
     const freeform = hasUnsupportedCoreGameplay(context)
     if (!selectedMode && !freeform) {
+      brief.openQuestions = ['核心玩法是什么？']
       return {
         kind: 'clarification',
         message: '我已经记下视觉主题。接下来请选择一种核心玩法，之后我会整理完整构建方案。',
@@ -255,11 +286,46 @@ class LocalDemoAgent implements PlayableAgentAdapter {
             value: '选择 3D 纵深（perspective_3d）玩法',
           },
         ],
+        request: {
+          type: 'single_select',
+          question: '请选择核心玩法，也可以描述其他玩法。',
+          options: [
+            {
+              id: 'center_collision',
+              label: '中心碰撞',
+              description: '相同牌飞向中心碰撞并消除',
+              value: '选择中心碰撞（center_collision）玩法',
+            },
+            {
+              id: 'top_rack',
+              label: '上方牌架',
+              description: '选中的牌进入上方牌架后配对',
+              value: '选择上方牌架（top_rack）玩法',
+            },
+            {
+              id: 'gravity_fill',
+              label: '下落补位',
+              description: '消除后元素从上方下落补位',
+              value: '选择下落补位（gravity_fill）玩法',
+            },
+            {
+              id: 'perspective_3d',
+              label: '3D 纵深',
+              description: '从立体牌墙顶层逐层配对',
+              value: '选择 3D 纵深（perspective_3d）玩法',
+            },
+          ],
+          allowCustom: true,
+        },
+        brief,
+        tools: ['update_requirement_brief', 'list_playable_capabilities', 'ask_user'],
       }
     }
     const mode = selectedMode ?? 'center_collision'
     const routing = classifyRouting(context, selectedMode)
+    brief.routing = { ...routing, mode }
     if (!hasVisualTheme(context)) {
+      brief.openQuestions = ['需要什么视觉主题？']
       return {
         kind: 'clarification',
         message: '玩法已经明确。接下来请选择一个视觉主题，也可以直接描述你想要的美术风格。',
@@ -284,10 +350,39 @@ class LocalDemoAgent implements PlayableAgentAdapter {
             value: '使用霓虹夜市主题',
           },
         ],
+        request: {
+          type: 'single_select',
+          question: '请选择视觉主题，也可以描述自定义风格。',
+          options: [
+            {
+              id: 'classic_theme',
+              label: '经典国风',
+              description: '红金配色、木质牌桌与传统麻将纹样',
+              value: '使用经典国风主题',
+            },
+            {
+              id: 'fresh_theme',
+              label: '清新茶园',
+              description: '青绿配色、竹木元素与明亮氛围',
+              value: '使用清新茶园主题',
+            },
+            {
+              id: 'neon_theme',
+              label: '霓虹夜市',
+              description: '高对比霓虹色和热闹街机质感',
+              value: '使用霓虹夜市主题',
+            },
+          ],
+          allowCustom: true,
+        },
+        brief,
+        tools: ['update_requirement_brief', 'ask_user'],
       }
     }
+    brief.experience.visualTheme = input.prompt.slice(0, 300)
     const assetStrategy = selectAssetStrategy(context)
     if (!assetStrategy) {
+      brief.openQuestions = ['图片和音频使用内置素材还是用户上传？']
       return {
         kind: 'clarification',
         message: '玩法已经明确。接下来请选择图片和音频素材的准备方式。',
@@ -306,9 +401,35 @@ class LocalDemoAgent implements PlayableAgentAdapter {
             value: '图片和音频都使用我上传的本地素材',
           },
         ],
+        request: {
+          type: 'single_select',
+          question: '请选择图片和音频素材来源。',
+          options: [
+            {
+              id: 'bundled',
+              label: '全部内置默认',
+              description: '使用模板自带图片、特效和音频',
+              value: '全部使用内置默认素材',
+            },
+            {
+              id: 'uploaded',
+              label: '我来上传',
+              description: '在确认表中上传自己的图片和音频',
+              value: '图片和音频都使用我上传的本地素材',
+            },
+          ],
+          allowCustom: false,
+        },
+        brief,
+        tools: ['update_requirement_brief', 'inspect_uploaded_assets', 'ask_user'],
       }
     }
+    brief.assets = {
+      images: assetStrategy === 'uploaded' ? 'upload' : 'bundled',
+      audio: assetStrategy === 'uploaded' ? 'upload' : 'bundled',
+    }
     if (!hasLaunchDetails(context)) {
+      brief.openQuestions = ['需要什么投放文案和 HTTPS 商店链接？']
       return {
         kind: 'clarification',
         message: '最后请确认投放文案和 HTTPS 商店链接。你可以直接输入标题、CTA 和链接，或先使用测试信息。',
@@ -321,8 +442,23 @@ class LocalDemoAgent implements PlayableAgentAdapter {
             value: '使用默认文案和测试链接',
           },
         ],
+        request: {
+          type: 'text',
+          question: '请输入标题、CTA 和 HTTPS 商店链接，或选择默认测试信息。',
+          options: [],
+          allowCustom: true,
+        },
+        brief,
+        tools: ['update_requirement_brief', 'ask_user'],
       }
     }
+    brief.launch = {
+      title: '麻将配对挑战',
+      cta: '立即试玩',
+      locale: 'zh-CN',
+      storeUrl: context.match(/https:\/\/[^\s]+/)?.[0] ?? 'https://example.com/app',
+    }
+    brief.openQuestions = []
     return {
       kind: 'confirmation',
       message:
@@ -343,6 +479,13 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         routing,
         routing.match === 'freeform' ? requestedGameplay(input) : undefined,
       ),
+      brief,
+      tools: [
+        'update_requirement_brief',
+        'list_playable_capabilities',
+        'validate_implementation_route',
+        'submit_confirmation',
+      ],
     }
   }
 
@@ -413,6 +556,10 @@ class LocalDemoArtifactStore implements ArtifactStore {
       },
     })
   }
+
+  async delete(key: string): Promise<void> {
+    this.values.delete(key)
+  }
 }
 
 class LocalDemoTaskRepository implements PlayableTaskRepository {
@@ -425,6 +572,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     const task: PlayableTaskRecord = {
       ...input,
       phase: 'draft',
+      requirementBrief: createRequirementBrief(),
       confirmation: null,
       latestArtifactKey: null,
       createdAt: new Date(),
@@ -452,6 +600,13 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]> {
     return this.messages.get(taskId) ?? []
+  }
+
+  async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['draft', 'awaiting_confirmation'].includes(task.phase)) return false
+    task.requirementBrief = structuredClone(brief)
+    return true
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
@@ -539,6 +694,20 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async listAssets(taskId: string, userId: string): Promise<PlayableAsset[]> {
     return (this.assets.get(taskId) ?? []).filter((asset) => asset.userId === userId)
+  }
+
+  async findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined> {
+    return (this.assets.get(taskId) ?? []).find((asset) => asset.id === assetId && asset.userId === userId)
+  }
+
+  async deleteOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined> {
+    const asset = await this.findOwnedAsset(taskId, userId, assetId)
+    if (!asset) return
+    this.assets.set(
+      taskId,
+      (this.assets.get(taskId) ?? []).filter((candidate) => candidate.id !== assetId),
+    )
+    return asset
   }
 }
 

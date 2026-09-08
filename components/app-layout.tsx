@@ -95,6 +95,7 @@ function SidebarLoader({ width }: { width: number }) {
 export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, initialIsMobile }: AppLayoutProps) {
   const pathname = usePathname()
   const isPlayablePath = pathname === '/' || pathname === '/tasks' || pathname.startsWith('/tasks/')
+  const isPlayableTaskPath = pathname.startsWith('/tasks/')
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoading, setIsLoading] = useState(true)
   // Initialize sidebar state based on user agent and preferences
@@ -313,7 +314,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
     >
       <ConnectorsProvider>
         <div
-          className="h-dvh flex relative"
+          className="relative flex h-dvh min-h-0 overflow-hidden"
           style={
             {
               '--sidebar-width': `${sidebarWidth}px`,
@@ -376,7 +377,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
 
           {/* Main Content */}
           <div
-            className={`flex-1 overflow-auto flex flex-col ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}`}
+            className={`flex min-h-0 min-w-0 flex-1 flex-col ${isPlayableTaskPath ? 'overflow-hidden' : 'overflow-auto'} ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}`}
             style={{
               marginLeft: !isPlayablePath && isDesktop && isSidebarOpen ? `${sidebarWidth + 4}px` : '0px',
             }}

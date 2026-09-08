@@ -1,12 +1,14 @@
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
-import type { PlayableAgentAdapter, PlayableBuildAsset } from './playable-agent-adapter'
+import { PlayableAgentError, type PlayableAgentAdapter, type PlayableBuildAsset } from './playable-agent-adapter'
 import {
   confirmationProposalSchema,
   playableAgentReplySchema,
+  requirementBriefSchema,
   type ConfirmationProposal,
   type PlayableAgentReply,
   type PlayableTaskPhase,
+  type RequirementBrief,
 } from './schemas'
 import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
@@ -14,6 +16,7 @@ import { generatePlayableMediaAssets } from './media-generation'
 import { createAssetSourceManifest, createProductionConfig } from './production-contract'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { isPlayableResourceAssetSlot } from './asset-policy'
+import { createRequirementBrief } from './requirement-tools'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -22,6 +25,7 @@ export interface PlayableTaskRecord {
   userId: string
   prompt: string
   phase: PlayableTaskPhase
+  requirementBrief: RequirementBrief | null
   confirmation: ConfirmationProposal | null
   latestArtifactKey: string | null
   latestValidation?: unknown
@@ -51,6 +55,7 @@ export interface PlayableTaskRepository {
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
   appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void>
   listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]>
+  updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean>
   setDraft(taskId: string, userId: string): Promise<boolean>
   setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
   claimBuild(
@@ -73,6 +78,8 @@ export interface PlayableTaskRepository {
   listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]>
   saveAsset(asset: PlayableAsset): Promise<void>
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
+  findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
+  deleteOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
 }
 
 export type BackgroundScheduler = (work: () => Promise<void>) => void
@@ -131,6 +138,7 @@ function safeTaskState(task: PlayableTaskRecord) {
     phase: task.phase,
     hasArtifact: Boolean(task.latestArtifactKey),
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
+    requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
     confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
   }
 }
@@ -162,12 +170,93 @@ function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
 }
 
+function requirementFailureMessage(cause: unknown): string {
+  if (!(cause instanceof PlayableAgentError)) return '助手暂时无法继续整理需求，请重试'
+  if (cause.code === 'sandbox_configuration') {
+    return '本地 Harness 缺少 Vercel Sandbox 凭据，请配置后重启服务'
+  }
+  if (cause.code === 'session_start_failed') return '无法启动 Agent 会话，请检查 Sandbox 配置后重试'
+  if (cause.code === 'stream_failed') return 'Agent 响应流中断，请检查网络与模型权限后重试'
+  return 'Agent 返回的需求方案格式无效，请重试'
+}
+
+function logRequirementFailure(cause: unknown): void {
+  if (!(cause instanceof PlayableAgentError)) {
+    console.error('Playable requirement processing failed')
+    return
+  }
+  if (cause.code === 'sandbox_configuration') {
+    console.error('Playable requirement processing failed: sandbox credentials unavailable')
+    return
+  }
+  if (cause.code === 'session_start_failed') {
+    console.error('Playable requirement processing failed: session start failed')
+    return
+  }
+  if (cause.code === 'stream_failed') {
+    console.error('Playable requirement processing failed: agent stream failed')
+    return
+  }
+  console.error('Playable requirement processing failed: agent output invalid')
+}
+
+type RequirementProcessingStage =
+  | 'context_load'
+  | 'user_message_store'
+  | 'agent_reply'
+  | 'reply_validation'
+  | 'brief_store'
+  | 'agent_message_store'
+  | 'phase_transition'
+
+function requirementStageFailureMessage(stage: RequirementProcessingStage): string {
+  if (stage === 'context_load') return '无法读取任务上下文，请检查数据库连接后重试'
+  if (stage === 'user_message_store') return '无法保存你的消息，请检查数据库连接后重试'
+  if (stage === 'reply_validation') return 'Agent 返回的需求方案未通过校验，请重试'
+  if (stage === 'brief_store') return '无法保存实时 Brief，请检查数据库后重试'
+  if (stage === 'agent_message_store') return '无法保存助手回复，请检查数据库后重试'
+  if (stage === 'phase_transition') return '任务状态已变化，请刷新后重试'
+  return '助手暂时无法继续整理需求，请重试'
+}
+
+function logRequirementStageFailure(stage: RequirementProcessingStage): void {
+  if (stage === 'context_load') {
+    console.error('Playable requirement processing failed: context load failed')
+    return
+  }
+  if (stage === 'user_message_store') {
+    console.error('Playable requirement processing failed: user message store failed')
+    return
+  }
+  if (stage === 'reply_validation') {
+    console.error('Playable requirement processing failed: reply validation failed')
+    return
+  }
+  if (stage === 'brief_store') {
+    console.error('Playable requirement processing failed: brief store failed')
+    return
+  }
+  if (stage === 'agent_message_store') {
+    console.error('Playable requirement processing failed: agent message store failed')
+    return
+  }
+  if (stage === 'phase_transition') {
+    console.error('Playable requirement processing failed: phase transition failed')
+    return
+  }
+  console.error('Playable requirement processing failed: agent reply failed')
+}
+
 function sanitizeConfirmation(value: ConfirmationProposal, secrets: readonly string[] = []): ConfirmationProposal {
   return confirmationProposalSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
 }
 
 function sanitizeAgentReply(value: PlayableAgentReply, secrets: readonly string[] = []): PlayableAgentReply {
   return playableAgentReplySchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+function sanitizeRequirementBrief(value: RequirementBrief, secrets: readonly string[] = []): RequirementBrief {
+  return requirementBriefSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
 }
 
 function conversationContent(message: PlayableTaskMessageRecord, secrets: readonly string[]): string {
@@ -209,6 +298,18 @@ async function recordBuildFailure(repository: PlayableTaskRepository, taskId: st
   ])
 }
 
+type ConfirmedBuildStage = 'confirmation' | 'assets' | 'media' | 'agent' | 'validation' | 'artifact_store' | 'publish'
+
+function logConfirmedBuildFailure(stage: ConfirmedBuildStage): void {
+  if (stage === 'confirmation') console.error('Playable build failed during confirmation validation')
+  else if (stage === 'assets') console.error('Playable build failed while loading assets')
+  else if (stage === 'media') console.error('Playable build failed during media generation')
+  else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
+  else if (stage === 'validation') console.error('Playable build failed during validation')
+  else if (stage === 'artifact_store') console.error('Playable build failed while storing artifacts')
+  else console.error('Playable build failed while publishing artifacts')
+}
+
 function eventJson(event: PlayableEventRecord) {
   return {
     id: event.id,
@@ -231,6 +332,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     return
   }
 
+  let stage: ConfirmedBuildStage = 'confirmation'
   try {
     if (
       containsExactSecret(JSON.stringify(task.confirmation), apiKey) ||
@@ -248,6 +350,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     ) {
       throw new Error('AI media generation is not supported')
     }
+    stage = 'assets'
     const storedAssets = await repository.listAssets(task.id, task.userId)
     const uploadedAssets = await Promise.all(
       storedAssets
@@ -272,6 +375,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const needsGeneratedMedia = Object.values(sanitizedConfirmation.resources).some(
       (resource) => resource.status === '待生成',
     )
+    stage = 'media'
     const mediaGenerator = dependencies.mediaGenerator ?? generatePlayableMediaAssets
     const generatedAssets = needsGeneratedMedia
       ? await mediaGenerator({
@@ -281,12 +385,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         })
       : []
     const assets = [...uploadedAssets, ...generatedAssets]
+    stage = 'agent'
     const result = await agent.build({
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
     })
+    stage = 'validation'
     if (!result.validation.passed || Object.values(result.validation.gates).includes('failed')) {
       throw new Error('Playable validation gates failed')
     }
@@ -300,12 +406,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const validationReport = result.validation
     const productionConfig = createProductionConfig(sanitizedConfirmation)
     const assetManifest = result.assetManifest ?? createAssetSourceManifest(sanitizedConfirmation, assets)
+    stage = 'artifact_store'
     console.log('Storing playable artifacts')
     await artifactStore.put(`${prefix}/production-config.json`, JSON.stringify(productionConfig), 'application/json')
     await artifactStore.put(`${prefix}/asset-manifest.json`, JSON.stringify(assetManifest), 'application/json')
     await artifactStore.put(`${prefix}/validation-report.json`, JSON.stringify(validationReport), 'application/json')
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
 
+    stage = 'publish'
     const published = await repository.publishArtifact(task.id, 'validating', playableKey, validationReport)
     if (!published) {
       await recordBuildFailure(repository, task.id)
@@ -321,6 +429,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       })
       .catch(() => undefined)
   } catch {
+    logConfirmedBuildFailure(stage)
     await recordBuildFailure(repository, task.id)
   }
 }
@@ -392,35 +501,79 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           }
           const processing = (async () => {
             const prompt = safeString(message, [apiKey])
+            let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
               const [history, assets] = await Promise.all([
                 dependencies.repository.listMessages(access.task.id),
                 dependencies.repository.listAssets(access.task.id, access.userId),
               ])
+              stage = 'user_message_store'
               await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
-              const agentReply = await dependencies.agent.proposeConfirmation({
-                taskId: access.task.id,
-                prompt,
-                apiKey,
-                history: history.map((turn) => ({
-                  role: turn.role === 'agent' ? 'assistant' : 'user',
-                  content: conversationContent(turn, [apiKey]),
-                })),
-                confirmation: access.task.confirmation
-                  ? sanitizeConfirmation(access.task.confirmation, [apiKey])
-                  : null,
-                assets: assets.map(safeAsset),
-              })
+              stage = 'agent_reply'
+              const agentReply = await dependencies.agent.proposeConfirmation(
+                {
+                  taskId: access.task.id,
+                  prompt,
+                  apiKey,
+                  history: history.map((turn) => ({
+                    role: turn.role === 'agent' ? 'assistant' : 'user',
+                    content: conversationContent(turn, [apiKey]),
+                  })),
+                  confirmation: access.task.confirmation
+                    ? sanitizeConfirmation(access.task.confirmation, [apiKey])
+                    : null,
+                  brief: access.task.requirementBrief
+                    ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
+                    : null,
+                  assets: assets.map(safeAsset),
+                },
+                {
+                  onProgress(progress) {
+                    const message = progress.message ? safeString(progress.message, [apiKey]) : undefined
+                    const reasoning = progress.reasoning ? safeString(progress.reasoning, [apiKey]) : undefined
+                    if (!message && !reasoning) return
+                    enqueue({ type: 'assistant_progress', message, reasoning })
+                  },
+                },
+              )
               if (cancelled) return
+              stage = 'reply_validation'
               const parsedReply = playableAgentReplySchema.parse(agentReply)
               if (containsExactSecret(JSON.stringify(parsedReply), apiKey)) {
                 throw new Error('Agent reply contains a credential')
               }
               const validatedReply = sanitizeAgentReply(parsedReply)
+              const fallbackBrief =
+                validatedReply.kind === 'informational'
+                  ? (access.task.requirementBrief ?? createRequirementBrief())
+                  : (access.task.requirementBrief ?? createRequirementBrief(access.task.prompt))
+              const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
+              stage = 'brief_store'
+              const briefUpdated = await dependencies.repository.updateRequirementBrief(
+                access.task.id,
+                access.userId,
+                nextBrief,
+              )
+              if (!briefUpdated) throw new Error('Task phase conflict')
+              for (const tool of validatedReply.tools ?? []) {
+                if (!enqueue({ type: 'tool_completed', tool })) return
+              }
               const serialized = JSON.stringify(validatedReply)
+              stage = 'agent_message_store'
               await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
+              if (validatedReply.kind === 'informational') {
+                enqueue({
+                  type: 'informational',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  brief: nextBrief,
+                  tools: validatedReply.tools ?? [],
+                })
+                return
+              }
               if (validatedReply.kind === 'clarification') {
+                stage = 'phase_transition'
                 const transitioned = await dependencies.repository.setDraft(access.task.id, access.userId)
                 if (!transitioned) throw new Error('Task phase conflict')
                 await dependencies.repository.appendEvent({
@@ -434,10 +587,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   message: validatedReply.message,
                   reasoning: validatedReply.reasoning,
                   options: validatedReply.options,
+                  request: validatedReply.request,
+                  brief: nextBrief,
+                  tools: validatedReply.tools ?? [],
                 })
                 return
               }
               const validated = validatedReply.confirmation
+              stage = 'phase_transition'
               const transitioned = await dependencies.repository.setAwaitingConfirmation(
                 access.task.id,
                 access.userId,
@@ -455,9 +612,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 message: validatedReply.message,
                 reasoning: validatedReply.reasoning,
                 confirmation: validated,
+                brief: nextBrief,
+                tools: validatedReply.tools ?? [],
               })
-            } catch {
-              enqueue({ type: 'error', message: '助手暂时无法继续整理需求，请重试' })
+            } catch (cause) {
+              if (cause instanceof PlayableAgentError) {
+                logRequirementFailure(cause)
+                enqueue({ type: 'error', message: requirementFailureMessage(cause) })
+              } else {
+                logRequirementStageFailure(stage)
+                enqueue({ type: 'error', message: requirementStageFailureMessage(stage) })
+              }
             } finally {
               close()
             }

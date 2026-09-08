@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isLocalCodexMode } from '@/lib/playable/local-codex-runtime'
+import { isLocalCodexMode, isLocalHarnessMode, isLocalPlayableAuthMode } from '@/lib/playable/local-codex-runtime'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -19,5 +19,17 @@ describe('local Codex runtime', () => {
     vi.stubEnv('NODE_ENV', 'production')
 
     expect(isLocalCodexMode()).toBe(false)
+  })
+
+  it('enables production-parity Harness with local authentication only in development', () => {
+    vi.stubEnv('LOCAL_HARNESS_MODE', '1')
+    vi.stubEnv('NODE_ENV', 'development')
+
+    expect(isLocalHarnessMode()).toBe(true)
+    expect(isLocalPlayableAuthMode()).toBe(true)
+
+    vi.stubEnv('NODE_ENV', 'production')
+    expect(isLocalHarnessMode()).toBe(false)
+    expect(isLocalPlayableAuthMode()).toBe(false)
   })
 })

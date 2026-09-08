@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import type { ConfirmationProposal, RequirementBrief } from '@/lib/playable/schemas'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
 import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
@@ -56,6 +56,13 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
   })
 
+  it('uses the production API key flow in local Harness mode', () => {
+    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} localHarness />)
+
+    expect(screen.getByText('本地 Harness · 线上 Agent')).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
+  })
+
   it('starts the first conversation automatically after the API key is available', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/messages')) {
@@ -84,11 +91,63 @@ describe('PlayableWorkspace', () => {
     )
   })
 
+  it('renders a persisted brief and dynamic multi-select request', () => {
+    const brief: RequirementBrief = {
+      version: 1,
+      summary: '夏日清爽麻将消除，并增加奖励表现',
+      gameplay: { concept: '麻将消除', coreLoop: '配对消除', controls: '点击', objective: '清空牌面' },
+      experience: { visualTheme: '夏日清爽', tone: '轻松', camera: '竖屏' },
+      assets: { images: 'unknown', audio: 'unknown' },
+      launch: { title: '', cta: '', locale: 'zh-CN', storeUrl: '' },
+      constraints: [],
+      openQuestions: ['选择体验重点'],
+      routing: {
+        match: 'approximate',
+        mode: 'center_collision',
+        confidence: 0.7,
+        differences: ['需要增加奖励表现'],
+      },
+    }
+    const options = [
+      { id: 'pace', label: '节奏', description: '快速反馈', value: '重视节奏' },
+      { id: 'visual', label: '画面', description: '丰富表现', value: '重视画面' },
+    ]
+    render(
+      <ChatWorkspace
+        taskId="task-tools"
+        phase="draft"
+        brief={brief}
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+        initialConversation={[
+          {
+            id: 'agent-1',
+            role: 'assistant',
+            content: '请选择体验重点。',
+            reasoning: '这会影响部分匹配的实现。',
+            status: 'sent',
+            options,
+            request: { type: 'multi_select', question: '哪些体验最重要？', options, allowCustom: true },
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: '需求 Brief' })).toHaveTextContent('部分匹配')
+    expect(screen.getByRole('region', { name: '需求 Brief' })).toHaveTextContent('选择体验重点')
+    const submit = screen.getByRole('button', { name: '确认选择' })
+    expect(submit).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: /节奏/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /画面/ }))
+    expect(submit).toBeEnabled()
+  })
+
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
 
     expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: '确认方案' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent(
       '需求整理等待确认构建中验证中待验收已交付',
     )
@@ -118,13 +177,37 @@ describe('PlayableWorkspace', () => {
     render(<ConfirmationTable proposal={proposal} onChange={onChange} onConfirm={vi.fn()} />)
 
     expect(screen.getByText('top_rack')).toBeInTheDocument()
-    expect(screen.getByText('上方牌架')).toBeInTheDocument()
+    expect(screen.getByLabelText('玩法模板')).toHaveTextContent('上方牌架')
     expect(screen.getByRole('button', { name: '确认方案并开始构建' })).toBeDisabled()
 
     fireEvent.change(screen.getByLabelText('商店跳转链接（HTTPS）'), {
       target: { value: 'https://example.com/store' },
     })
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ storeUrl: 'https://example.com/store' }))
+  })
+
+  it('lets the user customize template, gameplay, and copy in the confirmation table', () => {
+    const onChange = vi.fn()
+    render(
+      <ConfirmationTable
+        proposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        onChange={onChange}
+        onConfirm={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('玩法说明'), { target: { value: '自定义核心玩法' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ gameplay: '自定义核心玩法' }))
+
+    fireEvent.change(screen.getByLabelText('游戏标题'), { target: { value: '夏日消消乐' } })
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ copy: expect.objectContaining({ title: '夏日消消乐' }) }),
+    )
+
+    expect(screen.getByLabelText('玩法模板')).toBeEnabled()
+    expect(screen.getByLabelText('CTA 文案')).toBeEnabled()
+    expect(screen.getByLabelText('语言')).toBeEnabled()
+    expect(screen.getByLabelText('免责声明')).toBeEnabled()
   })
 
   it('labels unsupported gameplay as direct freeform generation', () => {
@@ -134,6 +217,15 @@ describe('PlayableWorkspace', () => {
           ...proposal,
           routing: { match: 'freeform', confidence: 0.1, differences: ['核心状态机不受模板支持'] },
           gameplay: '自由移动并击败 Boss',
+          presentation: {
+            assetFields: [
+              { slot: 'tileFaces', label: '英雄与怪物' },
+              { slot: 'backgroundBoard', label: '战斗场景' },
+              { slot: 'animationEffects', label: '攻击特效' },
+            ],
+            copyFields: ['title', 'cta'],
+            showReferenceAssets: false,
+          },
         }}
         onChange={vi.fn()}
         onConfirm={vi.fn()}
@@ -141,18 +233,23 @@ describe('PlayableWorkspace', () => {
     )
 
     expect(screen.getByText('自由生成')).toBeInTheDocument()
-    expect(screen.getByText('参考脚手架')).toBeInTheDocument()
+    expect(screen.getByText('实现方式')).toBeInTheDocument()
+    expect(screen.getByText('英雄与怪物')).toBeInTheDocument()
+    expect(screen.getByText('战斗场景')).toBeInTheDocument()
+    expect(screen.queryByText('音频')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('语言')).not.toBeInTheDocument()
+    expect(screen.queryByText('参考素材')).not.toBeInTheDocument()
     expect(screen.getByText(/不受参考模板状态机限制/)).toBeInTheDocument()
   })
 
-  it('polls authoritative task state immediately and ignores backward phase responses', async () => {
+  it('polls authoritative build state without overwriting the confirmation draft', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({
         task: {
           phase: 'awaiting_confirmation',
           hasArtifact: true,
           artifactVersion: 'old',
-          confirmation: { ...proposal, storeUrl: 'https://example.com/store' },
+          confirmation: { ...proposal, mode: 'center_collision', storeUrl: 'https://example.com/store' },
         },
         events: [],
       }),
@@ -163,6 +260,7 @@ describe('PlayableWorkspace', () => {
         taskId="task-7"
         initialApiKeyConfigured
         initialPhase="building"
+        initialProposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
         initialHasArtifact
         initialArtifactVersion="old"
       />,
@@ -174,6 +272,15 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('当前状态：构建中')
     expect(screen.getByRole('region', { name: '确认方案' })).toHaveTextContent('top_rack')
     expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
+  })
+
+  it('does not poll events while a task is idle', () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PlayableWorkspace taskId="task-idle" initialApiKeyConfigured initialPhase="draft" />)
+
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('uploads exactly one file into its selected pending resource slot', async () => {
@@ -324,24 +431,29 @@ describe('PlayableWorkspace', () => {
 
     fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '我想换一种玩法' } })
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
-    expect(screen.getByRole('region', { name: '助手正在思考' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Thinking' })).toBeInTheDocument()
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
 
     resolveFetch(
       new Response(
-        `${JSON.stringify({
-          type: 'clarification',
-          message: '请选择一种玩法。',
-          reasoning: '当前描述没有指定核心消除机制。',
-          options: [
-            { id: 'center', label: '中心碰撞', description: '配对后碰撞', value: '选择中心碰撞玩法' },
-            { id: 'rack', label: '上方牌架', description: '选牌进入牌架', value: '选择上方牌架玩法' },
-          ],
-        })}\n`,
+        [
+          JSON.stringify({ type: 'assistant_progress', message: '请选择', reasoning: '正在判断核心玩法。' }),
+          JSON.stringify({
+            type: 'clarification',
+            message: '请选择一种玩法。',
+            reasoning: '当前描述没有指定核心消除机制。',
+            options: [
+              { id: 'center', label: '中心碰撞', description: '配对后碰撞', value: '选择中心碰撞玩法' },
+              { id: 'rack', label: '上方牌架', description: '选牌进入牌架', value: '选择上方牌架玩法' },
+            ],
+          }),
+        ].join('\n'),
       ),
     )
 
     expect(await screen.findByText('请选择一种玩法。')).toBeInTheDocument()
     expect(screen.getByText(/当前描述没有指定核心消除机制/)).toBeInTheDocument()
+    expect(screen.getAllByRole('article', { name: '助手回复' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: /中心碰撞/ }))
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
@@ -374,7 +486,7 @@ describe('PlayableWorkspace', () => {
     fireEvent.change(backgroundInput, {
       target: { files: [new File(['image'], 'board.png', { type: 'image/png' })] },
     })
-    expect(onUpload).toHaveBeenCalledWith('backgroundBoard', expect.objectContaining({ name: 'board.png' }))
+    expect(onUpload).toHaveBeenCalledWith('backgroundBoard', [expect.objectContaining({ name: 'board.png' })])
 
     expect(screen.getByRole('button', { name: '上传参考图片' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '上传参考视频' })).toBeEnabled()
@@ -434,7 +546,7 @@ describe('PlayableWorkspace', () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
-    expect(screen.getByRole('region', { name: '助手正在思考' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Thinking' })).toBeInTheDocument()
     resolveFetch(new Response(confirmationLine))
     await waitFor(() => expect(onProposal).toHaveBeenCalledOnce())
     expect(requestSignal?.aborted).toBe(false)
@@ -523,7 +635,7 @@ describe('PlayableWorkspace', () => {
       <PlayablePreview taskId="task-7" phase="reviewing" hasArtifact artifactVersion="build-1" onPhase={onPhase} />,
     )
 
-    expect(screen.getByText('自动门禁已通过，请完成人工验收')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '预览控制' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: '验收通过' }))
     await waitFor(() => expect(onPhase).toHaveBeenCalledWith('ready'))

@@ -2,28 +2,18 @@
 
 import { useRef } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
-import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN } from '@/lib/playable/template-registry'
+import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { AssetPreviewList } from './asset-preview-list'
+import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from '@/lib/playable/template-registry'
 import { isAbsoluteHttpsUrl } from '@/lib/playable/schemas'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
-import {
-  isPlayableResourceAssetSlot,
-  playableAssetAccept,
-  type PlayableAssetSlot,
-  type PlayableResourceAssetSlot,
-} from '@/lib/playable/asset-policy'
-
-const resourceLabels: Record<keyof ConfirmationProposal['resources'], string> = {
-  tileFaces: '牌面素材',
-  backgroundBoard: '背景与棋盘',
-  animationEffects: '动画与特效',
-  audio: '音频',
-  endCard: '结束卡',
-}
+import { isPlayableResourceAssetSlot, playableAssetAccept, type PlayableAssetSlot } from '@/lib/playable/asset-policy'
 
 const defaultTreatments: Record<keyof ConfirmationProposal['resources'], string> = {
   tileFaces: '使用内置默认牌面素材',
@@ -47,6 +37,13 @@ const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = 
   freeform: '自由生成',
 }
 
+const copyFieldConfig: Record<keyof ConfirmationProposal['copy'], { label: string; maxLength: number }> = {
+  title: { label: '游戏标题', maxLength: 120 },
+  cta: { label: 'CTA 文案', maxLength: 80 },
+  disclaimer: { label: '免责声明', maxLength: 300 },
+  locale: { label: '语言', maxLength: 30 },
+}
+
 interface ConfirmationTableProps {
   proposal: ConfirmationProposal
   onChange: (proposal: ConfirmationProposal) => void
@@ -55,8 +52,11 @@ interface ConfirmationTableProps {
   buildPhase?: 'building' | 'validating'
   disabled?: boolean
   uploadingSlot?: PlayableAssetSlot
-  onUpload?: (slot: PlayableAssetSlot, file: File) => void
+  onUpload?: (slot: PlayableAssetSlot, files: File[]) => void
+  onRemoveAsset?: (asset: SafePlayableAsset) => void
   uploadedAssets?: SafePlayableAsset[]
+  removingAssetId?: string
+  assetPreviewUrl?: (asset: SafePlayableAsset) => string
 }
 
 export function ConfirmationTable({
@@ -68,13 +68,21 @@ export function ConfirmationTable({
   disabled,
   uploadingSlot,
   onUpload,
+  onRemoveAsset,
   uploadedAssets = [],
+  removingAssetId,
+  assetPreviewUrl,
 }: ConfirmationTableProps) {
   const uploadInputs = useRef<Partial<Record<PlayableAssetSlot, HTMLInputElement | null>>>({})
-  const hasPendingUpload = Object.values(proposal.resources).some((resource) => resource.status === '待上传')
+  const presentation = proposal.presentation ?? defaultConfirmationPresentation
+  const assetFields = presentation.assetFields.filter(
+    (field, index, fields) => fields.findIndex((candidate) => candidate.slot === field.slot) === index,
+  )
+  const visibleResources = assetFields.map((field) => proposal.resources[field.slot])
+  const hasPendingUpload = visibleResources.some((resource) => resource.status === '待上传')
   const aiMediaGenerationEnabled = MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration
   const hasUnsupportedAiGeneration =
-    !aiMediaGenerationEnabled && Object.values(proposal.resources).some((resource) => resource.status === '待生成')
+    !aiMediaGenerationEnabled && visibleResources.some((resource) => resource.status === '待生成')
   const resourcesReady = !hasPendingUpload && !hasUnsupportedAiGeneration
   const validStoreUrl = isAbsoluteHttpsUrl(proposal.storeUrl)
   const inProgress = Boolean(confirming || buildPhase)
@@ -94,6 +102,11 @@ export function ConfirmationTable({
         [key]: resource,
       },
     })
+  }
+
+  const updateMode = (value: string) => {
+    const nextMode = PLAYABLE_MODES.find((candidate) => candidate.id === value)
+    if (nextMode) onChange({ ...proposal, mode: nextMode.id })
   }
 
   return (
@@ -123,100 +136,153 @@ export function ConfirmationTable({
             </tr>
             <tr>
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">
-                {proposal.routing.match === 'freeform' ? '参考脚手架' : '玩法'}
+                {proposal.routing.match === 'exact'
+                  ? '匹配模板'
+                  : proposal.routing.match === 'approximate'
+                    ? '基础模板'
+                    : '实现方式'}
               </th>
-              <td className="px-3 py-2">
-                <span className="font-mono text-xs">{mode.id}</span>
-                <span className="mx-2">·</span>
-                <span>{mode.label}</span>
-                <p className="text-muted-foreground mt-1">{proposal.gameplay}</p>
-                {proposal.routing.match === 'freeform' && (
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    大模型将直接实现已确认玩法，不受参考模板状态机限制。
-                  </p>
+              <td className="space-y-2 px-3 py-2">
+                {proposal.routing.match === 'freeform' ? (
+                  <>
+                    <Badge variant="secondary">Agent 自由生成</Badge>
+                    <p className="text-muted-foreground text-xs">
+                      构建 Agent 将直接实现确认的玩法，不受参考模板状态机限制。
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Select value={proposal.mode} disabled={controlsDisabled} onValueChange={updateMode}>
+                      <SelectTrigger className="w-full" aria-label="玩法模板">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PLAYABLE_MODES.map((candidate) => (
+                          <SelectItem key={candidate.id} value={candidate.id}>
+                            {candidate.label} ({candidate.id})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-muted-foreground text-xs">
+                      <span className="font-mono">{mode.id}</span> · {mode.description}
+                    </p>
+                  </>
                 )}
               </td>
             </tr>
-            {Object.entries(proposal.resources).map(([key, resource]) => (
-              <tr key={key}>
-                <th className="bg-muted/40 px-3 py-2 font-medium">
-                  {resourceLabels[key as keyof ConfirmationProposal['resources']]}
-                </th>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      variant={
-                        resource.status === '待上传' || resource.status === '待生成' ? 'destructive' : 'secondary'
-                      }
-                    >
-                      {resource.status}
-                    </Badge>
-                    <span className="text-muted-foreground">{resource.treatment}</span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={resource.status === '内置默认' ? 'secondary' : 'outline'}
-                      disabled={controlsDisabled}
-                      aria-label={`使用内置默认${resourceLabels[key as PlayableResourceAssetSlot]}`}
-                      onClick={() =>
-                        updateResource(key as PlayableResourceAssetSlot, {
-                          status: '内置默认',
-                          treatment: defaultTreatments[key as PlayableResourceAssetSlot],
-                        })
-                      }
-                    >
-                      内置默认
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={controlsDisabled || !aiMediaGenerationEnabled}
-                      aria-label={`AI 生成${resourceLabels[key as PlayableResourceAssetSlot]}（暂不支持）`}
-                      title="AI 素材生成暂不支持"
-                      onClick={() =>
-                        updateResource(key as PlayableResourceAssetSlot, {
-                          status: '待生成',
-                          treatment: generatedTreatments[key as PlayableResourceAssetSlot],
-                        })
-                      }
-                    >
-                      {key === 'audio' ? 'AI 配音（暂不支持）' : 'AI 生成（暂不支持）'}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={resource.status === '待上传' || resource.status === '用户上传' ? 'secondary' : 'outline'}
-                      disabled={controlsDisabled || Boolean(uploadingSlot) || !onUpload}
-                      aria-label={`本地上传${resourceLabels[key as PlayableResourceAssetSlot]}`}
-                      onClick={() => uploadInputs.current[key as PlayableResourceAssetSlot]?.click()}
-                    >
-                      {uploadingSlot === key ? '上传中…' : '本地上传'}
-                    </Button>
-                    {onUpload && (
-                      <input
-                        ref={(node) => {
-                          uploadInputs.current[key as PlayableResourceAssetSlot] = node
-                        }}
-                        aria-label={`为${resourceLabels[key as PlayableResourceAssetSlot]}上传素材`}
-                        className="sr-only"
-                        type="file"
-                        disabled={controlsDisabled || Boolean(uploadingSlot)}
-                        accept={playableAssetAccept(key as PlayableResourceAssetSlot)}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0]
-                          if (file) onUpload(key as PlayableResourceAssetSlot, file)
-                          event.target.value = ''
-                        }}
-                      />
+            <tr>
+              <th className="bg-muted/40 w-28 px-3 py-2 font-medium">玩法方案</th>
+              <td className="px-3 py-2">
+                <Textarea
+                  aria-label="玩法说明"
+                  className="min-h-20 resize-y"
+                  maxLength={1200}
+                  value={proposal.gameplay}
+                  disabled={controlsDisabled}
+                  onChange={(event) => onChange({ ...proposal, gameplay: event.target.value })}
+                />
+              </td>
+            </tr>
+            {assetFields.map(({ slot, label }) => {
+              const resource = proposal.resources[slot]
+              return (
+                <tr key={slot}>
+                  <th className="bg-muted/40 px-3 py-2 font-medium">{label}</th>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant={
+                          resource.status === '待上传' || resource.status === '待生成' ? 'destructive' : 'secondary'
+                        }
+                      >
+                        {resource.status}
+                      </Badge>
+                      <span className="text-muted-foreground">{resource.treatment}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={resource.status === '内置默认' ? 'secondary' : 'outline'}
+                        disabled={controlsDisabled}
+                        aria-label={`使用内置默认${label}`}
+                        onClick={() =>
+                          updateResource(slot, {
+                            status: '内置默认',
+                            treatment: defaultTreatments[slot],
+                          })
+                        }
+                      >
+                        内置默认
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={controlsDisabled || !aiMediaGenerationEnabled}
+                        aria-label={`AI 生成${label}（暂不支持）`}
+                        title="AI 素材生成暂不支持"
+                        onClick={() =>
+                          updateResource(slot, {
+                            status: '待生成',
+                            treatment: generatedTreatments[slot],
+                          })
+                        }
+                      >
+                        {slot === 'audio' ? 'AI 配音（暂不支持）' : 'AI 生成（暂不支持）'}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={
+                          resource.status === '待上传' || resource.status === '用户上传' ? 'secondary' : 'outline'
+                        }
+                        disabled={controlsDisabled || Boolean(uploadingSlot) || !onUpload}
+                        aria-label={`本地上传${label}`}
+                        onClick={() => uploadInputs.current[slot]?.click()}
+                      >
+                        {uploadingSlot === slot ? '上传中…' : '本地上传'}
+                      </Button>
+                      {onUpload && (
+                        <input
+                          ref={(node) => {
+                            uploadInputs.current[slot] = node
+                          }}
+                          aria-label={`为${label}上传素材`}
+                          className="sr-only"
+                          type="file"
+                          multiple
+                          disabled={controlsDisabled || Boolean(uploadingSlot)}
+                          accept={playableAssetAccept(slot)}
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files ?? [])
+                            if (files.length > 0) onUpload(slot, files)
+                            event.target.value = ''
+                          }}
+                        />
+                      )}
+                    </div>
+                    {onRemoveAsset && (
+                      <div className="mt-2">
+                        <AssetPreviewList
+                          items={uploadedAssets
+                            .filter((asset) => asset.slot === slot)
+                            .map((asset) => ({ ...asset, previewUrl: assetPreviewUrl?.(asset) }))}
+                          disabled={controlsDisabled}
+                          removingId={removingAssetId}
+                          onRemove={(item) => {
+                            const asset = uploadedAssets.find((candidate) => candidate.id === item.id)
+                            if (asset) onRemoveAsset(asset)
+                          }}
+                        />
+                      </div>
                     )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {onUpload && (
+                  </td>
+                </tr>
+              )
+            })}
+            {onUpload && presentation.showReferenceAssets && (
               <tr>
                 <th className="bg-muted/40 px-3 py-2 font-medium">参考素材</th>
                 <td className="space-y-2 px-3 py-2">
@@ -250,58 +316,78 @@ export function ConfirmationTable({
                         aria-label={slot === 'referenceImage' ? '选择参考图片' : '选择参考视频'}
                         className="sr-only"
                         type="file"
+                        multiple
                         disabled={controlsDisabled || Boolean(uploadingSlot)}
                         accept={playableAssetAccept(slot)}
                         onChange={(event) => {
-                          const file = event.target.files?.[0]
-                          if (file) onUpload(slot, file)
+                          const files = Array.from(event.target.files ?? [])
+                          if (files.length > 0) onUpload(slot, files)
                           event.target.value = ''
                         }}
                       />
                     ))}
                   </div>
                   {referenceAssets.length > 0 && (
-                    <ul className="text-muted-foreground space-y-1 text-xs">
-                      {referenceAssets.map((asset) => (
-                        <li key={asset.id}>{asset.filename}</li>
-                      ))}
-                    </ul>
+                    <AssetPreviewList
+                      items={referenceAssets.map((asset) => ({ ...asset, previewUrl: assetPreviewUrl?.(asset) }))}
+                      disabled={controlsDisabled}
+                      removingId={removingAssetId}
+                      onRemove={(item) => {
+                        const asset = referenceAssets.find((candidate) => candidate.id === item.id)
+                        if (asset) onRemoveAsset?.(asset)
+                      }}
+                    />
                   )}
                   <p className="text-muted-foreground text-xs">参考文件会随任务保存；当前不会自动解析视频画面。</p>
                 </td>
               </tr>
             )}
-            <tr>
-              <th className="bg-muted/40 px-3 py-2 font-medium">文案</th>
-              <td className="space-y-1 px-3 py-2">
-                <p>{proposal.copy.title}</p>
-                <p className="text-muted-foreground">
-                  CTA：{proposal.copy.cta} · {proposal.copy.locale}
-                </p>
-                <p className="text-muted-foreground">{proposal.copy.disclaimer}</p>
-              </td>
-            </tr>
-            <tr>
-              <th className="bg-muted/40 px-3 py-2 font-medium">交付</th>
-              <td className="px-3 py-2">
-                {proposal.delivery.network} · {proposal.delivery.logicalWidth} × {proposal.delivery.logicalHeight} · 单
-                HTML · 5 MB
-              </td>
-            </tr>
+            {presentation.copyFields.length > 0 && (
+              <tr>
+                <th className="bg-muted/40 px-3 py-2 font-medium">文案</th>
+                <td className="grid gap-2 px-3 py-2 sm:grid-cols-2">
+                  {presentation.copyFields.map((field) => {
+                    const config = copyFieldConfig[field]
+                    return (
+                      <Input
+                        key={field}
+                        aria-label={config.label}
+                        placeholder={config.label}
+                        maxLength={config.maxLength}
+                        value={proposal.copy[field]}
+                        disabled={controlsDisabled}
+                        onChange={(event) =>
+                          onChange({ ...proposal, copy: { ...proposal.copy, [field]: event.target.value } })
+                        }
+                      />
+                    )
+                  })}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="store-url">商店跳转链接（HTTPS）</Label>
-        <Input
-          id="store-url"
-          type="url"
-          value={proposal.storeUrl}
-          aria-invalid={!validStoreUrl}
-          disabled={controlsDisabled}
-          onChange={(event) => onChange({ ...proposal, storeUrl: event.target.value })}
-        />
-      </div>
+      <details className="rounded-xl border px-3 py-2" open={!validStoreUrl || undefined}>
+        <summary className="cursor-pointer select-none text-sm font-medium">交付与跳转设置</summary>
+        <div className="mt-3 space-y-3">
+          <p className="text-muted-foreground text-sm">
+            {proposal.delivery.network} · {proposal.delivery.logicalWidth} × {proposal.delivery.logicalHeight} · 单 HTML
+            · 5 MB
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor="store-url">商店跳转链接（HTTPS）</Label>
+            <Input
+              id="store-url"
+              type="url"
+              value={proposal.storeUrl}
+              aria-invalid={!validStoreUrl}
+              disabled={controlsDisabled}
+              onChange={(event) => onChange({ ...proposal, storeUrl: event.target.value })}
+            />
+          </div>
+        </div>
+      </details>
       {hasPendingUpload && <p className="text-destructive text-sm">请先上传所有标记为“待上传”的素材。</p>}
       {hasUnsupportedAiGeneration && (
         <p className="text-destructive text-sm">AI 素材生成暂不支持，请改用内置默认或本地上传。</p>
