@@ -27,8 +27,8 @@
 
 ### 2.1 用户、会话和凭证
 
-- 支持 GitHub/Vercel 登录体系，并基于用户身份隔离任务、素材和产物。
-- 采用 BYOK 模式，每位用户提供自己的 OpenAI API Key。
+- Playable Studio 当前采用免登录公开 POC 身份，所有访客共享任务、素材和产物空间。
+- 采用 BYOK 模式，每位访客在自己的浏览器中提供 OpenAI API Key；Key Cookie 不在访客之间共享。
 - API Key 会先验证是否能够访问固定模型 `gpt-5.6-sol`，并区分无效 Key、模型无权限、额度不足、限流和网络失败。
 - API Key 使用 JWE 加密后保存在服务端管理的 Cookie 中，有效期 2 小时。
 - Cookie 使用 `HttpOnly`、`SameSite=Strict`，生产环境增加 `Secure`。
@@ -157,7 +157,7 @@
 - 每次构建都有独立记录；成功构建按时间编号为 v1、v2、v3，并可切换预览和下载。
 - 新构建失败时不会清空或替换上一个成功 Preview。
 - 任务成功或失败后仍可继续自然语言对话；新方案确认后创建下一次构建。
-- 只有任务所有者才能查看版本、预览和下载交付物。
+- 所有访客都可以查看共享任务的版本、预览和下载交付物。
 - 当前交付四件套：
 
 | 文件                     | 作用                       |
@@ -171,7 +171,7 @@
 
 | 模式            | Agent                         | 数据与产物                    | 构建环境       | 适用场景                   |
 | --------------- | ----------------------------- | ----------------------------- | -------------- | -------------------------- |
-| 正常模式        | Responses API 规划 + Codex Harness 构建 | PostgreSQL + 私有 Vercel Blob | 确认构建后创建 Vercel Sandbox | 部署环境和真实用户         |
+| 正常模式        | Responses API 规划 + Codex Harness 构建 | PostgreSQL + 私有 Vercel Blob | 确认构建后创建 Vercel Sandbox | 部署环境的公开 POC 访客    |
 | 本地 Codex 模式 | 本机 Codex CLI                | 真实 PostgreSQL + 私有 Blob   | Vercel Sandbox | 无 OAuth 的真实联调        |
 | 本地 Demo 模式  | 确定性本地 Agent              | 内存任务库 + 内存产物库       | 本地临时目录   | 无外部凭证的 UI 和流程演示 |
 
@@ -181,8 +181,8 @@
 
 ### 3.1 标准成功路径
 
-1. 用户登录 Playable Studio。
-2. 用户配置自己的 OpenAI API Key；服务端验证 Key 和模型访问能力。
+1. 用户直接进入公开的 Playable Studio，无需 GitHub 登录。
+2. 用户配置自己的 OpenAI API Key；服务端验证 Key 和模型访问能力，Key 仅保存在当前浏览器的加密 HttpOnly Cookie 中。
 3. 用户在首页输入玩法、美术主题或素材需求，可同时添加参考图片/视频；系统先创建任务并上传参考附件，再进入工作台。
 4. 系统进入任务工作台：左侧是对话和配置，右侧是 Preview。
 5. Agent 根据历史对话、持久化 Brief、已上传素材和 Plugin 能力，自主调用 Domain Tools 整理需求和验证实现路线。
@@ -309,7 +309,7 @@ flowchart TB
 
 | API                                    | 方法          | 作用                          |
 | -------------------------------------- | ------------- | ----------------------------- |
-| `/api/playable-tasks`                  | `GET`         | 获取当前用户任务列表          |
+| `/api/playable-tasks`                  | `GET`         | 获取共享 POC 任务列表         |
 | `/api/playable-tasks`                  | `POST`        | 创建试玩任务                  |
 | `/api/playable-tasks/:taskId/messages` | `POST`        | 多轮对话并流式返回 Agent 结果 |
 | `/api/playable-tasks/:taskId/assets`   | `POST`        | 上传任务素材                  |
@@ -320,7 +320,7 @@ flowchart TB
 | `/api/session/openai-key`              | `POST/DELETE` | 设置或清除会话级 OpenAI Key   |
 | `/api/session/openai-key/check`        | `GET`         | 查询当前会话是否已配置 Key    |
 
-所有任务、素材、预览和下载 API 都在服务端校验用户归属。对于无权访问的资源统一返回未找到，避免泄露资源是否存在。
+所有任务、素材、预览和下载 API 都归属于固定的公开 POC 用户。访客可以共同查看和修改这些数据；API Key 仍由浏览器独立持有，不写入共享任务。对于不存在的资源统一返回未找到。
 
 ### 4.4 构建数据流
 
@@ -344,9 +344,9 @@ ConfirmationProposal
 
 ### 4.5 数据和产物存储
 
-- PostgreSQL 保存用户、任务、消息、事件、确认配置、最新产物 Key 和验证元数据。
+- PostgreSQL 保存固定 POC 用户、共享任务、消息、事件、确认配置、最新产物 Key 和验证元数据。
 - Vercel Blob 使用私有访问模式保存上传素材和构建产物。
-- Blob Key 包含用户、任务和构建版本层级，用于归属隔离和版本区分。
+- Blob Key 包含固定 POC 用户、任务和构建版本层级，用于组织共享产物和区分版本。
 - Blob 写入关闭随机后缀并禁止覆盖；每次构建使用新的 Build ID。
 - 页面只暴露经过服务端鉴权的产物 API，不直接暴露私有 Blob 地址。
 
@@ -378,7 +378,7 @@ ConfirmationProposal
 - Sandbox 主副本防篡改、凭证泄露、包体、离线资源和响应式门禁。
 - 任务状态并发、构建失败、版本切换和下载权限。
 - Preview iframe 隔离、默认静音、刷新和历史成功版本保留。
-- 当前基线为 23 个测试文件、241 条自动化测试。
+- 当前基线为 24 个测试文件、242 条自动化测试。
 
 工程检查包括 Prettier、TypeScript、ESLint、Vitest 和 Next.js 生产构建。项目还要求所有日志只使用静态字符串，避免动态路径、用户信息、凭证或内部错误进入用户可见日志。
 

@@ -8,7 +8,7 @@ const infrastructure = vi.hoisted(() => {
   return {
     scheduled,
     after: vi.fn((work: () => Promise<void>) => scheduled.push(work)),
-    getSessionFromReq: vi.fn(),
+    authenticatePublicPlayable: vi.fn(),
     readOpenAIKeyCookie: vi.fn(),
     generateId: vi.fn(),
     repository: {
@@ -42,7 +42,9 @@ vi.mock('next/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next/server')>()),
   after: infrastructure.after,
 }))
-vi.mock('@/lib/session/server', () => ({ getSessionFromReq: infrastructure.getSessionFromReq }))
+vi.mock('@/lib/playable/public-access', () => ({
+  authenticatePublicPlayable: infrastructure.authenticatePublicPlayable,
+}))
 vi.mock('@/lib/playable/byok-session', () => ({ readOpenAIKeyCookie: infrastructure.readOpenAIKeyCookie }))
 vi.mock('@/lib/utils/id', () => ({ generateId: infrastructure.generateId }))
 vi.mock('@/lib/playable/task-repository', () => ({
@@ -96,7 +98,7 @@ describe('real playable task route wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     infrastructure.scheduled.length = 0
-    infrastructure.getSessionFromReq.mockResolvedValue({ user: { id: 'user-1' } })
+    infrastructure.authenticatePublicPlayable.mockResolvedValue('public-playable-poc-user')
     infrastructure.readOpenAIKeyCookie.mockResolvedValue('sk-session-key')
     infrastructure.generateId.mockReturnValue('generated-id')
     infrastructure.repository.appendEvent.mockResolvedValue(undefined)
@@ -111,24 +113,10 @@ describe('real playable task route wiring', () => {
     infrastructure.artifactStore.put.mockResolvedValue(undefined)
   })
 
-  it('passes the real request through the session boundary before repository creation', async () => {
-    infrastructure.getSessionFromReq.mockResolvedValueOnce(undefined)
-    const request = new NextRequest('https://example.com/api/playable-tasks', {
-      method: 'POST',
-      body: JSON.stringify({ prompt: 'Build a game' }),
-    })
-
-    const response = await create(request)
-
-    expect(response.status).toBe(401)
-    expect(infrastructure.getSessionFromReq).toHaveBeenCalledWith(request)
-    expect(infrastructure.repository.createTask).not.toHaveBeenCalled()
-  })
-
-  it('wires authenticated creation to ID generation and the database repository', async () => {
+  it('creates tasks through the public POC identity without an OAuth session', async () => {
     infrastructure.repository.createTask.mockResolvedValueOnce({
       id: 'generated-id',
-      userId: 'user-1',
+      userId: 'public-playable-poc-user',
       prompt: 'Build a game',
       phase: 'draft',
       confirmation: null,
@@ -142,9 +130,10 @@ describe('real playable task route wiring', () => {
     const response = await create(request)
 
     expect(response.status).toBe(201)
+    expect(infrastructure.authenticatePublicPlayable).toHaveBeenCalledWith(request)
     expect(infrastructure.repository.createTask).toHaveBeenCalledWith({
       id: 'generated-id',
-      userId: 'user-1',
+      userId: 'public-playable-poc-user',
       prompt: 'Build a game',
     })
   })
@@ -152,7 +141,7 @@ describe('real playable task route wiring', () => {
   it('wires confirmation through key, repository, after, agent, and private Blob boundaries', async () => {
     const task = {
       id: 'task-1',
-      userId: 'user-1',
+      userId: 'public-playable-poc-user',
       prompt: 'Build a game',
       phase: 'awaiting_confirmation',
       confirmation,
@@ -168,7 +157,7 @@ describe('real playable task route wiring', () => {
 
     const response = await confirm(request, { params: Promise.resolve({ taskId: 'task-1' }) })
     expect(response.status).toBe(202)
-    expect(infrastructure.readOpenAIKeyCookie).toHaveBeenCalledWith(request, 'user-1')
+    expect(infrastructure.readOpenAIKeyCookie).toHaveBeenCalledWith(request, 'public-playable-poc-user')
     expect(infrastructure.after).toHaveBeenCalledOnce()
 
     await infrastructure.scheduled[0]()
@@ -184,7 +173,7 @@ describe('real playable task route wiring', () => {
       'task-1',
       'build-1',
       'validating',
-      'users/user-1/tasks/task-1/build-1/playable.html',
+      'users/public-playable-poc-user/tasks/task-1/build-1/playable.html',
       expect.objectContaining({ passed: true, behavior: 'passed', bytes: 42 }),
     )
   })

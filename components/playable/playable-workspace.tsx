@@ -36,6 +36,7 @@ interface PlayableWorkspaceProps {
   localDemo?: boolean
   localCodex?: boolean
   localHarness?: boolean
+  publicAccess?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
 }
@@ -64,6 +65,7 @@ export function PlayableWorkspace({
   localDemo = false,
   localCodex = false,
   localHarness = false,
+  publicAccess = false,
   initialConversation = [],
   initialAssets = [],
 }: PlayableWorkspaceProps) {
@@ -152,6 +154,8 @@ export function PlayableWorkspace({
               {localHarness ? 'API Key' : '媒体 API Key'}
             </Button>
           </div>
+        ) : publicAccess ? (
+          <Badge variant="secondary">公开体验 · 自备 API Key</Badge>
         ) : (
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={requireApiKey}>
@@ -220,6 +224,7 @@ interface PlayableHomeProps {
   localDemo?: boolean
   localCodex?: boolean
   localHarness?: boolean
+  publicAccess?: boolean
 }
 
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
@@ -239,6 +244,7 @@ export function PlayableHome({
   localDemo = false,
   localCodex = false,
   localHarness = false,
+  publicAccess = false,
 }: PlayableHomeProps) {
   const router = useRouter()
   const attachmentInput = useRef<HTMLInputElement>(null)
@@ -281,7 +287,7 @@ export function PlayableHome({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: content }),
       })
-      if (!response.ok) throw new Error(response.status === 401 ? '请先登录' : '创建试玩失败')
+      if (!response.ok) throw new Error('创建试玩失败')
       const body = (await response.json()) as { task: { id: string } }
       for (const { file } of attachments) {
         const slot = referenceSlotForMimeType(file.type)
@@ -355,6 +361,8 @@ export function PlayableHome({
                 ? '本地 Codex · 实际数据'
                 : '本地演示 · 重启后清空'}
           </Badge>
+        ) : publicAccess ? (
+          <Badge variant="secondary">公开体验 · 任务共享</Badge>
         ) : (
           <User user={user} authProvider={authProvider} />
         )}
@@ -426,7 +434,7 @@ export function PlayableHome({
               </Button>
             </div>
           </div>
-          {!user && <p className="text-muted-foreground mt-3 text-sm">登录后即可创建并保存试玩。</p>}
+          {!user && !publicAccess && <p className="text-muted-foreground mt-3 text-sm">登录后即可创建并保存试玩。</p>}
           {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
         </div>
 

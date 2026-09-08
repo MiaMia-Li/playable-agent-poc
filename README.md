@@ -4,7 +4,7 @@ A proof-of-concept web application for planning C6 Mahjong pair-match playable a
 
 ## Credential model
 
-Every end user provides their own OpenAI API Key after login. The key is session-only: it is encrypted into a secure server-managed session cookie, used server-side for requirement planning, supplied to the owning task's Sandbox only after build confirmation, and removed when the session ends.
+Every visitor provides their own OpenAI API Key. The public POC uses one shared task identity, while each browser keeps a separate session-only key in an encrypted HttpOnly cookie. The key is used server-side for requirement planning, supplied to the task's Sandbox only after build confirmation, and removed when the key session ends.
 
 Do not configure a project-wide `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`. This project has no shared OpenAI credential or provider-key fallback. OpenAI and other provider keys must not be stored in the application database, user profile, browser storage, logs, generated HTML, or build artifacts.
 
@@ -12,14 +12,14 @@ The application always requests the explicit model ID `gpt-5.6-sol`. A user key 
 
 ## POC workflow
 
-1. Sign in and enter an OpenAI API Key for the current session.
+1. Open the public studio and enter an OpenAI API Key for the current browser session.
 2. Ask questions or describe the game idea conversationally. The requirement Agent answers informational messages without
    changing the Brief; requirement messages use domain tools to maintain a persistent Brief,
    inspect safe asset metadata, read Plugin capabilities, and request only the missing input.
 3. Route the idea to an exact template match, an approximate template adaptation, or direct freeform generation.
 4. Upload or select assets and confirm the complete production configuration.
 5. Build and validate the playable in an isolated Sandbox.
-6. Preview only the latest passing artifact and download the offline single-file HTML.
+6. Preview or switch between passing versions and download the offline single-file HTML.
 
 Freeform generation uses the closest registered mode only as workspace scaffolding; it does not create a persistent
 custom Plugin. The POC does not use repository selection, GitHub Issue input, automatic branches, commits, or pull
@@ -33,7 +33,6 @@ Requirements:
 - pnpm
 - PostgreSQL
 - Vercel Sandbox credentials
-- GitHub OAuth credentials
 
 Install and verify the baseline:
 
@@ -44,7 +43,7 @@ pnpm type-check
 pnpm build
 ```
 
-Copy the checked-in environment template and fill in the infrastructure and OAuth values:
+Copy the checked-in environment template and fill in the infrastructure values. GitHub OAuth values are not required for Playable Studio:
 
 ```bash
 cp .env.example .env.local
@@ -59,27 +58,25 @@ BLOB_READ_WRITE_TOKEN=
 SANDBOX_VERCEL_TOKEN=
 SANDBOX_VERCEL_TEAM_ID=
 SANDBOX_VERCEL_PROJECT_ID=
-GITHUB_CLIENT_ID=
-GITHUB_CLIENT_SECRET=
 MAX_SANDBOX_DURATION=300
 PLAYABLE_AGENT_MODEL=gpt-5.6-sol
 LOCAL_HARNESS_MODE=0
 LOCAL_CODEX_MODE=0
 ```
 
-No project-wide OpenAI credential belongs in `.env.local` or the deployment environment. Users enter their own key only after authentication.
+No project-wide OpenAI credential belongs in `.env.local` or the deployment environment. Visitors enter their own key in the browser session. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
 
 ### Production-equivalent local agent
 
 To test the same BYOK, Responses API structured streaming, Codex Harness build, PostgreSQL, Blob, and Vercel Sandbox path used by the
-deployment while bypassing local GitHub OAuth, run:
+deployment while using the same public POC task identity, run:
 
 ```bash
 pnpm local:harness
 ```
 
 Enter the user OpenAI API Key in the session dialog. This mode uses the same Agent implementation and API billing path
-as production; only authentication is replaced with the fixed local development user. Requirement chat does not create
+as production; only the shared identity is replaced with the fixed local development user. Requirement chat does not create
 a Sandbox. A confirmed build requires all three `SANDBOX_VERCEL_*` values because the local process does not receive
 Vercel's deployment OIDC identity. For an end-to-end OAuth check, use `pnpm dev` instead.
 
@@ -98,7 +95,7 @@ pnpm local:codex
 ```
 
 This mode uses the real PostgreSQL repository, private Blob store, Codex CLI, and Vercel Sandbox. It is disabled on
-Vercel deployments and never forwards project environment variables to the Codex child process. Its authentication and
+Vercel deployments and never forwards project environment variables to the Codex child process. Its identity and
 event stream differ from production, so use `pnpm local:harness` for deployment-parity Agent testing.
 
 Run the development server:

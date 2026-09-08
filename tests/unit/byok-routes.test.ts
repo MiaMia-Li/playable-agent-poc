@@ -14,6 +14,19 @@ const { getSessionFromReq, checkOpenAIKey, saveSession } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/session/server', () => ({ getSessionFromReq }))
+vi.mock('@/lib/playable/public-access', () => ({
+  publicPlayableSession: {
+    created: 0,
+    authProvider: 'vercel',
+    user: {
+      id: 'public-playable-poc-user',
+      username: 'playable-guest',
+      email: undefined,
+      avatar: '',
+      name: '公开体验',
+    },
+  },
+}))
 vi.mock('@/lib/playable/openai-key-check', () => ({ checkOpenAIKey }))
 vi.mock('@/lib/session/create', () => ({ saveSession }))
 vi.mock('@/lib/session/get-oauth-token', () => ({ getOAuthToken: vi.fn() }))
@@ -52,8 +65,9 @@ describe('OpenAI key session routes', () => {
     vi.unstubAllEnvs()
   })
 
-  it('requires authentication for every operation', async () => {
+  it('allows every browser to configure its own key without OAuth authentication', async () => {
     getSessionFromReq.mockResolvedValue(undefined)
+    checkOpenAIKey.mockResolvedValue({ ok: true })
     const putRequest = new NextRequest('https://example.com/api/session/openai-key', {
       method: 'PUT',
       body: JSON.stringify({ apiKey: 'sk-test-secret' }),
@@ -61,10 +75,10 @@ describe('OpenAI key session routes', () => {
     const deleteRequest = new NextRequest('https://example.com/api/session/openai-key', { method: 'DELETE' })
     const checkRequest = new NextRequest('https://example.com/api/session/openai-key/check')
 
-    await expect(PUT(putRequest)).resolves.toHaveProperty('status', 401)
-    await expect(DELETE(deleteRequest)).resolves.toHaveProperty('status', 401)
-    await expect(GET_CHECK(checkRequest)).resolves.toHaveProperty('status', 401)
-    expect(checkOpenAIKey).not.toHaveBeenCalled()
+    await expect(PUT(putRequest)).resolves.toHaveProperty('status', 200)
+    await expect(DELETE(deleteRequest)).resolves.toHaveProperty('status', 200)
+    await expect(GET_CHECK(checkRequest)).resolves.toHaveProperty('status', 200)
+    expect(checkOpenAIKey).toHaveBeenCalledWith('sk-test-secret')
   })
 
   it('validates a fake key and stores only its encrypted user-bound value', async () => {
@@ -149,7 +163,7 @@ describe('OpenAI key session routes', () => {
     }
   })
 
-  it('clears the key cookie for an authenticated user', async () => {
+  it('clears the current browser key cookie', async () => {
     const request = new NextRequest('https://example.com/api/session/openai-key', { method: 'DELETE' })
 
     const response = await DELETE(request)
@@ -160,8 +174,8 @@ describe('OpenAI key session routes', () => {
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0')
   })
 
-  it('reports configuration only when the cookie belongs to the authenticated user', async () => {
-    const token = await encryptOpenAIKey(session.user.id, 'sk-test-secret', jweSecret)
+  it('reports configuration only when the cookie belongs to the public POC identity', async () => {
+    const token = await encryptOpenAIKey('public-playable-poc-user', 'sk-test-secret', jweSecret)
     const request = new NextRequest('https://example.com/api/session/openai-key/check', {
       headers: { cookie: `${OPENAI_KEY_COOKIE}=${token}` },
     })
@@ -169,8 +183,12 @@ describe('OpenAI key session routes', () => {
     const configuredResponse = await GET_CHECK(request)
     expect(await configuredResponse.json()).toEqual({ configured: true, model: 'gpt-5.6-sol' })
 
-    getSessionFromReq.mockResolvedValue({ ...session, user: { ...session.user, id: 'another-user' } })
-    const mismatchedResponse = await GET_CHECK(request)
+    const mismatchedToken = await encryptOpenAIKey('another-user', 'sk-test-secret', jweSecret)
+    const mismatchedResponse = await GET_CHECK(
+      new NextRequest('https://example.com/api/session/openai-key/check', {
+        headers: { cookie: `${OPENAI_KEY_COOKIE}=${mismatchedToken}` },
+      }),
+    )
     expect(await mismatchedResponse.json()).toEqual({ configured: false, model: 'gpt-5.6-sol' })
   })
 

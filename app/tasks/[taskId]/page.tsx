@@ -1,12 +1,12 @@
-import { notFound, redirect } from 'next/navigation'
+import { notFound } from 'next/navigation'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
-import { getServerSession } from '@/lib/session/get-server-session'
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
 import { Metadata } from 'next'
 import { isLocalDemoMode, localDemoRuntime, localDemoSession } from '@/lib/playable/local-demo-prototype'
 import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
 import { playableAgentReplySchema } from '@/lib/playable/schemas'
 import type { ConversationMessage } from '@/components/playable/chat-workspace'
+import { publicPlayableSession } from '@/lib/playable/public-access'
 
 interface TaskPageProps {
   params: Promise<{
@@ -19,12 +19,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const localDemo = isLocalDemoMode()
   const localCodex = isLocalCodexMode()
   const localHarness = isLocalHarnessMode()
-  const session = localDemo
-    ? localDemoSession
-    : localCodex || localHarness
-      ? localCodexSession
-      : await getServerSession()
-  if (!session?.user?.id) redirect('/')
+  const session = localDemo ? localDemoSession : localCodex || localHarness ? localCodexSession : publicPlayableSession
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
@@ -76,6 +71,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       localDemo={localDemo}
       localCodex={localCodex}
       localHarness={localHarness}
+      publicAccess={!localDemo && !localCodex && !localHarness}
     />
   )
 }
@@ -85,11 +81,7 @@ export async function generateMetadata({ params }: TaskPageProps): Promise<Metad
   const localDemo = isLocalDemoMode()
   const localCodex = isLocalCodexMode()
   const localHarness = isLocalHarnessMode()
-  const session = localDemo
-    ? localDemoSession
-    : localCodex || localHarness
-      ? localCodexSession
-      : await getServerSession()
+  const session = localDemo ? localDemoSession : localCodex || localHarness ? localCodexSession : publicPlayableSession
 
   let pageTitle = `试玩 ${taskId}`
 

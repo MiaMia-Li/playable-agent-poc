@@ -1,5 +1,4 @@
 import { after } from 'next/server'
-import { getSessionFromReq } from '@/lib/session/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
 import { readOpenAIKeyCookie } from './byok-session'
@@ -19,6 +18,7 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
+import { authenticatePublicPlayable } from './public-access'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
@@ -36,7 +36,7 @@ const authenticate = localDemo
   ? authenticateLocalDemo
   : localCodex || localHarness
     ? authenticateLocalCodex
-    : async (request: Parameters<typeof getSessionFromReq>[0]) => (await getSessionFromReq(request))?.user.id
+    : authenticatePublicPlayable
 
 export const playableTaskHandlers = createPlayableTaskHandlers({
   authenticate,

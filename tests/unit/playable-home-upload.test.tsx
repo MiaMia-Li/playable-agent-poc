@@ -18,6 +18,25 @@ afterEach(() => {
 })
 
 describe('PlayableHome reference uploads', () => {
+  it('shows public access without a GitHub sign-in control', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(
+      <PlayableHome
+        user={{ id: 'public-playable-poc-user', username: 'playable-guest', email: undefined, avatar: '' }}
+        authProvider="vercel"
+        publicAccess
+      />,
+    )
+
+    expect(screen.getByText('公开体验 · 任务共享')).toBeInTheDocument()
+    expect(screen.queryByText(/登录后/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('新试玩需求')).toBeEnabled()
+    await waitFor(() => expect(screen.getByText('还没有试玩，从上方输入一个创意开始。')).toBeInTheDocument())
+  })
+
   it('uploads selected image and video references before opening the new task', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
