@@ -5,6 +5,7 @@ import {
   createProductionConfig,
   createValidationReport,
 } from '@/lib/playable/production-contract'
+import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
 import { MAHJONG_PLAYABLE_PLUGIN } from '@/lib/playable/template-registry'
 
 const confirmation: ConfirmationProposal = {
@@ -66,6 +67,8 @@ describe('playable production contract', () => {
     const report = createValidationReport({ bytes: 1024, offlineResources: true, responsiveViewport: true })
 
     expect(report.passed).toBe(true)
+    expect(report.buildPassed).toBe(true)
+    expect(report.deliveryCompliant).toBe(true)
     expect(Object.values(report.gates)).not.toContain('failed')
     expect(report.plugin).toEqual({
       id: MAHJONG_PLAYABLE_PLUGIN.id,
@@ -74,14 +77,55 @@ describe('playable production contract', () => {
     })
   })
 
-  it('fails the package gate at the Plugin byte limit', () => {
+  it('treats an AppLovin artifact exactly at 5 MiB as compliant', () => {
     const report = createValidationReport({
       bytes: MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes,
       offlineResources: true,
       responsiveViewport: true,
+      delivery: deliveryProfileSnapshot('applovin'),
+    })
+
+    expect(report.passed).toBe(true)
+    expect(report.buildPassed).toBe(true)
+    expect(report.deliveryCompliant).toBe(true)
+    expect(report.gates.packageSize).toBe('passed')
+  })
+
+  it('keeps an oversized AppLovin build usable while reporting package noncompliance', () => {
+    const report = createValidationReport({
+      bytes: MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes + 1,
+      offlineResources: true,
+      responsiveViewport: true,
+      delivery: deliveryProfileSnapshot('applovin'),
+    })
+
+    expect(report.passed).toBe(true)
+    expect(report.buildPassed).toBe(true)
+    expect(report.deliveryCompliant).toBe(false)
+    expect(report.gates.packageSize).toBe('failed')
+  })
+
+  it('does not apply a channel size gate to generic single-HTML delivery', () => {
+    const report = createValidationReport({
+      bytes: 20 * 1024 * 1024,
+      offlineResources: true,
+      responsiveViewport: true,
+      delivery: deliveryProfileSnapshot('generic_single_html'),
+    })
+
+    expect(report.passed).toBe(true)
+    expect(report.deliveryCompliant).toBe(true)
+    expect(report.gates.packageSize).toBe('not_applicable')
+  })
+
+  it('still fails the build when a hard runtime gate fails', () => {
+    const report = createValidationReport({
+      bytes: 1024,
+      offlineResources: true,
+      responsiveViewport: false,
     })
 
     expect(report.passed).toBe(false)
-    expect(report.gates.packageSize).toBe('failed')
+    expect(report.buildPassed).toBe(false)
   })
 })

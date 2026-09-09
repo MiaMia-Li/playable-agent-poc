@@ -6,6 +6,7 @@ import { generateText, Output } from 'ai7'
 import { toJSONSchema } from 'zod'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
 import { invokeCodexCli } from './codex-cli-playable-agent'
+import { logExternalRequestError } from './external-request-logging'
 import type { PreprocessedVideo } from './video-preprocessor'
 
 export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'qdai-video-v1'
@@ -87,33 +88,39 @@ export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
     video: PreprocessedVideo
     abortSignal?: AbortSignal
   }): Promise<GameplayBlueprint> {
-    const openai = createOpenAI({ apiKey: input.apiKey })
-    const result = await generateText({
-      model: openai.responses(VIDEO_ANALYSIS_MODEL),
-      instructions: QDAI_INSTRUCTIONS,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: analysisPrompt(input) },
-            ...input.video.frames.map((frame) => ({
-              type: 'image' as const,
-              image: frame.bytes,
-              mediaType: frame.mimeType,
-            })),
-          ],
+    let result: Awaited<ReturnType<typeof generateText>>
+    try {
+      const openai = createOpenAI({ apiKey: input.apiKey })
+      result = await generateText({
+        model: openai.responses(VIDEO_ANALYSIS_MODEL),
+        instructions: QDAI_INSTRUCTIONS,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: analysisPrompt(input) },
+              ...input.video.frames.map((frame) => ({
+                type: 'image' as const,
+                image: frame.bytes,
+                mediaType: frame.mimeType,
+              })),
+            ],
+          },
+        ],
+        output: Output.object({ schema: gameplayBlueprintSchema }),
+        abortSignal: input.abortSignal,
+        providerOptions: {
+          openai: {
+            reasoningEffort: 'medium',
+            store: false,
+            strictJsonSchema: true,
+          } satisfies OpenAIResponsesProviderOptions,
         },
-      ],
-      output: Output.object({ schema: gameplayBlueprintSchema }),
-      abortSignal: input.abortSignal,
-      providerOptions: {
-        openai: {
-          reasoningEffort: 'medium',
-          store: false,
-          strictJsonSchema: true,
-        } satisfies OpenAIResponsesProviderOptions,
-      },
-    })
+      })
+    } catch (error) {
+      logExternalRequestError('OpenAI', error, [input.apiKey])
+      throw error
+    }
     return validateEvidenceTimes(result.output, input.video.durationSeconds)
   }
 }

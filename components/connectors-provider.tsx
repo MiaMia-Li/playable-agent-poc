@@ -21,13 +21,19 @@ export const useConnectors = () => {
 
 interface ConnectorsProviderProps {
   children: React.ReactNode
+  enabled?: boolean
 }
 
-export function ConnectorsProvider({ children }: ConnectorsProviderProps) {
+export function ConnectorsProvider({ children, enabled = true }: ConnectorsProviderProps) {
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   const fetchConnectors = useCallback(async () => {
+    if (!enabled) {
+      setConnectors([])
+      setIsLoading(false)
+      return
+    }
     try {
       const response = await fetch('/api/connectors')
       if (response.ok) {
@@ -39,7 +45,7 @@ export function ConnectorsProvider({ children }: ConnectorsProviderProps) {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
     fetchConnectors()

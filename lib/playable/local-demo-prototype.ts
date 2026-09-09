@@ -592,6 +592,7 @@ class LocalDemoAgent implements PlayableAgentAdapter {
           bytes: Buffer.byteLength(html),
           offlineResources: true,
           responsiveViewport: true,
+          delivery: input.confirmation.delivery,
         }),
       }
     } finally {

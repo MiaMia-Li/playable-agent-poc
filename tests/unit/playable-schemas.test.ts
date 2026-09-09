@@ -88,6 +88,31 @@ describe('confirmation proposal schema', () => {
     },
   )
 
+  it('accepts the generic single-HTML delivery profile snapshot', () => {
+    const delivery = {
+      profileId: 'generic_single_html',
+      network: 'generic',
+      logicalWidth: 360,
+      logicalHeight: 640,
+      output: 'single-html',
+      maxBytes: null,
+    } as const
+
+    expect(confirmationProposalSchema.parse({ ...validProposal, delivery }).delivery).toEqual(delivery)
+  })
+
+  it('rejects delivery fields that do not match the selected profile', () => {
+    expect(
+      confirmationProposalSchema.safeParse({
+        ...validProposal,
+        delivery: {
+          ...validProposal.delivery,
+          profileId: 'generic_single_html',
+        },
+      }).success,
+    ).toBe(false)
+  })
+
   it.each(['用户上传', '内置默认', '待上传', '待生成'] as const)('accepts resource status %s', (status) => {
     const proposal = {
       ...validProposal,

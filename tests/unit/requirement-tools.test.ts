@@ -315,4 +315,15 @@ describe('requirement domain tools', () => {
     expect(capabilities.plugin.modes).toHaveLength(4)
     expect(capabilities.routingPolicy.freeform).toContain('outside every registered mode')
   })
+
+  it('exposes selectable delivery profiles with AppLovin as the default', () => {
+    const capabilities = playableCapabilitiesForAgent()
+
+    expect(capabilities.deliveryProfiles.map(({ id }) => id)).toEqual(['applovin', 'generic_single_html'])
+    expect(capabilities.confirmationDefaults.delivery).toMatchObject({
+      profileId: 'applovin',
+      network: 'applovin',
+      maxBytes: 5242880,
+    })
+  })
 })

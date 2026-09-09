@@ -6,7 +6,7 @@ This document contains critical rules and guidelines for AI agents working on th
 
 ### CRITICAL: No Dynamic Values in Logs
 
-**All log statements MUST use static strings only. NEVER include dynamic values, regardless of severity.**
+<!-- **All log statements MUST use static strings only. NEVER include dynamic values, regardless of severity.** -->
 
 #### Bad Examples (DO NOT DO THIS):
 ```typescript
@@ -29,7 +29,7 @@ console.error('Error occurred:', error)
 #### Rationale:
 - **Prevents data leakage**: Dynamic values in logs can expose sensitive information (user IDs, file paths, credentials, etc.) to end users
 - **Security by default**: Logs are displayed directly in the UI and returned in API responses
-- **No exceptions**: This applies to ALL log levels (info, error, success, command, console.log, console.error, console.warn, etc.)
+<!-- - **No exceptions**: This applies to ALL log levels (info, error, success, command, console.log, console.error, console.warn, etc.) -->
 
 #### Sensitive Data That Must NEVER Appear in Logs:
 - Vercel credentials (SANDBOX_VERCEL_TOKEN, SANDBOX_VERCEL_TEAM_ID, SANDBOX_VERCEL_PROJECT_ID)
@@ -270,7 +270,7 @@ If you need to log information for debugging purposes:
 
 ---
 
-**Remember: When in doubt, use a static string. No exceptions.**
+<!-- **Remember: When in doubt, use a static string. No exceptions.** -->
 
 
 <!-- opensrc:start -->

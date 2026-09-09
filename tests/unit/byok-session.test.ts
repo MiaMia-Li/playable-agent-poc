@@ -177,15 +177,9 @@ describe('OpenAI model access check', () => {
     expect(JSON.stringify(result)).not.toContain(apiKey)
   })
 
-  it('does not log or return provider response secrets at any sink', async () => {
+  it('logs the direct provider response while redacting an echoed API key', async () => {
     const uniqueSecretBody = `unique-provider-body-${apiKey}`
-    const consoleSpies = [
-      vi.spyOn(console, 'log').mockImplementation(() => undefined),
-      vi.spyOn(console, 'error').mockImplementation(() => undefined),
-      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
-      vi.spyOn(console, 'info').mockImplementation(() => undefined),
-      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
-    ]
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -213,20 +207,17 @@ describe('OpenAI model access check', () => {
     expect(result).toEqual({ ok: false, reason: 'rate_limited' })
     expect(serialized).not.toContain(apiKey)
     expect(serialized).not.toContain(uniqueSecretBody)
-    for (const spy of consoleSpies) {
-      expect(spy).not.toHaveBeenCalled()
-    }
+    expect(errorSpy).toHaveBeenCalledWith('External request failed:', 'OpenAI')
+    expect(errorSpy).toHaveBeenCalledWith('External response status:', 429)
+    expect(errorSpy).toHaveBeenCalledWith(
+      'External response body:',
+      '{"error":{"code":"rate_limit_exceeded","message":"unique-provider-body-[REDACTED]"},"apiKey":"[REDACTED]"}',
+    )
   })
 
-  it('does not log or return secret-bearing provider exceptions', async () => {
+  it('logs transport exceptions while redacting an API key', async () => {
     const uniqueSecretBody = `unique-provider-exception-${apiKey}`
-    const consoleSpies = [
-      vi.spyOn(console, 'log').mockImplementation(() => undefined),
-      vi.spyOn(console, 'error').mockImplementation(() => undefined),
-      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
-      vi.spyOn(console, 'info').mockImplementation(() => undefined),
-      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
-    ]
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error(uniqueSecretBody)))
 
     const result = await checkOpenAIKey(apiKey)
@@ -235,8 +226,7 @@ describe('OpenAI model access check', () => {
     expect(result).toEqual({ ok: false, reason: 'network' })
     expect(serialized).not.toContain(apiKey)
     expect(serialized).not.toContain(uniqueSecretBody)
-    for (const spy of consoleSpies) {
-      expect(spy).not.toHaveBeenCalled()
-    }
+    expect(errorSpy).toHaveBeenCalledWith('External request failed:', 'OpenAI')
+    expect(errorSpy).toHaveBeenCalledWith('External transport error:', 'Error: unique-provider-exception-[REDACTED]')
   })
 })

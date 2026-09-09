@@ -54,7 +54,10 @@ const assets = {
   }
 };
 const tileAsset = await manifestDataUrl(manifestAsset("tileFaces", "image/"));
-if (tileAsset) for (const name of tileNames) assets.tiles[name] = tileAsset;
+if (tileAsset) {
+  assets.tiles = {};
+  assets.tileOverride = tileAsset;
+}
 const backgroundAsset = await manifestDataUrl(manifestAsset("backgroundBoard", "image/"));
 if (backgroundAsset) assets.background = backgroundAsset;
 const audioAsset = await manifestDataUrl(manifestAsset("audio", "audio/"));
@@ -79,7 +82,7 @@ await mkdir(path.dirname(output), { recursive: true });
 await writeFile(output, html);
 const bytes = (await stat(output)).size;
 console.log("Playable artifact built");
-if (bytes > 5 * 1024 * 1024) {
-  console.error("ERROR: playable exceeds the AppLovin 5 MiB hard limit");
-  process.exitCode = 1;
+const maxBytes = confirmed?.delivery?.maxBytes;
+if (typeof maxBytes === "number" && bytes > maxBytes) {
+  console.warn("Playable artifact exceeds the selected delivery size");
 }

@@ -5,12 +5,14 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import {
+  PlayableBuildExecutionError,
   runPlayableBuild,
   type PlayableSandbox,
   type RunPlayableBuildDependencies,
 } from '@/lib/playable/sandbox-runner'
 import type { ConfirmedBuildInput } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableModeId } from '@/lib/playable/types'
+import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
 
 const execAsync = promisify(exec)
 const temporaryDirectories: string[] = []
@@ -189,6 +191,19 @@ afterEach(async () => {
 })
 
 describe('runPlayableBuild', () => {
+  it('classifies Sandbox allocation failures before workspace setup', async () => {
+    const providerError = Object.assign(new Error('private Vercel response'), { statusCode: 402 })
+
+    await expect(
+      runPlayableBuild(buildInput('center_collision', 'sk-sandbox-allocation-test'), {
+        createSandbox: async () => {
+          throw providerError
+        },
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toEqual(expect.objectContaining<Partial<PlayableBuildExecutionError>>({ stage: 'sandbox_create' }))
+  })
+
   it('requires an agent executor in its public dependency contract', async () => {
     type Dependencies = Parameters<typeof runPlayableBuild>[1]
     type ExecuteAgentIsRequired = {} extends Pick<Dependencies, 'executeAgent'> ? false : true
@@ -336,6 +351,38 @@ describe('runPlayableBuild', () => {
     expect(result.html).toContain('data:image/png;base64,AQIDBA==')
   }, 30_000)
 
+  it('embeds one uploaded tile face once instead of duplicating it for every tile key', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-shared-tile-test')
+    input.confirmation = {
+      ...input.confirmation,
+      resources: {
+        ...input.confirmation.resources,
+        tileFaces: { status: '用户上传', treatment: '所有牌面使用同一张上传图片' },
+      },
+    }
+    const tileBytes = new Uint8Array(200_000)
+    tileBytes.set(new TextEncoder().encode('UNIQUE_TILE_MARKER'))
+    input.assets = [
+      {
+        id: 'asset-tile',
+        slot: 'tileFaces',
+        filename: 'tile.png',
+        mimeType: 'image/png',
+        size: tileBytes.byteLength,
+        bytes: tileBytes,
+      },
+    ]
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
+    expect(result.html.match(/VU5JUVVFX1RJTEVfTUFSS0VS/g)).toHaveLength(1)
+  }, 30_000)
+
   it('validates and returns the exact artifact prepared by an external agent', async () => {
     const sandbox = await createLocalSandbox()
     const preparedPath = path.join(sandbox.defaultWorkingDirectory, 'prepared.html')
@@ -404,7 +451,11 @@ describe('runPlayableBuild', () => {
         createSandbox: async () => sandbox,
         executeAgent: async () => undefined,
       }),
-    ).rejects.toThrow('Playable validation failed')
+    ).rejects.toMatchObject({
+      name: 'PlayableBuildExecutionError',
+      message: 'Playable validation failed',
+      stage: 'validation',
+    })
     expect(sandbox.destroyed).toBe(true)
   })
 
@@ -442,19 +493,51 @@ describe('runPlayableBuild', () => {
     expect(sandbox.destroyed).toBe(true)
   })
 
-  it('rejects an artifact at the 5 MiB boundary and destroys the sandbox', async () => {
+  it('returns an AppLovin artifact at the 5 MiB boundary as compliant', async () => {
     const sandbox = await createLocalSandbox()
-    const artifact = new Uint8Array(MAX_PLAYABLE_BYTES)
-    artifact.set(new TextEncoder().encode('window.__PLAYABLE__'))
+    const prefix =
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><script>window.__PLAYABLE__={}</script>'
+    const artifact = `${prefix}${' '.repeat(MAX_PLAYABLE_BYTES - Buffer.byteLength(prefix))}`
     replaceArtifactCommands(sandbox, artifact)
 
-    await expect(
-      runPlayableBuild(buildInput('center_collision', 'sk-size-test'), {
-        createSandbox: async () => sandbox,
-        executeAgent: async () => undefined,
-      }),
-    ).rejects.toThrow('Playable artifact exceeds size limit')
+    const result = await runPlayableBuild(buildInput('center_collision', 'sk-size-test'), {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.validation).toMatchObject({
+      passed: true,
+      buildPassed: true,
+      deliveryCompliant: true,
+      bytes: MAX_PLAYABLE_BYTES,
+      gates: { packageSize: 'passed' },
+    })
     expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('does not apply the AppLovin size gate to generic single-HTML delivery', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-generic-size-test')
+    input.confirmation = {
+      ...input.confirmation,
+      delivery: deliveryProfileSnapshot('generic_single_html'),
+    }
+    const bytes = 6 * 1024 * 1024
+    const prefix =
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><script>window.__PLAYABLE__={}</script>'
+    replaceArtifactCommands(sandbox, `${prefix}${' '.repeat(bytes - Buffer.byteLength(prefix))}`)
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.validation).toMatchObject({
+      passed: true,
+      deliveryCompliant: true,
+      bytes,
+      gates: { packageSize: 'not_applicable' },
+    })
   })
 
   it('rejects an artifact without window.__PLAYABLE__ and destroys the sandbox', async () => {

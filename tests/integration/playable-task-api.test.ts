@@ -23,6 +23,7 @@ import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 import type { ReferenceImageAnalysis } from '@/lib/playable/reference-image-analyst'
+import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -1713,11 +1714,43 @@ describe('playable task API', () => {
         phase: 'building',
         hasArtifact: false,
         artifactVersion: null,
+        latestValidation: null,
         requirementBrief: null,
         confirmation,
         pendingRevision: null,
       },
       events: [],
+    })
+  })
+
+  it('uses the stored validation delivery profile instead of a newer confirmation profile', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = {
+      ...confirmation,
+      delivery: {
+        profileId: 'generic_single_html',
+        network: 'generic',
+        logicalWidth: 360,
+        logicalHeight: 640,
+        output: 'single-html',
+        maxBytes: null,
+      },
+    }
+    task.latestValidation = createValidationReport({
+      bytes: 5242881,
+      offlineResources: true,
+      responsiveViewport: true,
+      delivery: confirmation.delivery,
+    })
+
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    expect((await response.json()).task.latestValidation).toMatchObject({
+      deliveryCompliant: false,
+      delivery: { profileId: 'applovin', maxBytes: 5242880 },
     })
   })
 
@@ -1827,6 +1860,93 @@ describe('playable task API', () => {
     expect(harness.repository.builds).toEqual([
       expect.objectContaining({ status: 'succeeded', artifactKey: task?.latestArtifactKey }),
     ])
+  })
+
+  it('publishes an AppLovin artifact that only fails delivery size compliance', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({
+        bytes: 5242881,
+        offlineResources: true,
+        responsiveViewport: true,
+        delivery: confirmation.delivery,
+      }),
+    })
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'oversized-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(task.phase).toBe('ready')
+    expect(task.latestValidation).toMatchObject({
+      buildPassed: true,
+      deliveryCompliant: false,
+      gates: { packageSize: 'failed' },
+    })
+    expect(harness.repository.builds.at(-1)).toMatchObject({ id: 'oversized-build', status: 'succeeded' })
+  })
+
+  it('still rejects an artifact that fails a hard validation gate', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({
+        bytes: 1024,
+        offlineResources: false,
+        responsiveViewport: true,
+        delivery: confirmation.delivery,
+      }),
+    })
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'unsafe-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(task.phase).toBe('failed')
+    expect(task.latestArtifactKey).toBeNull()
+  })
+
+  it('rejects an inconsistent report when any hard gate is marked failed', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const validation = createValidationReport({
+      bytes: 1024,
+      offlineResources: false,
+      responsiveViewport: true,
+      delivery: confirmation.delivery,
+    })
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: { ...validation, passed: true, buildPassed: true },
+    })
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'inconsistent-validation-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(task.phase).toBe('failed')
+    expect(task.latestArtifactKey).toBeNull()
   })
 
   it('loads owned private asset bytes for the build and persists the returned truthful manifest', async () => {
@@ -1955,6 +2075,88 @@ describe('playable task API', () => {
     expect(harness.repository.latestAssignments).toHaveLength(0)
     expect(JSON.stringify(harness.repository.events)).not.toContain('provider secret')
     expect(JSON.stringify(harness.repository.events)).not.toContain('sk-build-secret')
+  })
+
+  it('reports exhausted OpenAI credits as an actionable safe build error', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new Error(
+        'stream disconnected before completion: You have no credits remaining. Add credits at https://platform.openai.com/settings/organization/billing/',
+      ),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'quota-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。',
+    })
+    expect(JSON.stringify(harness.repository.events)).not.toContain('platform.openai.com')
+  })
+
+  it('reports a Vercel Sandbox payment limit with a specific static diagnostic', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError(
+        'sandbox_create',
+        Object.assign(new Error('private provider response'), { response: { status: 402 } }),
+      ),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'sandbox-payment-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(errorSpy).toHaveBeenCalledWith('Playable build failed while creating Vercel Sandbox: payment required')
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。',
+    })
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('private provider response')
+  })
+
+  it('reports the safe stage when playable validation fails', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError('validation', new Error('private validation details')),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'validation-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: '试玩行为校验失败，请调整修改要求后重试。',
+    })
+    expect(JSON.stringify(harness.repository.events)).not.toContain('private validation details')
   })
 
   it('rejects credential-bearing build output before writing any artifact', async () => {
@@ -2202,6 +2404,12 @@ describe('playable task API', () => {
         status: 'succeeded',
         confirmation,
         artifactKey: task.latestArtifactKey,
+        validation: createValidationReport({
+          bytes: 5242881,
+          offlineResources: true,
+          responsiveViewport: true,
+          delivery: confirmation.delivery,
+        }),
         createdAt: new Date(5),
         completedAt: new Date(6),
       },
@@ -2219,7 +2427,13 @@ describe('playable task API', () => {
       builds: [
         expect.objectContaining({ id: 'build-1', status: 'succeeded', version: 1, current: false }),
         expect.objectContaining({ id: 'failed-build', status: 'failed', version: null, current: false }),
-        expect.objectContaining({ id: 'build-2', status: 'succeeded', version: 2, current: true }),
+        expect.objectContaining({
+          id: 'build-2',
+          status: 'succeeded',
+          version: 2,
+          current: true,
+          validation: expect.objectContaining({ bytes: 5242881, deliveryCompliant: false }),
+        }),
       ],
     })
     expect(JSON.stringify(versionsBody)).not.toContain('artifactKey')

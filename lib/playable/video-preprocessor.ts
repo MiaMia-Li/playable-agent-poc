@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
+import { createExternalErrorLoggingFetch, logExternalRequestError } from './external-request-logging'
 import type { PlayableSandbox } from './sandbox-runner'
 
 const execFileAsync = promisify(execFile)
@@ -109,9 +110,23 @@ async function createAnalysisSandbox(taskId: string, abortSignal?: AbortSignal):
     runtime: 'node24',
     ports: [4000],
     timeout: 10 * 60 * 1000,
+    fetch: createExternalErrorLoggingFetch('Vercel Sandbox', [
+      process.env.SANDBOX_VERCEL_TOKEN ?? '',
+      process.env.SANDBOX_VERCEL_TEAM_ID ?? '',
+      process.env.SANDBOX_VERCEL_PROJECT_ID ?? '',
+    ]),
     ...explicitCredentials,
   })
-  return provider.createSession({ sessionId: `video-analysis-${taskId}`, abortSignal })
+  try {
+    return await provider.createSession({ sessionId: `video-analysis-${taskId}`, abortSignal })
+  } catch (error) {
+    logExternalRequestError('Vercel Sandbox', error, [
+      process.env.SANDBOX_VERCEL_TOKEN ?? '',
+      process.env.SANDBOX_VERCEL_TEAM_ID ?? '',
+      process.env.SANDBOX_VERCEL_PROJECT_ID ?? '',
+    ])
+    throw error
+  }
 }
 
 export class SandboxFfmpegVideoPreprocessor implements VideoPreprocessor {

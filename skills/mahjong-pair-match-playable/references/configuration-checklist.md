@@ -17,7 +17,7 @@ Include every row below. Combine rows only when doing so remains equally explici
 | End card                | Background, app icon, title/logo, CTA artwork and animation                                                                | Bundled end card, clearly labeled as default                                |
 | Copy and locale         | Game title, CTA text, disclaimer, language                                                                                 | Preserve supplied copy; otherwise bundled copy                              |
 | Store destination       | Exact production URL or clearly identified placeholder                                                                     | Bundled placeholder; never imply it is production-ready                     |
-| Delivery                | Network, canvas size, orientation, file/ZIP requirement, size limit                                                        | AppLovin; responsive 360 × 640; one offline HTML under 5 MiB                |
+| Delivery                | Profile, network, canvas size, orientation, file/ZIP requirement, size limit                                               | AppLovin; responsive 360 × 640; one offline HTML with a 5 MiB soft limit    |
 
 For every visual and audio resource, show one status:
 
@@ -33,7 +33,7 @@ Users may replace any proposed default by uploading their own resources before a
 
 ## AppLovin invariants
 
-- Single HTML under 5 MiB with every image, audio file, font, and script embedded.
+- Single HTML with every image, audio file, font, and script embedded; report a compliance warning above 5 MiB.
 - No external resource requests.
 - MRAID 2.0 store navigation. Never redirect on the first interaction.
 - Audio starts muted and unlocks only after the first gameplay tap.

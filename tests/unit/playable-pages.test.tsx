@@ -33,7 +33,7 @@ describe('playable page boundaries', () => {
     expect(mocks.redirect).toHaveBeenCalledWith('/')
   })
 
-  it('does not fetch or poll the legacy task API on playable paths', async () => {
+  it('does not fetch connectors or poll the legacy task API on playable paths', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ connectors: [] }))
     vi.stubGlobal('fetch', fetchMock)
     render(
@@ -41,7 +41,8 @@ describe('playable page boundaries', () => {
         <div>playable</div>
       </AppLayout>,
     )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/connectors'))
+    await waitFor(() => expect(screen.getByText('playable')).toBeInTheDocument())
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/connectors')).toBe(false)
     expect(fetchMock.mock.calls.some(([url]) => url === '/api/tasks')).toBe(false)
   })
 

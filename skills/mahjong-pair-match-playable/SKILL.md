@@ -63,7 +63,7 @@ Default direct-generation behavior:
 4. Use supplied campaign assets when available. Fill optional gaps with bundled defaults. Before generating any new image, still confirm its prompt, dimensions, transparency, style, and quantity.
 5. Report placeholder branding or store URLs clearly. External publishing, uploads, and store navigation require their own authorization.
 
-For a `freeform` route, the output must still be one offline responsive Canvas HTML under 5 MiB, start muted, keep the first interaction inside gameplay, support the `playable:set-muted` parent-message contract, and expose `window.__PLAYABLE__`. Run `node assets/starter/work/test-freeform-playable.mjs output.html` before returning the artifact.
+For a `freeform` route, the output must still be one offline responsive Canvas HTML, start muted, keep the first interaction inside gameplay, support the `playable:set-muted` parent-message contract, and expose `window.__PLAYABLE__`. Optimize for the selected delivery profile, but return an otherwise valid artifact when it misses a soft channel size rule so the platform can report the compliance warning. Run `node assets/starter/work/test-freeform-playable.mjs output.html` before returning the artifact.
 
 ## Shared technical contract
 
@@ -80,7 +80,7 @@ For a `freeform` route, the output must still be one offline responsive Canvas H
 
 When the platform is AppLovin:
 
-- Fail if the single HTML exceeds 5 MiB.
+- Report a delivery warning if the single HTML exceeds 5 MiB; do not discard an otherwise valid artifact.
 - Embed every image, audio file, font, script, and stylesheet. Allow zero external resource requests.
 - Verify portrait and landscape.
 - Use MRAID 2.0 for production store navigation.

@@ -312,7 +312,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
         addTaskOptimistically,
       }}
     >
-      <ConnectorsProvider>
+      <ConnectorsProvider enabled={!isPlayablePath}>
         <div
           className="relative flex h-dvh min-h-0 overflow-hidden"
           style={
