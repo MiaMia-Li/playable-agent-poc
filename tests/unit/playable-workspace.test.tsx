@@ -409,6 +409,25 @@ describe('PlayableWorkspace', () => {
     )
   })
 
+  it('sends the composed message when Enter is pressed', async () => {
+    const fetchMock = vi.fn(async () => new Response(`${JSON.stringify({ type: 'informational', message: '收到' })}\n`))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
+    )
+
+    const input = screen.getByLabelText('试玩需求')
+    fireEvent.change(input, { target: { value: '按回车发送' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({ body: JSON.stringify({ message: '按回车发送' }) }),
+      ),
+    )
+  })
+
   it('renders an assistant clarification, decision rationale, quick choices, and loading over an existing proposal', async () => {
     let resolveFetch!: (response: Response) => void
     const fetchMock = vi.fn(

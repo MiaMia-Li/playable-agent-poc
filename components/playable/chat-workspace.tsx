@@ -609,6 +609,11 @@ export function ChatWorkspace({
             value={message}
             disabled={!canCompose || sending}
             onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
+              event.preventDefault()
+              void sendMessage()
+            }}
           />
           <div className="flex justify-end">
             {sending ? (
