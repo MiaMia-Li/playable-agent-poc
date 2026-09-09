@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { createPlayableAssetHandler, MAX_ASSET_BYTES } from '@/lib/playable/task-assets'
+import {
+  createPlayableAssetContentHandler,
+  createPlayableAssetHandler,
+  MAX_ASSET_BYTES,
+} from '@/lib/playable/task-assets'
 
 function uploadRequest(file: File, slot = 'audio') {
   const form = new FormData()
@@ -114,5 +118,47 @@ describe('playable asset upload', () => {
     ])
     expect(responses.map((response) => response.status)).toEqual([415, 400, 415, 415, 413])
     expect(store.put).not.toHaveBeenCalled()
+  })
+})
+
+describe('playable asset content', () => {
+  it('encodes Unicode filenames in the content disposition header', async () => {
+    const handler = createPlayableAssetContentHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'asset-1',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: '中文.png',
+        mimeType: 'image/png',
+        size: 3,
+        storageKey: 'asset-key',
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: {
+        put: vi.fn(async () => undefined),
+        get: vi.fn(
+          async () =>
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]))
+                controller.close()
+              },
+            }),
+        ),
+        delete: vi.fn(async () => undefined),
+      },
+    })
+
+    const response = await handler(new NextRequest('https://app.example/assets/asset-1'), {
+      params: Promise.resolve({ taskId: 'owned', assetId: 'asset-1' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-disposition')).toBe(
+      `inline; filename="__.png"; filename*=UTF-8''%E4%B8%AD%E6%96%87.png`,
+    )
   })
 })

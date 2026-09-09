@@ -107,6 +107,15 @@ interface AssetAccessHandlerDependencies {
   store: ArtifactStore
 }
 
+function inlineContentDisposition(filename: string): string {
+  const fallback = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  )
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encoded}`
+}
+
 export function createPlayableAssetContentHandler(dependencies: AssetAccessHandlerDependencies) {
   return async (request: NextRequest, context: AssetRouteContext) => {
     const userId = await dependencies.authenticate(request)
@@ -119,7 +128,7 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
     return new Response(stream, {
       headers: {
         'Content-Type': asset.mimeType,
-        'Content-Disposition': `inline; filename="${asset.filename}"`,
+        'Content-Disposition': inlineContentDisposition(asset.filename),
         'Cache-Control': 'private, max-age=300',
         'X-Content-Type-Options': 'nosniff',
       },
