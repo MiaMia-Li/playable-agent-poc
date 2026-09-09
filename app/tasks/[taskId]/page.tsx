@@ -6,6 +6,7 @@ import { isLocalDemoMode, localDemoRuntime, localDemoSession } from '@/lib/playa
 import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
 import { publicPlayableSession } from '@/lib/playable/public-access'
 import { restorePlayableConversation } from '@/lib/playable/conversation'
+import { safeValidationSummary } from '@/lib/playable/task-api'
 
 interface TaskPageProps {
   params: Promise<{
@@ -22,13 +23,16 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets, videoAnalysis, builds] = await Promise.all([
+  const [storedMessages, initialAssets, videoAnalysis, builds, events] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
     repository.findLatestVideoAnalysis(task.id),
     repository.listBuilds(task.id),
+    repository.listEvents(task.id),
   ])
   const initialConversation = restorePlayableConversation(storedMessages, task.pendingRevision, builds)
+  const initialBuildFailureMessage =
+    task.phase === 'failed' ? events.findLast((event) => event.type === 'build_failed')?.message : undefined
 
   return (
     <PlayableWorkspace
@@ -50,6 +54,8 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
+      initialBuildFailureMessage={initialBuildFailureMessage}
+      initialValidation={safeValidationSummary(task.latestValidation, task.confirmation?.delivery)}
       initialApiKeyConfigured={localDemo || localCodex ? true : undefined}
       localDemo={localDemo}
       localCodex={localCodex}

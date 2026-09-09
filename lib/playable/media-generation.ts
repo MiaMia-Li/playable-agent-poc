@@ -1,6 +1,7 @@
 import { generateId as defaultGenerateId } from '@/lib/utils/id'
 import type { ConfirmedBuildInput, PlayableBuildAsset } from './playable-agent-adapter'
 import type { PlayableResourceAssetSlot } from './asset-policy'
+import { createExternalErrorLoggingFetch } from './external-request-logging'
 import { MAX_ASSET_BYTES } from './task-assets'
 
 const IMAGE_MODEL = 'gpt-image-2'
@@ -89,7 +90,7 @@ export async function generatePlayableMediaAssets(
   input: MediaGenerationInput,
   dependencies: MediaGenerationDependencies = {},
 ): Promise<PlayableBuildAsset[]> {
-  const request = dependencies.fetch ?? fetch
+  const request = createExternalErrorLoggingFetch('OpenAI', [input.apiKey], dependencies.fetch ?? fetch)
   const nextId = dependencies.generateId ?? defaultGenerateId
   const generated: PlayableBuildAsset[] = []
 

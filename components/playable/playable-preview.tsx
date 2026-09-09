@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Download, FileJson2, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
+import { AlertTriangle, Download, FileJson2, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
 import type { ConfirmationProposal, PlayableTaskPhase, RevisionProposal } from '@/lib/playable/schemas'
+import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -17,6 +18,9 @@ interface PlayablePreviewProps {
   revision?: RevisionProposal
   onPhase?: (phase: PlayableTaskPhase) => void
   onRequireApiKey?: () => void
+  failureMessage?: string
+  initialValidation?: PlayableValidationSummary | null
+  onRequestCompression?: () => void
 }
 
 interface PlayableBuildSummary {
@@ -24,6 +28,7 @@ interface PlayableBuildSummary {
   status: 'building' | 'failed' | 'succeeded'
   version: number | null
   current: boolean
+  validation: PlayableValidationSummary | null
   createdAt: string
   completedAt: string | null
 }
@@ -37,6 +42,9 @@ export function PlayablePreview({
   revision,
   onPhase,
   onRequireApiKey,
+  failureMessage,
+  initialValidation,
+  onRequestCompression,
 }: PlayablePreviewProps) {
   const [builds, setBuilds] = useState<PlayableBuildSummary[]>([])
   const [selectedBuildId, setSelectedBuildId] = useState<string>()
@@ -51,7 +59,9 @@ export function PlayablePreview({
       build.status === 'succeeded' && build.version !== null,
   )
   const selectedBuild = successfulBuilds.find((build) => build.id === selectedBuildId)
-  const displayedVersion = selectedBuild?.version ?? successfulBuilds.find((build) => build.current)?.version
+  const currentBuild = successfulBuilds.find((build) => build.current)
+  const displayedVersion = selectedBuild?.version ?? currentBuild?.version
+  const activeValidation = selectedBuild ? selectedBuild.validation : (currentBuild?.validation ?? initialValidation)
   const authenticatedArtifactUrl = useMemo(() => {
     const parameters = new URLSearchParams({ kind: 'playable' })
     if (selectedBuildId) parameters.set('version', selectedBuildId)
@@ -86,12 +96,17 @@ export function PlayablePreview({
   }
   useEffect(() => postMute(muted), [muted, frameKey])
 
-  const logicalSize = orientation === 'portrait' ? { width: 360, height: 640 } : { width: 640, height: 360 }
-  const displaySize = orientation === 'portrait' ? { width: 432, height: 768 } : { width: 768, height: 432 }
+  const portraitSize = {
+    width: confirmation?.delivery.logicalWidth ?? 360,
+    height: confirmation?.delivery.logicalHeight ?? 640,
+  }
+  const logicalSize =
+    orientation === 'portrait' ? portraitSize : { width: portraitSize.height, height: portraitSize.width }
+  const displaySize = { width: logicalSize.width * 1.2, height: logicalSize.height * 1.2 }
   const displayRatio = displaySize.width / displaySize.height
   const emptyMessage =
     phase === 'failed'
-      ? '本次构建失败，可以直接重试或在左侧修改方案。'
+      ? (failureMessage ?? '本次构建失败，可以直接重试或在左侧修改方案。')
       : phase === 'building'
         ? 'Codex 正在构建试玩…'
         : phase === 'validating'
@@ -134,6 +149,13 @@ export function PlayablePreview({
     ['manifest', '素材来源清单'],
     ['validation', '自检报告'],
   ] as const
+  const requestCompression = () => {
+    if (onRequestCompression) {
+      onRequestCompression()
+      return
+    }
+    document.querySelector<HTMLTextAreaElement>('[aria-label="试玩需求"]')?.focus()
+  }
   return (
     <section
       aria-label="Preview"
@@ -229,19 +251,38 @@ export function PlayablePreview({
           )}
         </div>
       )}
+      {hasArtifact && activeValidation && !activeValidation.deliveryCompliant && (
+        <div
+          className="mx-4 mb-3 flex shrink-0 flex-wrap items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-100"
+          role="alert"
+        >
+          <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+          <p className="text-xs">
+            产物已成功生成，但不符合 {activeValidation.delivery.label} 体积要求。当前大小{' '}
+            {(activeValidation.bytes / 1024 / 1024).toFixed(1)} MiB，上限{' '}
+            {activeValidation.delivery.maxBytes === null
+              ? '未设置'
+              : `${(activeValidation.delivery.maxBytes / 1024 / 1024).toFixed(1)} MiB`}
+            。仍可预览和下载，投放前建议压缩。
+          </p>
+          <Button size="sm" variant="outline" onClick={requestCompression}>
+            继续修改并压缩
+          </Button>
+        </div>
+      )}
       {phase === 'failed' && hasArtifact && (
-        <p className="text-muted-foreground shrink-0 px-4 pb-2 text-center text-xs">
-          本次构建失败，正在展示上一成功版本。
+        <p className="text-destructive shrink-0 px-4 pb-2 text-center text-xs" role="alert">
+          {failureMessage ?? '本次构建失败，正在展示上一成功版本。'}
         </p>
       )}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 sm:p-6">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 [container-type:size] sm:p-6">
         <div
           className={cn(
-            'bg-background relative shrink-0 overflow-hidden rounded-[1.75rem] border-[6px] border-foreground/90 shadow-2xl transition-[width,height] duration-300',
+            'bg-background relative max-h-full max-w-full overflow-hidden rounded-[1.75rem] border-[6px] border-foreground/90 shadow-2xl transition-[width,height] duration-300',
             muted && 'after:absolute after:right-3 after:top-3 after:size-2 after:rounded-full after:bg-amber-400',
           )}
           style={{
-            width: `min(${displaySize.width}px, 100%, calc((100dvh - 10rem) * ${displayRatio}))`,
+            width: `min(${displaySize.width}px, 100%, calc(100cqh * ${displayRatio}))`,
             aspectRatio: `${displaySize.width} / ${displaySize.height}`,
           }}
           aria-label={`${orientation === 'portrait' ? '竖屏' : '横屏'}画布 ${logicalSize.width} × ${logicalSize.height}`}
@@ -259,7 +300,12 @@ export function PlayablePreview({
           ) : (
             <div className="text-muted-foreground flex size-full flex-col items-center justify-center gap-3 px-8 text-center">
               <Smartphone className="size-10 opacity-40" aria-hidden="true" />
-              <p className="text-sm">{emptyMessage}</p>
+              <p
+                className={cn('text-sm', phase === 'failed' && 'text-destructive')}
+                role={phase === 'failed' ? 'alert' : undefined}
+              >
+                {emptyMessage}
+              </p>
               {phase === 'failed' && (
                 <Button
                   size="sm"

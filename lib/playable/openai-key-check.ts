@@ -1,4 +1,5 @@
 import { PLAYABLE_OPENAI_MODEL } from './byok-session'
+import { createExternalErrorLoggingFetch } from './external-request-logging'
 
 export const OPENAI_KEY_CHECK_TIMEOUT_MS = 10_000
 
@@ -41,9 +42,10 @@ function classifyProviderFailure(status: number, code?: string): KeyCheckResult 
 export async function checkOpenAIKey(apiKey: string): Promise<KeyCheckResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), OPENAI_KEY_CHECK_TIMEOUT_MS)
+  const request = createExternalErrorLoggingFetch('OpenAI', [apiKey])
 
   try {
-    const response = await fetch(`https://api.openai.com/v1/models/${encodeURIComponent(PLAYABLE_OPENAI_MODEL)}`, {
+    const response = await request(`https://api.openai.com/v1/models/${encodeURIComponent(PLAYABLE_OPENAI_MODEL)}`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,

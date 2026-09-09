@@ -9,6 +9,7 @@ import { ChatWorkspace } from '@/components/playable/chat-workspace'
 import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
+import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
 
 Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
 
@@ -92,6 +93,14 @@ describe('PlayableWorkspace', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} localHarness />)
 
     expect(screen.getByText('本地 Harness · 线上 Agent')).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
+  })
+
+  it('lets public users reopen the API key dialog from the header', () => {
+    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured publicAccess />)
+
+    fireEvent.click(screen.getByRole('button', { name: '公开体验 · 自备 API Key' }))
+
     expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
   })
 
@@ -495,9 +504,23 @@ describe('PlayableWorkspace', () => {
     render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
 
     const deliveryRow = screen.getByRole('row', { name: /交付与跳转/ })
-    expect(within(deliveryRow).getByText(/applovin.*360.*640.*单 HTML.*5 MB/)).toBeInTheDocument()
+    expect(within(deliveryRow).getByLabelText('交付标准')).toHaveTextContent('AppLovin')
+    expect(within(deliveryRow).getByText(/360.*640.*单 HTML.*5 MiB/)).toBeInTheDocument()
     expect(within(deliveryRow).getByLabelText('商店跳转链接（HTTPS）')).toBeInTheDocument()
     expect(screen.queryByText('交付与跳转设置')).not.toBeInTheDocument()
+  })
+
+  it('lets the user select generic single-HTML delivery', async () => {
+    const onChange = vi.fn()
+    render(<ConfirmationTable proposal={proposal} onChange={onChange} onConfirm={vi.fn()} />)
+
+    fireEvent.click(screen.getByLabelText('交付标准'))
+    fireEvent.click(await screen.findByRole('option', { name: /通用单 HTML/ }))
+
+    expect(onChange).toHaveBeenCalledWith({
+      ...proposal,
+      delivery: deliveryProfileSnapshot('generic_single_html'),
+    })
   })
 
   it('lets the user customize template, gameplay, and copy in the confirmation table', () => {
@@ -586,6 +609,77 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('当前状态：生成试玩')
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
     expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
+  })
+
+  it('shows the safe provider error returned by a failed build event', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        task: {
+          phase: 'failed',
+          hasArtifact: false,
+          artifactVersion: null,
+          confirmation: proposal,
+        },
+        events: [
+          {
+            id: 'event-1',
+            type: 'build_failed',
+            phase: 'failed',
+            message: 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。',
+            createdAt: new Date(0).toISOString(),
+          },
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <PlayableWorkspace taskId="task-7" initialApiKeyConfigured initialPhase="building" initialProposal={proposal} />,
+    )
+
+    expect(await screen.findByText('OpenAI API 额度已用尽，请充值或更换 API Key 后重试。')).toBeInTheDocument()
+  })
+
+  it('keeps the last safe build error visible after reloading a failed task', () => {
+    vi.stubGlobal('fetch', vi.fn())
+
+    render(
+      <PlayableWorkspace
+        taskId="task-7"
+        initialApiKeyConfigured
+        initialPhase="failed"
+        initialProposal={proposal}
+        initialBuildFailureMessage="OpenAI API 额度已用尽，请充值或更换 API Key 后重试。"
+      />,
+    )
+
+    expect(screen.getByText('OpenAI API 额度已用尽，请充值或更换 API Key 后重试。')).toBeInTheDocument()
+  })
+
+  it('keeps an AppLovin delivery warning visible after reloading a ready task', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ builds: [] })),
+    )
+
+    render(
+      <PlayableWorkspace
+        taskId="task-7"
+        initialApiKeyConfigured
+        initialPhase="ready"
+        initialProposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
+        initialHasArtifact
+        initialArtifactVersion="oversized-build"
+        initialValidation={{
+          buildPassed: true,
+          deliveryCompliant: false,
+          bytes: 6 * 1024 * 1024,
+          delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+        }}
+      />,
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('不符合 AppLovin 体积要求')
   })
 
   it('does not poll events while a task is idle', () => {
@@ -1249,6 +1343,7 @@ describe('PlayableWorkspace', () => {
               status: 'succeeded',
               version: 1,
               current: false,
+              validation: null,
               createdAt: new Date(1).toISOString(),
               completedAt: new Date(2).toISOString(),
             },
@@ -1257,6 +1352,12 @@ describe('PlayableWorkspace', () => {
               status: 'succeeded',
               version: 2,
               current: true,
+              validation: {
+                buildPassed: true,
+                deliveryCompliant: false,
+                bytes: 6 * 1024 * 1024,
+                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+              },
               createdAt: new Date(3).toISOString(),
               completedAt: new Date(4).toISOString(),
             },
@@ -1272,6 +1373,7 @@ describe('PlayableWorkspace', () => {
         '/api/playable-tasks/task-7/artifact?kind=playable&version=build-2',
       ),
     )
+    expect(screen.getByRole('alert')).toHaveTextContent('不符合 AppLovin 体积要求')
     fireEvent.click(screen.getByLabelText('选择试玩版本'))
     fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
     await waitFor(() =>
@@ -1280,6 +1382,42 @@ describe('PlayableWorkspace', () => {
         '/api/playable-tasks/task-7/artifact?kind=playable&version=build-1',
       ),
     )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('previews and downloads an oversized AppLovin build with a delivery warning', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          builds: [
+            {
+              id: 'oversized-build',
+              status: 'succeeded',
+              version: 1,
+              current: true,
+              validation: {
+                buildPassed: true,
+                deliveryCompliant: false,
+                bytes: 6 * 1024 * 1024,
+                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+              },
+              createdAt: new Date(1).toISOString(),
+              completedAt: new Date(2).toISOString(),
+            },
+          ],
+        }),
+      ),
+    )
+
+    render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="oversized-build" />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '产物已成功生成，但不符合 AppLovin 体积要求。当前大小 6.0 MiB，上限 5.0 MiB。',
+    )
+    expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载交付物' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '继续修改并压缩' })).toBeEnabled()
   })
 
   it('keeps the previous version visible and can retry a failed build', async () => {
@@ -1320,6 +1458,19 @@ describe('PlayableWorkspace', () => {
       '/api/playable-tasks/task-7/confirm',
       expect.objectContaining({ method: 'POST' }),
     )
+  })
+
+  it('keeps the device frame within the available preview height after a failed build', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ builds: [] })),
+    )
+
+    render(<PlayablePreview taskId="task-7" phase="failed" hasArtifact artifactVersion="build-1" />)
+
+    const canvas = screen.getByLabelText(/竖屏画布/)
+    expect(canvas).toHaveClass('max-h-full')
+    expect(canvas.style.width).not.toContain('100dvh')
   })
 
   it('keeps natural-language chat available after a successful build', async () => {

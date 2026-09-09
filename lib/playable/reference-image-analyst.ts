@@ -5,6 +5,7 @@ import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/opena
 import { generateText, Output } from 'ai7'
 import { toJSONSchema, z } from 'zod'
 import { invokeCodexCli, type CodexInvocation } from './codex-cli-playable-agent'
+import { logExternalRequestError } from './external-request-logging'
 
 export const REFERENCE_IMAGE_ANALYSIS_MODEL = 'gpt-5.6-sol'
 
@@ -129,7 +130,13 @@ export class OpenAIReferenceImageAnalyst implements ReferenceImageAnalyst {
   }
 
   async analyze(input: ReferenceImageAnalystInput): Promise<ReferenceImageAnalysis> {
-    const result = await this.generate(input)
+    let result: { output: ReferenceImageAnalysis }
+    try {
+      result = await this.generate(input)
+    } catch (error) {
+      logExternalRequestError('OpenAI', error, [input.apiKey])
+      throw error
+    }
     return validateAnalysis(result.output, input.images)
   }
 }

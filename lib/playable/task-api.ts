@@ -1,6 +1,11 @@
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
-import { PlayableAgentError, type PlayableAgentAdapter, type PlayableBuildAsset } from './playable-agent-adapter'
+import {
+  PlayableAgentError,
+  type PlayableAgentAdapter,
+  type PlayableBuildAsset,
+  type PlayableValidationSummary,
+} from './playable-agent-adapter'
 import {
   confirmationProposalSchema,
   gameplayBlueprintSchema,
@@ -27,6 +32,13 @@ import { createRequirementBrief } from './requirement-tools'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { VIDEO_ANALYSIS_MODEL, VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
 import { runVideoAnalysis } from './video-analysis-service'
+import { PlayableBuildExecutionError } from './sandbox-runner'
+import {
+  deliveryProfileIdFor,
+  deliveryProfileSnapshot,
+  getDeliveryProfile,
+  isDeliveryProfileId,
+} from './delivery-standards'
 import type { VideoPreprocessor } from './video-preprocessor'
 import {
   referenceImageAnalysisSchema,
@@ -214,11 +226,63 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
   return result
 }
 
+export function safeValidationSummary(
+  value: unknown,
+  delivery: ConfirmationProposal['delivery'] | undefined,
+): PlayableValidationSummary | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as {
+    passed?: unknown
+    buildPassed?: unknown
+    deliveryCompliant?: unknown
+    bytes?: unknown
+    gates?: unknown
+    delivery?: unknown
+  }
+  if (typeof candidate.bytes !== 'number' || !Number.isFinite(candidate.bytes) || candidate.bytes < 0) return null
+  const gates =
+    candidate.gates && typeof candidate.gates === 'object' ? (candidate.gates as Record<string, unknown>) : {}
+  const hardGateKeys = [
+    'schema',
+    'behavior',
+    'offlineResources',
+    'responsiveViewport',
+    'initialMute',
+    'firstInteractionNavigation',
+    'credentialScan',
+  ]
+  const buildPassed =
+    typeof candidate.buildPassed === 'boolean'
+      ? candidate.buildPassed
+      : candidate.passed === true && !hardGateKeys.some((key) => gates[key] === 'failed')
+  const deliveryCompliant =
+    typeof candidate.deliveryCompliant === 'boolean' ? candidate.deliveryCompliant : gates.packageSize !== 'failed'
+  const storedDelivery =
+    candidate.delivery && typeof candidate.delivery === 'object'
+      ? (candidate.delivery as { profileId?: unknown })
+      : undefined
+  const profile =
+    storedDelivery && typeof storedDelivery.profileId === 'string' && isDeliveryProfileId(storedDelivery.profileId)
+      ? getDeliveryProfile(storedDelivery.profileId)
+      : getDeliveryProfile(deliveryProfileIdFor(delivery ?? deliveryProfileSnapshot('applovin')))
+  return {
+    buildPassed,
+    deliveryCompliant,
+    bytes: candidate.bytes,
+    delivery: {
+      profileId: profile.id,
+      label: profile.label,
+      maxBytes: profile.maxBytes,
+    },
+  }
+}
+
 function safeTaskState(task: PlayableTaskRecord) {
   return {
     phase: task.phase,
     hasArtifact: Boolean(task.latestArtifactKey),
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
+    latestValidation: safeValidationSummary(task.latestValidation, task.confirmation?.delivery),
     requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
     confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
     pendingRevision: task.pendingRevision ? sanitizeRevisionProposal(task.pendingRevision) : null,
@@ -426,14 +490,66 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
   }
 }
 
-async function recordBuildFailure(repository: PlayableTaskRepository, taskId: string, buildId: string): Promise<void> {
+const DEFAULT_BUILD_FAILURE_MESSAGE = '试玩构建失败，请重试。'
+const QUOTA_BUILD_FAILURE_MESSAGE = 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。'
+const SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE = 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。'
+
+function externalResponseStatus(error: unknown): number | undefined {
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current)
+    if (typeof current !== 'object') return
+    const candidate = current as {
+      cause?: unknown
+      response?: { status?: unknown; statusCode?: unknown }
+      status?: unknown
+      statusCode?: unknown
+    }
+    const status =
+      candidate.response?.status ?? candidate.response?.statusCode ?? candidate.status ?? candidate.statusCode
+    if (typeof status === 'number') return status
+    current = candidate.cause
+  }
+}
+
+function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string {
+  if (stage !== 'agent' || !(cause instanceof Error)) return DEFAULT_BUILD_FAILURE_MESSAGE
+  const message = cause.message.toLowerCase()
+  if (
+    message.includes('no credits remaining') ||
+    message.includes('insufficient_quota') ||
+    message.includes('exceeded your current quota')
+  ) {
+    return QUOTA_BUILD_FAILURE_MESSAGE
+  }
+  if (cause instanceof PlayableBuildExecutionError) {
+    if (cause.stage === 'sandbox_create' && externalResponseStatus(cause) === 402) {
+      return SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE
+    }
+    if (cause.stage === 'workspace') return '无法准备试玩构建环境，请重试。'
+    if (cause.stage === 'agent') return 'Codex 生成试玩失败，请检查模型权限或稍后重试。'
+    if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
+    if (cause.stage === 'artifact_build') return '试玩产物构建失败，请调整修改要求后重试。'
+    if (cause.stage === 'validation') return '试玩行为校验失败，请调整修改要求后重试。'
+    return '试玩产物安全检查失败，请调整修改要求后重试。'
+  }
+  return DEFAULT_BUILD_FAILURE_MESSAGE
+}
+
+async function recordBuildFailure(
+  repository: PlayableTaskRepository,
+  taskId: string,
+  buildId: string,
+  message = DEFAULT_BUILD_FAILURE_MESSAGE,
+): Promise<void> {
   await Promise.allSettled([
     repository.markFailed(taskId, buildId),
     repository.appendEvent({
       taskId,
       type: 'build_failed',
       phase: 'failed',
-      message: 'Playable build failed',
+      message,
     }),
   ])
 }
@@ -448,12 +564,29 @@ type ConfirmedBuildStage =
   | 'artifact_store'
   | 'publish'
 
-function logConfirmedBuildFailure(stage: ConfirmedBuildStage): void {
+const HARD_VALIDATION_GATES = [
+  'schema',
+  'behavior',
+  'offlineResources',
+  'responsiveViewport',
+  'initialMute',
+  'firstInteractionNavigation',
+  'credentialScan',
+] as const
+
+function logConfirmedBuildFailure(stage: ConfirmedBuildStage, cause: unknown): void {
   if (stage === 'confirmation') console.error('Playable build failed during confirmation validation')
   else if (stage === 'base_artifact') console.error('Playable build failed while loading the base artifact')
   else if (stage === 'assets') console.error('Playable build failed while loading assets')
   else if (stage === 'media') console.error('Playable build failed during media generation')
-  else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
+  else if (
+    stage === 'agent' &&
+    cause instanceof PlayableBuildExecutionError &&
+    cause.stage === 'sandbox_create' &&
+    externalResponseStatus(cause) === 402
+  ) {
+    console.error('Playable build failed while creating Vercel Sandbox: payment required')
+  } else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
   else if (stage === 'validation') console.error('Playable build failed during validation')
   else if (stage === 'artifact_store') console.error('Playable build failed while storing artifacts')
   else console.error('Playable build failed while publishing artifacts')
@@ -559,7 +692,10 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
     stage = 'validation'
-    if (!result.validation.passed || Object.values(result.validation.gates).includes('failed')) {
+    if (
+      !result.validation.buildPassed ||
+      HARD_VALIDATION_GATES.some((gate) => result.validation.gates[gate] !== 'passed')
+    ) {
       throw new Error('Playable validation gates failed')
     }
     if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
@@ -604,9 +740,9 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         message: 'Playable build is ready',
       })
       .catch(() => undefined)
-  } catch {
-    logConfirmedBuildFailure(stage)
-    await recordBuildFailure(repository, task.id, buildId)
+  } catch (cause) {
+    logConfirmedBuildFailure(stage, cause)
+    await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   }
 }
 
@@ -1241,6 +1377,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               status: build.status,
               version,
               current: Boolean(build.artifactKey && build.artifactKey === access.task.latestArtifactKey),
+              validation: safeValidationSummary(build.validation, build.confirmation.delivery),
               createdAt: build.createdAt.toISOString(),
               completedAt: build.completedAt?.toISOString() ?? null,
             }

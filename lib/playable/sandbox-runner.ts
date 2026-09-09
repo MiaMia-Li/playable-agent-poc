@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
+import { createExternalErrorLoggingFetch, logExternalRequestError } from './external-request-logging'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
@@ -51,6 +52,25 @@ export interface RunPlayableBuildDependencies {
   skillRoot?: string
   abortSignal?: AbortSignal
   preparedArtifact?: Uint8Array
+}
+
+export type PlayableBuildExecutionStage =
+  | 'sandbox_create'
+  | 'workspace'
+  | 'agent'
+  | 'integrity'
+  | 'artifact_build'
+  | 'validation'
+  | 'artifact_check'
+
+export class PlayableBuildExecutionError extends Error {
+  constructor(
+    readonly stage: PlayableBuildExecutionStage,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : 'Playable build execution failed', { cause })
+    this.name = 'PlayableBuildExecutionError'
+  }
 }
 
 interface SkillFile {
@@ -115,9 +135,23 @@ async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): 
   const provider = createVercelSandbox({
     runtime: 'node24',
     ports: [4000],
+    fetch: createExternalErrorLoggingFetch('Vercel Sandbox', [
+      process.env.SANDBOX_VERCEL_TOKEN ?? '',
+      process.env.SANDBOX_VERCEL_TEAM_ID ?? '',
+      process.env.SANDBOX_VERCEL_PROJECT_ID ?? '',
+    ]),
     ...explicitCredentials,
   })
-  return provider.createSession({ sessionId: taskId, abortSignal })
+  try {
+    return await provider.createSession({ sessionId: taskId, abortSignal })
+  } catch (error) {
+    logExternalRequestError('Vercel Sandbox', error, [
+      process.env.SANDBOX_VERCEL_TOKEN ?? '',
+      process.env.SANDBOX_VERCEL_TEAM_ID ?? '',
+      process.env.SANDBOX_VERCEL_PROJECT_ID ?? '',
+    ])
+    throw error
+  }
 }
 
 async function requireSuccessfulCommand(
@@ -159,13 +193,16 @@ export async function runPlayableBuild(
   dependencies.abortSignal?.throwIfAborted()
   const skillFiles = await readSkillFiles(dependencies.skillRoot ?? DEFAULT_SKILL_ROOT)
   const createSandbox = dependencies.createSandbox ?? defaultCreateSandbox
-  const sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
-  const sandboxRoot = sandbox.defaultWorkingDirectory
-  const masterRoot = path.join(sandboxRoot, 'skill-master')
-  const workspace = path.join(sandboxRoot, 'work')
+  let sandbox: PlayableSandbox | undefined
   let operationError: unknown
+  let stage: PlayableBuildExecutionStage = 'sandbox_create'
 
   try {
+    sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
+    const sandboxRoot = sandbox.defaultWorkingDirectory
+    const masterRoot = path.join(sandboxRoot, 'skill-master')
+    const workspace = path.join(sandboxRoot, 'work')
+    stage = 'workspace'
     if (serializedConfirmation.includes(input.apiKey)) {
       throw new Error('Confirmation contains a credential')
     }
@@ -241,6 +278,7 @@ export async function runPlayableBuild(
     })
 
     await dependencies.logger?.info('Running playable agent')
+    stage = 'agent'
     await dependencies.executeAgent({
       authEnvironment: { CODEX_API_KEY: input.apiKey },
       sandbox,
@@ -248,9 +286,11 @@ export async function runPlayableBuild(
       taskId: input.taskId,
       abortSignal: dependencies.abortSignal,
     })
+    stage = 'integrity'
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     if (dependencies.preparedArtifact) {
+      stage = 'artifact_build'
       await dependencies.logger?.info('Loading prepared playable artifact')
       await sandbox.writeBinaryFile({
         path: path.join(workspace, 'output.html'),
@@ -258,6 +298,7 @@ export async function runPlayableBuild(
         abortSignal: dependencies.abortSignal,
       })
     } else if (!freeform) {
+      stage = 'artifact_build'
       await dependencies.logger?.info('Building playable artifact')
       await requireSuccessfulCommand(
         sandbox,
@@ -274,6 +315,7 @@ export async function runPlayableBuild(
       )
     }
 
+    stage = 'validation'
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(
       sandbox,
@@ -287,14 +329,12 @@ export async function runPlayableBuild(
       'Playable validation failed',
     )
 
+    stage = 'artifact_check'
     const artifact = await sandbox.readBinaryFile({
       path: path.join(workspace, 'output.html'),
       abortSignal: dependencies.abortSignal,
     })
     if (artifact === null) throw new Error('Playable artifact is missing')
-    if (artifact.byteLength >= MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes) {
-      throw new Error('Playable artifact exceeds size limit')
-    }
 
     const html = new TextDecoder().decode(artifact)
     if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
@@ -311,16 +351,19 @@ export async function runPlayableBuild(
         bytes: artifact.byteLength,
         offlineResources: true,
         responsiveViewport: true,
+        delivery: input.confirmation.delivery,
       }),
     }
   } catch (error) {
     operationError = error
-    throw error
+    throw error instanceof PlayableBuildExecutionError ? error : new PlayableBuildExecutionError(stage, error)
   } finally {
-    try {
-      await sandbox.destroy()
-    } catch (destroyError) {
-      if (operationError === undefined) throw new Error('Sandbox cleanup failed', { cause: destroyError })
+    if (sandbox) {
+      try {
+        await sandbox.destroy()
+      } catch (destroyError) {
+        if (operationError === undefined) throw new Error('Sandbox cleanup failed', { cause: destroyError })
+      }
     }
   }
 }

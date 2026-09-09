@@ -1,4 +1,5 @@
 import type { ConfirmationProposal } from './schemas'
+import { deliveryProfileIdFor, deliveryProfileSnapshot, getDeliveryProfile } from './delivery-standards'
 import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import type { PlayableAssetManifest, PlayableBuildAsset, PlayableValidationReport } from './playable-agent-adapter'
 
@@ -87,12 +88,23 @@ export function createValidationReport(input: {
   bytes: number
   offlineResources: boolean
   responsiveViewport: boolean
+  delivery?: ConfirmationProposal['delivery']
 }): PlayableValidationReport {
-  const packageSizePassed = input.bytes < MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes
+  const delivery = input.delivery ?? deliveryProfileSnapshot('applovin')
+  const profile = getDeliveryProfile(deliveryProfileIdFor(delivery))
+  const packageSizePassed = profile.maxBytes === null || input.bytes <= profile.maxBytes
+  const buildPassed = input.offlineResources && input.responsiveViewport
   return {
-    passed: packageSizePassed && input.offlineResources && input.responsiveViewport,
+    passed: buildPassed,
+    buildPassed,
+    deliveryCompliant: packageSizePassed,
     behavior: 'passed',
     bytes: input.bytes,
+    delivery: {
+      profileId: profile.id,
+      label: profile.label,
+      maxBytes: profile.maxBytes,
+    },
     plugin: {
       id: MAHJONG_PLAYABLE_PLUGIN.id,
       version: MAHJONG_PLAYABLE_PLUGIN.version,
@@ -101,7 +113,7 @@ export function createValidationReport(input: {
     gates: {
       schema: 'passed',
       behavior: 'passed',
-      packageSize: packageSizePassed ? 'passed' : 'failed',
+      packageSize: profile.maxBytes === null ? 'not_applicable' : packageSizePassed ? 'passed' : 'failed',
       offlineResources: input.offlineResources ? 'passed' : 'failed',
       responsiveViewport: input.responsiveViewport ? 'passed' : 'failed',
       initialMute: 'passed',

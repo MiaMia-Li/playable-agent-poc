@@ -39,10 +39,20 @@ export interface PlayableAssetManifest {
   entrypoint: 'playable.html'
 }
 
-export interface PlayableValidationReport {
+export interface PlayableValidationSummary {
+  buildPassed: boolean
+  deliveryCompliant: boolean
+  bytes: number
+  delivery: {
+    profileId: 'applovin' | 'generic_single_html'
+    label: string
+    maxBytes: number | null
+  }
+}
+
+export interface PlayableValidationReport extends PlayableValidationSummary {
   passed: boolean
   behavior: 'passed'
-  bytes: number
   plugin: {
     id: string
     version: string
@@ -51,7 +61,7 @@ export interface PlayableValidationReport {
   gates: {
     schema: 'passed'
     behavior: 'passed'
-    packageSize: 'passed' | 'failed'
+    packageSize: 'passed' | 'failed' | 'not_applicable'
     offlineResources: 'passed' | 'failed'
     responsiveViewport: 'passed' | 'failed'
     initialMute: 'passed'

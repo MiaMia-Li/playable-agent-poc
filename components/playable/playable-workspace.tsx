@@ -30,6 +30,7 @@ import {
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
+import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 
 interface PlayableWorkspaceProps {
   taskId: string
@@ -41,6 +42,8 @@ interface PlayableWorkspaceProps {
   initialBrief?: RequirementBrief
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
+  initialBuildFailureMessage?: string
+  initialValidation?: PlayableValidationSummary | null
   localDemo?: boolean
   localCodex?: boolean
   localHarness?: boolean
@@ -74,6 +77,8 @@ export function PlayableWorkspace({
   initialBrief,
   initialHasArtifact = false,
   initialArtifactVersion = null,
+  initialBuildFailureMessage,
+  initialValidation = null,
   localDemo = false,
   localCodex = false,
   localHarness = false,
@@ -91,6 +96,8 @@ export function PlayableWorkspace({
   const [brief, setBrief] = useState(initialBrief)
   const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
   const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
+  const [buildFailureMessage, setBuildFailureMessage] = useState(initialBuildFailureMessage)
+  const [validation, setValidation] = useState<PlayableValidationSummary | null>(initialValidation)
   const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
     initialVideoAnalysisStatus,
   )
@@ -163,18 +170,24 @@ export function PlayableWorkspace({
             phase: PlayableTaskPhase
             hasArtifact: boolean
             artifactVersion: string | null
+            latestValidation: PlayableValidationSummary | null
             requirementBrief: RequirementBrief | null
             confirmation: ConfirmationProposal | null
             pendingRevision: RevisionProposal | null
           }
+          events?: Array<{ type: string; message?: string }>
         }
         if (!active || !body.task) return
         setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
+        if (body.task.phase === 'failed') {
+          setBuildFailureMessage(body.events?.findLast((event) => event.type === 'build_failed')?.message)
+        }
         if (body.task.requirementBrief) setBrief(body.task.requirementBrief)
         if (body.task.confirmation) setProposalDraft(body.task.confirmation)
         setRevisionDraft(body.task.pendingRevision ?? undefined)
         setHasArtifact(body.task.hasArtifact)
         setArtifactVersion(body.task.artifactVersion)
+        setValidation(body.task.latestValidation)
       } catch {
         // A transient polling failure must not clear the last successful preview.
       } finally {
@@ -251,7 +264,9 @@ export function PlayableWorkspace({
             </Button>
           </div>
         ) : publicAccess ? (
-          <Badge variant="secondary">公开体验 · 自备 API Key</Badge>
+          <Button variant="secondary" size="sm" onClick={requireApiKey}>
+            公开体验 · 自备 API Key
+          </Button>
         ) : (
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={requireApiKey}>
@@ -292,6 +307,8 @@ export function PlayableWorkspace({
           revision={revisionDraft}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
+          failureMessage={buildFailureMessage}
+          initialValidation={validation}
         />
       </div>
       {!localDemo && (

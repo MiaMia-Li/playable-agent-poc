@@ -13,6 +13,7 @@ import type {
 } from './playable-agent-adapter'
 import { confirmationProposalSchema, type PlayableAgentReply } from './schemas'
 import { runPlayableBuild } from './sandbox-runner'
+import { logExternalRequestError } from './external-request-logging'
 import {
   executeReferenceAnalysisTools,
   executeRequirementToolPlan,
@@ -115,10 +116,11 @@ export async function invokeCodexCli(input: CodexInvocation): Promise<unknown> {
         {
           cwd: input.workspace,
           env: codexEnvironment(),
-          stdio: ['pipe', 'pipe', 'ignore'],
+          stdio: ['pipe', 'pipe', 'pipe'],
         },
       )
       let stdoutBuffer = ''
+      let stderrBuffer = ''
       const handleLine = (line: string) => {
         if (!line.trim()) return
         try {
@@ -134,10 +136,15 @@ export async function invokeCodexCli(input: CodexInvocation): Promise<unknown> {
         stdoutBuffer = lines.pop() ?? ''
         for (const line of lines) handleLine(line)
       })
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', (chunk: string) => {
+        stderrBuffer += chunk
+      })
       const abort = () => child.kill('SIGTERM')
       input.abortSignal?.addEventListener('abort', abort, { once: true })
-      child.once('error', () => {
+      child.once('error', (error) => {
         console.error('Codex CLI process could not start')
+        logExternalRequestError('Codex CLI', error)
         reject(new Error('Codex CLI could not be started'))
       })
       child.once('close', (code) => {
@@ -148,6 +155,7 @@ export async function invokeCodexCli(input: CodexInvocation): Promise<unknown> {
           reject(new Error('Codex CLI invocation was cancelled'))
         } else if (code !== 0) {
           console.error('Codex CLI process returned a failure')
+          logExternalRequestError('Codex CLI', { text: stderrBuffer })
           reject(new Error('Codex CLI invocation failed'))
         } else resolve()
       })
@@ -343,7 +351,8 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                     'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
                     'The confirmed route is freeform because no registered template can express the requested core gameplay.',
                     'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
-                    'Produce one offline responsive Canvas HTML under 5 MiB with no external resources.',
+                    'Produce one offline responsive Canvas HTML with no external resources and optimize it for the confirmed delivery profile.',
+                    'Return an otherwise valid artifact even when it misses a soft channel size rule so compliance can be reported.',
                     'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
                     'Use uploaded files only for their declared resource slots.',
                     'Do not modify confirmed-config.json or asset-manifest.json.',

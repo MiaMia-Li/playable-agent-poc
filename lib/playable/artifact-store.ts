@@ -1,4 +1,5 @@
 import { del as deleteBlob, get as getBlob, put as putBlob } from '@vercel/blob'
+import { logExternalRequestError } from './external-request-logging'
 
 export interface ArtifactStore {
   put(key: string, value: string | Uint8Array, contentType: string): Promise<void>
@@ -34,21 +35,36 @@ export class PrivateVercelArtifactStore implements ArtifactStore {
   constructor(private readonly client: PrivateBlobClient = vercelBlobClient) {}
 
   async put(key: string, value: string | Uint8Array, contentType: string): Promise<void> {
-    await this.client.put(key, value, {
-      access: 'private',
-      addRandomSuffix: false,
-      allowOverwrite: false,
-      contentType,
-    })
+    try {
+      await this.client.put(key, value, {
+        access: 'private',
+        addRandomSuffix: false,
+        allowOverwrite: false,
+        contentType,
+      })
+    } catch (error) {
+      logExternalRequestError('Vercel Blob', error)
+      throw error
+    }
   }
 
   async get(key: string): Promise<ReadableStream<Uint8Array> | undefined> {
-    const result = await this.client.get(key, { access: 'private' })
-    if (!result) return
-    return result.stream
+    try {
+      const result = await this.client.get(key, { access: 'private' })
+      if (!result) return
+      return result.stream
+    } catch (error) {
+      logExternalRequestError('Vercel Blob', error)
+      throw error
+    }
   }
 
   async delete(key: string): Promise<void> {
-    await this.client.del(key)
+    try {
+      await this.client.del(key)
+    } catch (error) {
+      logExternalRequestError('Vercel Blob', error)
+      throw error
+    }
   }
 }

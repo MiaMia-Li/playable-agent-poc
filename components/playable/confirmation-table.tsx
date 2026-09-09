@@ -14,6 +14,13 @@ import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from '@/lib/
 import { isAbsoluteHttpsUrl } from '@/lib/playable/schemas'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import { isPlayableResourceAssetSlot, playableAssetAccept, type PlayableAssetSlot } from '@/lib/playable/asset-policy'
+import {
+  DELIVERY_PROFILES,
+  deliveryProfileIdFor,
+  deliveryProfileSnapshot,
+  getDeliveryProfile,
+  isDeliveryProfileId,
+} from '@/lib/playable/delivery-standards'
 
 const defaultTreatments: Record<keyof ConfirmationProposal['resources'], string> = {
   tileFaces: '使用内置默认牌面素材',
@@ -108,6 +115,7 @@ export function ConfirmationTable({
   const controlsDisabled = Boolean(disabled || inProgress)
   const canConfirm = resourcesReady && validStoreUrl && !inProgress && !disabled
   const mode = getPlayableMode(proposal.mode)
+  const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(proposal.delivery))
   const referenceAssets = uploadedAssets.filter((asset) => !isPlayableResourceAssetSlot(asset.slot))
 
   const updateResource = (
@@ -398,10 +406,34 @@ export function ConfirmationTable({
             <tr>
               <th className="bg-muted/40 px-3 py-2 font-medium">交付与跳转</th>
               <td className="space-y-3 px-3 py-2">
-                <p className="text-muted-foreground text-sm">
-                  {proposal.delivery.network} · {proposal.delivery.logicalWidth} × {proposal.delivery.logicalHeight} ·
-                  单 HTML · 5 MB
-                </p>
+                <div className="space-y-2">
+                  <Label>交付标准</Label>
+                  <Select
+                    value={deliveryProfile.id}
+                    disabled={controlsDisabled}
+                    onValueChange={(value) => {
+                      if (!isDeliveryProfileId(value)) return
+                      onChange({ ...proposal, delivery: deliveryProfileSnapshot(value) })
+                    }}
+                  >
+                    <SelectTrigger className="w-full" aria-label="交付标准">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.values(DELIVERY_PROFILES).map((profile) => (
+                        <SelectItem key={profile.id} value={profile.id}>
+                          {profile.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">
+                    {deliveryProfile.logicalWidth} × {deliveryProfile.logicalHeight} · 单 HTML ·{' '}
+                    {deliveryProfile.maxBytes === null
+                      ? '无渠道体积上限'
+                      : `${deliveryProfile.maxBytes / 1024 / 1024} MiB 上限`}
+                  </p>
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor={storeUrlId}>商店跳转链接（HTTPS）</Label>
                   <Input
