@@ -89,7 +89,7 @@ describe('QDAI video analysis service', () => {
   it('preprocesses private video bytes and persists the structured blueprint', async () => {
     const dependencies = harness()
 
-    await runVideoAnalysis({
+    const result = await runVideoAnalysis({
       task,
       asset,
       analysis,
@@ -100,6 +100,7 @@ describe('QDAI video analysis service', () => {
       analyst: dependencies.analyst,
     })
 
+    expect(result).toEqual(blueprint)
     expect(dependencies.repository.updateVideoAnalysisStatus.mock.calls.map((call) => call[1])).toEqual([
       'preprocessing',
       'analyzing',
@@ -114,9 +115,9 @@ describe('QDAI video analysis service', () => {
     expect(dependencies.repository.failVideoAnalysis).not.toHaveBeenCalled()
   })
 
-  it('records a static failure code without leaking the underlying error', async () => {
+  it('passes the caller cancellation signal through preprocessing and analysis', async () => {
     const dependencies = harness()
-    dependencies.preprocessor.preprocess.mockRejectedValueOnce(new Error('private path and details'))
+    const controller = new AbortController()
 
     await runVideoAnalysis({
       task,
@@ -127,8 +128,33 @@ describe('QDAI video analysis service', () => {
       artifactStore: dependencies.artifactStore as never,
       preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
+      abortSignal: controller.signal,
     })
 
+    expect(dependencies.preprocessor.preprocess).toHaveBeenCalledWith(
+      expect.objectContaining({ abortSignal: controller.signal }),
+    )
+    expect(dependencies.analyst.analyze).toHaveBeenCalledWith(
+      expect.objectContaining({ abortSignal: controller.signal }),
+    )
+  })
+
+  it('records a static failure code without leaking the underlying error', async () => {
+    const dependencies = harness()
+    dependencies.preprocessor.preprocess.mockRejectedValueOnce(new Error('private path and details'))
+
+    const result = await runVideoAnalysis({
+      task,
+      asset,
+      analysis,
+      apiKey: 'sk-test-secret',
+      repository: dependencies.repository as never,
+      artifactStore: dependencies.artifactStore as never,
+      preprocessor: dependencies.preprocessor,
+      analyst: dependencies.analyst,
+    })
+
+    expect(result).toBeUndefined()
     expect(dependencies.repository.failVideoAnalysis).toHaveBeenCalledWith(analysis.id, 'analysis_failed')
     expect(dependencies.repository.completeVideoAnalysis).not.toHaveBeenCalled()
   })

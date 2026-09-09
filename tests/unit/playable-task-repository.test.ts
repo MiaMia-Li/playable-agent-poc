@@ -156,7 +156,12 @@ describe('playable video analysis storage', () => {
       expect.arrayContaining([
         'playable_video_analyses_task_created_idx',
         'playable_video_analyses_asset_pipeline_idx',
+        'playable_video_analyses_asset_pipeline_model_unique',
       ]),
     )
+    expect(
+      config.indexes.find((index) => index.config.name === 'playable_video_analyses_asset_pipeline_model_unique')
+        ?.config.unique,
+    ).toBe(true)
   })
 })

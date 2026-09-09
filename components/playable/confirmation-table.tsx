@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
 import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
 import { Badge } from '@/components/ui/badge'
@@ -48,6 +48,9 @@ interface ConfirmationTableProps {
   proposal: ConfirmationProposal
   onChange: (proposal: ConfirmationProposal) => void
   onConfirm: () => void
+  title?: string
+  description?: string
+  showHeader?: boolean
   confirming?: boolean
   buildPhase?: 'building' | 'validating'
   disabled?: boolean
@@ -57,12 +60,26 @@ interface ConfirmationTableProps {
   uploadedAssets?: SafePlayableAsset[]
   removingAssetId?: string
   assetPreviewUrl?: (asset: SafePlayableAsset) => string
+  showConfirmAction?: boolean
+}
+
+export function isConfirmationReady(proposal: ConfirmationProposal): boolean {
+  const presentation = proposal.presentation ?? defaultConfirmationPresentation
+  const visibleResources = presentation.assetFields.map((field) => proposal.resources[field.slot])
+  const hasPendingUpload = visibleResources.some((resource) => resource.status === '待上传')
+  const hasUnsupportedAiGeneration =
+    !MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration &&
+    visibleResources.some((resource) => resource.status === '待生成')
+  return !hasPendingUpload && !hasUnsupportedAiGeneration && isAbsoluteHttpsUrl(proposal.storeUrl)
 }
 
 export function ConfirmationTable({
   proposal,
   onChange,
   onConfirm,
+  title = '确认构建方案',
+  description = '以下是当前构建方案。你可以继续修改，确认后才会开始构建。',
+  showHeader = true,
   confirming,
   buildPhase,
   disabled,
@@ -72,8 +89,10 @@ export function ConfirmationTable({
   uploadedAssets = [],
   removingAssetId,
   assetPreviewUrl,
+  showConfirmAction = true,
 }: ConfirmationTableProps) {
   const uploadInputs = useRef<Partial<Record<PlayableAssetSlot, HTMLInputElement | null>>>({})
+  const storeUrlId = useId()
   const presentation = proposal.presentation ?? defaultConfirmationPresentation
   const assetFields = presentation.assetFields.filter(
     (field, index, fields) => fields.findIndex((candidate) => candidate.slot === field.slot) === index,
@@ -111,10 +130,12 @@ export function ConfirmationTable({
 
   return (
     <section aria-label="确认方案" className="space-y-4">
-      <div>
-        <h2 className="font-semibold">确认构建方案</h2>
-        <p className="text-muted-foreground text-sm">请逐项确认；点击一次确认后才会开始构建。</p>
-      </div>
+      {showHeader && (
+        <div>
+          <h2 className="font-semibold">{title}</h2>
+          <p className="text-muted-foreground text-sm">{description}</p>
+        </div>
+      )}
       <div className="overflow-hidden rounded-xl border">
         <table className="w-full text-left text-sm">
           <tbody className="divide-y">
@@ -186,6 +207,7 @@ export function ConfirmationTable({
             </tr>
             {assetFields.map(({ slot, label }) => {
               const resource = proposal.resources[slot]
+              const slotAssets = uploadedAssets.filter((asset) => asset.slot === slot)
               return (
                 <tr key={slot}>
                   <th className="bg-muted/40 px-3 py-2 font-medium">{label}</th>
@@ -263,18 +285,20 @@ export function ConfirmationTable({
                         />
                       )}
                     </div>
-                    {onRemoveAsset && (
+                    {slotAssets.length > 0 && (
                       <div className="mt-2">
                         <AssetPreviewList
-                          items={uploadedAssets
-                            .filter((asset) => asset.slot === slot)
-                            .map((asset) => ({ ...asset, previewUrl: assetPreviewUrl?.(asset) }))}
+                          items={slotAssets.map((asset) => ({ ...asset, previewUrl: assetPreviewUrl?.(asset) }))}
                           disabled={controlsDisabled}
                           removingId={removingAssetId}
-                          onRemove={(item) => {
-                            const asset = uploadedAssets.find((candidate) => candidate.id === item.id)
-                            if (asset) onRemoveAsset(asset)
-                          }}
+                          onRemove={
+                            onRemoveAsset
+                              ? (item) => {
+                                  const asset = uploadedAssets.find((candidate) => candidate.id === item.id)
+                                  if (asset) onRemoveAsset(asset)
+                                }
+                              : undefined
+                          }
                         />
                       </div>
                     )}
@@ -282,60 +306,66 @@ export function ConfirmationTable({
                 </tr>
               )
             })}
-            {onUpload && presentation.showReferenceAssets && (
+            {presentation.showReferenceAssets && (onUpload || referenceAssets.length > 0) && (
               <tr>
                 <th className="bg-muted/40 px-3 py-2 font-medium">参考素材</th>
                 <td className="space-y-2 px-3 py-2">
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={controlsDisabled || Boolean(uploadingSlot)}
-                      onClick={() => uploadInputs.current.referenceImage?.click()}
-                    >
-                      <ImagePlus aria-hidden="true" />
-                      {uploadingSlot === 'referenceImage' ? '图片上传中…' : '上传参考图片'}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={controlsDisabled || Boolean(uploadingSlot)}
-                      onClick={() => uploadInputs.current.referenceVideo?.click()}
-                    >
-                      <Video aria-hidden="true" />
-                      {uploadingSlot === 'referenceVideo' ? '视频上传中…' : '上传参考视频'}
-                    </Button>
-                    {(['referenceImage', 'referenceVideo'] as const).map((slot) => (
-                      <input
-                        key={slot}
-                        ref={(node) => {
-                          uploadInputs.current[slot] = node
-                        }}
-                        aria-label={slot === 'referenceImage' ? '选择参考图片' : '选择参考视频'}
-                        className="sr-only"
-                        type="file"
-                        multiple
+                  {onUpload && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
                         disabled={controlsDisabled || Boolean(uploadingSlot)}
-                        accept={playableAssetAccept(slot)}
-                        onChange={(event) => {
-                          const files = Array.from(event.target.files ?? [])
-                          if (files.length > 0) onUpload(slot, files)
-                          event.target.value = ''
-                        }}
-                      />
-                    ))}
-                  </div>
+                        onClick={() => uploadInputs.current.referenceImage?.click()}
+                      >
+                        <ImagePlus aria-hidden="true" />
+                        {uploadingSlot === 'referenceImage' ? '图片上传中…' : '上传参考图片'}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={controlsDisabled || Boolean(uploadingSlot)}
+                        onClick={() => uploadInputs.current.referenceVideo?.click()}
+                      >
+                        <Video aria-hidden="true" />
+                        {uploadingSlot === 'referenceVideo' ? '视频上传中…' : '上传参考视频'}
+                      </Button>
+                      {(['referenceImage', 'referenceVideo'] as const).map((slot) => (
+                        <input
+                          key={slot}
+                          ref={(node) => {
+                            uploadInputs.current[slot] = node
+                          }}
+                          aria-label={slot === 'referenceImage' ? '选择参考图片' : '选择参考视频'}
+                          className="sr-only"
+                          type="file"
+                          multiple
+                          disabled={controlsDisabled || Boolean(uploadingSlot)}
+                          accept={playableAssetAccept(slot)}
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files ?? [])
+                            if (files.length > 0) onUpload(slot, files)
+                            event.target.value = ''
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                   {referenceAssets.length > 0 && (
                     <AssetPreviewList
                       items={referenceAssets.map((asset) => ({ ...asset, previewUrl: assetPreviewUrl?.(asset) }))}
                       disabled={controlsDisabled}
                       removingId={removingAssetId}
-                      onRemove={(item) => {
-                        const asset = referenceAssets.find((candidate) => candidate.id === item.id)
-                        if (asset) onRemoveAsset?.(asset)
-                      }}
+                      onRemove={
+                        onRemoveAsset
+                          ? (item) => {
+                              const asset = referenceAssets.find((candidate) => candidate.id === item.id)
+                              if (asset) onRemoveAsset(asset)
+                            }
+                          : undefined
+                      }
                     />
                   )}
                   <p className="text-muted-foreground text-xs">参考文件会随任务保存；当前不会自动解析视频画面。</p>
@@ -365,43 +395,45 @@ export function ConfirmationTable({
                 </td>
               </tr>
             )}
+            <tr>
+              <th className="bg-muted/40 px-3 py-2 font-medium">交付与跳转</th>
+              <td className="space-y-3 px-3 py-2">
+                <p className="text-muted-foreground text-sm">
+                  {proposal.delivery.network} · {proposal.delivery.logicalWidth} × {proposal.delivery.logicalHeight} ·
+                  单 HTML · 5 MB
+                </p>
+                <div className="space-y-2">
+                  <Label htmlFor={storeUrlId}>商店跳转链接（HTTPS）</Label>
+                  <Input
+                    id={storeUrlId}
+                    type="url"
+                    value={proposal.storeUrl}
+                    aria-invalid={!validStoreUrl}
+                    disabled={controlsDisabled}
+                    onChange={(event) => onChange({ ...proposal, storeUrl: event.target.value })}
+                  />
+                </div>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <details className="rounded-xl border px-3 py-2" open={!validStoreUrl || undefined}>
-        <summary className="cursor-pointer select-none text-sm font-medium">交付与跳转设置</summary>
-        <div className="mt-3 space-y-3">
-          <p className="text-muted-foreground text-sm">
-            {proposal.delivery.network} · {proposal.delivery.logicalWidth} × {proposal.delivery.logicalHeight} · 单 HTML
-            · 5 MB
-          </p>
-          <div className="space-y-2">
-            <Label htmlFor="store-url">商店跳转链接（HTTPS）</Label>
-            <Input
-              id="store-url"
-              type="url"
-              value={proposal.storeUrl}
-              aria-invalid={!validStoreUrl}
-              disabled={controlsDisabled}
-              onChange={(event) => onChange({ ...proposal, storeUrl: event.target.value })}
-            />
-          </div>
-        </div>
-      </details>
       {hasPendingUpload && <p className="text-destructive text-sm">请先上传所有标记为“待上传”的素材。</p>}
       {hasUnsupportedAiGeneration && (
         <p className="text-destructive text-sm">AI 素材生成暂不支持，请改用内置默认或本地上传。</p>
       )}
-      <Button className="w-full" disabled={!canConfirm} onClick={onConfirm}>
-        {inProgress ? <Loader2 className="animate-spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
-        {confirming
-          ? '正在提交方案…'
-          : buildPhase === 'building'
-            ? 'Codex 正在构建试玩…'
-            : buildPhase === 'validating'
-              ? '正在验证并发布试玩…'
-              : '确认方案并开始构建'}
-      </Button>
+      {showConfirmAction && (
+        <Button className="w-full" disabled={!canConfirm} onClick={onConfirm}>
+          {inProgress ? <Loader2 className="animate-spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+          {confirming
+            ? '正在提交方案…'
+            : buildPhase === 'building'
+              ? 'Codex 正在构建试玩…'
+              : buildPhase === 'validating'
+                ? '正在验证并发布试玩…'
+                : '确认方案并开始构建'}
+        </Button>
+      )}
     </section>
   )
 }

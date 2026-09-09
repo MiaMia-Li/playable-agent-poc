@@ -42,6 +42,7 @@ export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
 export const playableTaskPhases = [
   'draft',
   'awaiting_confirmation',
+  'awaiting_revision_confirmation',
   'building',
   'validating',
   'reviewing',
@@ -194,6 +195,23 @@ export const generatedConfirmationProposalSchema = z
   })
   .superRefine(validateConfirmationPresentation)
 
+export const revisionStrategies = ['patch', 'regenerate'] as const
+
+export const revisionPlanSchema = z.strictObject({
+  strategy: z.enum(revisionStrategies),
+  summary: z.string().trim().min(1).max(600),
+  changes: z.array(z.string().trim().min(1).max(300)).min(1).max(12),
+  preserved: z.array(z.string().trim().min(1).max(300)).max(12),
+})
+
+export const revisionProposalSchema = z.strictObject({
+  id: z.string().trim().min(1),
+  baseBuildId: z.string().trim().min(1),
+  baseVersion: z.number().int().positive(),
+  targetVersion: z.number().int().positive(),
+  ...revisionPlanSchema.shape,
+})
+
 export const clarificationOptionSchema = z.strictObject({
   id: z.string().trim().min(1),
   label: z.string().trim().min(1),
@@ -267,6 +285,15 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     brief: requirementBriefSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
+  z.strictObject({
+    kind: z.literal('revision'),
+    message: z.string().trim().min(1),
+    reasoning: z.string().trim().min(1),
+    revision: revisionPlanSchema,
+    confirmation: confirmationProposalSchema,
+    brief: requirementBriefSchema.optional(),
+    tools: z.array(z.string().trim().min(1)).max(8).optional(),
+  }),
 ])
 
 // The OpenAI structured-output subset does not permit `oneOf`. Keep a flat
@@ -306,4 +333,6 @@ export type ConfirmationProposal = z.infer<typeof confirmationProposalSchema>
 export type ClarificationOption = z.infer<typeof clarificationOptionSchema>
 export type RequirementInputRequest = z.infer<typeof requirementInputRequestSchema>
 export type RequirementBrief = z.infer<typeof requirementBriefSchema>
+export type RevisionPlan = z.infer<typeof revisionPlanSchema>
+export type RevisionProposal = z.infer<typeof revisionProposalSchema>
 export type PlayableAgentReply = z.infer<typeof playableAgentReplySchema>

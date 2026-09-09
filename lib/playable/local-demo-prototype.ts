@@ -19,6 +19,7 @@ import type {
   PlayableAgentReply,
   PlayableTaskPhase,
   RequirementBrief,
+  RevisionProposal,
 } from './schemas'
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
@@ -252,8 +253,47 @@ class LocalDemoAgent implements PlayableAgentAdapter {
     const brief: RequirementBrief = input.brief
       ? structuredClone(input.brief)
       : createRequirementBrief(input.history?.find((turn) => turn.role === 'user')?.content ?? input.prompt)
+    const informationalAfterBuild =
+      input.hasArtifact &&
+      input.confirmation &&
+      /^(?:你好|您好|你是谁|你能做什么|怎么使用|如何使用|当前是什么版本|现在是什么版本)[？?。！!]*$/.test(
+        input.prompt.trim(),
+      )
+    if (informationalAfterBuild) {
+      return {
+        kind: 'informational',
+        message: '当前试玩已生成。你可以继续描述明确的修改内容，我会先整理修改计划，等你确认后再构建下一版。',
+        reasoning: '这是一条使用或状态咨询，不会修改当前试玩。',
+        brief,
+        tools: ['respond_to_user'],
+      }
+    }
     brief.summary = context.slice(0, 600)
     brief.gameplay.concept = context.slice(0, 500)
+    if (input.hasArtifact && input.confirmation) {
+      const regenerate = /重新生成|重新制作|重新构建|重做|效果.{0,4}(?:差|不好)/.test(input.prompt)
+      return {
+        kind: 'revision',
+        message: regenerate
+          ? '我会保留已确认的需求和素材，重新生成下一版试玩。'
+          : '我会基于当前版本完成这次修改，其他内容保持不变。',
+        reasoning: regenerate ? '当前要求涉及整体效果重做。' : '当前要求适合在现有版本上局部修改。',
+        revision: {
+          strategy: regenerate ? 'regenerate' : 'patch',
+          summary: input.prompt.slice(0, 600),
+          changes: [input.prompt.slice(0, 300)],
+          preserved: regenerate ? ['已确认的需求和用户素材'] : ['未在本次要求中提及的内容'],
+        },
+        confirmation: input.confirmation,
+        brief,
+        tools: [
+          'update_requirement_brief',
+          'list_playable_capabilities',
+          'validate_implementation_route',
+          'submit_revision',
+        ],
+      }
+    }
     const selectedMode =
       selectMode(input.prompt) ??
       [...(input.history ?? [])]
@@ -520,7 +560,15 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         await writeFile(assetPath, asset.bytes)
       }
       await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(assetManifest), 'utf8')
-      if (input.confirmation.routing.match === 'freeform') {
+      if (input.revision?.strategy === 'patch' && input.baseHtml) {
+        await writeFile(outputPath, input.baseHtml, 'utf8')
+        await execFileAsync(process.execPath, [
+          input.confirmation.routing.match === 'freeform'
+            ? path.join(starterRoot, 'work/test-freeform-playable.mjs')
+            : path.join(starterRoot, 'work/test-playable.mjs'),
+          outputPath,
+        ])
+      } else if (input.confirmation.routing.match === 'freeform') {
         await writeFile(outputPath, createLocalFreeformPlayable(input.confirmation.storeUrl), 'utf8')
         await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-freeform-playable.mjs'), outputPath])
       } else {
@@ -591,6 +639,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       phase: 'draft',
       requirementBrief: createRequirementBrief(),
       confirmation: null,
+      pendingRevision: null,
       latestArtifactKey: null,
       createdAt: new Date(),
     }
@@ -621,23 +670,59 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.requirementBrief = structuredClone(brief)
     return true
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.phase = 'draft'
+    task.pendingRevision = null
     return true
   }
 
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
+    task.pendingRevision = null
+    return true
+  }
+
+  async setAwaitingRevision(
+    taskId: string,
+    userId: string,
+    confirmation: ConfirmationProposal,
+    revision: RevisionProposal,
+  ): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'awaiting_revision_confirmation'
+    task.confirmation = structuredClone(confirmation)
+    task.pendingRevision = structuredClone(revision)
+    return true
+  }
+
+  async clearPendingRevision(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'ready'
+    task.pendingRevision = null
     return true
   }
 
@@ -646,9 +731,16 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     userId: string,
     confirmation: ConfirmationProposal,
     buildId: string,
+    revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['awaiting_confirmation', 'failed'].includes(task.phase)) return
+    if (
+      !task ||
+      !(revision
+        ? ['awaiting_revision_confirmation', 'failed'].includes(task.phase)
+        : ['awaiting_confirmation', 'failed'].includes(task.phase))
+    )
+      return
     task.phase = 'building'
     task.confirmation = confirmation
     const builds = this.builds.get(taskId) ?? []
@@ -657,6 +749,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       taskId,
       status: 'building',
       confirmation: structuredClone(confirmation),
+      revision: revision ? structuredClone(revision) : null,
       artifactKey: null,
       createdAt: new Date(),
     })
@@ -686,6 +779,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     task.phase = 'ready'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
+    task.pendingRevision = null
     build.status = 'succeeded'
     build.artifactKey = artifactKey
     build.validation = validation

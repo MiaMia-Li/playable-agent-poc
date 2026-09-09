@@ -1,6 +1,11 @@
 import { pgTable, text, timestamp, integer, jsonb, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
-import { confirmationProposalSchema, playableTaskPhaseSchema, requirementBriefSchema } from '@/lib/playable/schemas'
+import {
+  confirmationProposalSchema,
+  playableTaskPhaseSchema,
+  requirementBriefSchema,
+  revisionProposalSchema,
+} from '@/lib/playable/schemas'
 import { playableModeIds } from '@/lib/playable/types'
 
 // Log entry types
@@ -113,6 +118,7 @@ export const tasks = pgTable('tasks', {
   phase: text('phase').notNull().default('draft'),
   requirementBrief: jsonb('requirement_brief'),
   confirmation: jsonb('confirmation'),
+  pendingRevision: jsonb('pending_revision'),
   latestArtifactKey: text('latest_artifact_key'),
   latestValidation: jsonb('latest_validation'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -152,6 +158,7 @@ export const insertTaskSchema = z.object({
   phase: playableTaskPhaseSchema.default('draft'),
   requirementBrief: requirementBriefSchema.optional(),
   confirmation: confirmationProposalSchema.optional(),
+  pendingRevision: revisionProposalSchema.optional(),
   latestArtifactKey: z.string().optional(),
   latestValidation: z.unknown().optional(),
   createdAt: z.date().optional(),
@@ -190,6 +197,7 @@ export const selectTaskSchema = z.object({
   phase: playableTaskPhaseSchema.optional(),
   requirementBrief: requirementBriefSchema.nullable().optional(),
   confirmation: confirmationProposalSchema.nullable().optional(),
+  pendingRevision: revisionProposalSchema.nullable().optional(),
   latestArtifactKey: z.string().nullable().optional(),
   latestValidation: z.unknown().nullable().optional(),
   createdAt: z.date(),
@@ -438,6 +446,7 @@ export const playableTaskBuilds = pgTable(
       .notNull()
       .default('building'),
     confirmation: jsonb('confirmation').notNull(),
+    revision: jsonb('revision'),
     artifactKey: text('artifact_key').unique(),
     validation: jsonb('validation'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -495,6 +504,11 @@ export const playableVideoAnalyses = pgTable(
   (table) => ({
     taskCreatedIndex: index('playable_video_analyses_task_created_idx').on(table.taskId, table.createdAt),
     assetPipelineIndex: index('playable_video_analyses_asset_pipeline_idx').on(table.assetId, table.pipelineVersion),
+    assetPipelineModelUnique: uniqueIndex('playable_video_analyses_asset_pipeline_model_unique').on(
+      table.assetId,
+      table.pipelineVersion,
+      table.model,
+    ),
   }),
 )
 

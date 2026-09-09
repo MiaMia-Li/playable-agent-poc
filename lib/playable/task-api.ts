@@ -6,12 +6,15 @@ import {
   gameplayBlueprintSchema,
   playableAgentReplySchema,
   requirementBriefSchema,
+  revisionProposalSchema,
   videoAnalysisStatusSchema,
   type ConfirmationProposal,
   type GameplayBlueprint,
   type PlayableAgentReply,
   type PlayableTaskPhase,
   type RequirementBrief,
+  type RevisionPlan,
+  type RevisionProposal,
   type VideoAnalysisStatus,
 } from './schemas'
 import { redactSecrets } from './redact'
@@ -25,6 +28,12 @@ import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { VIDEO_ANALYSIS_MODEL, VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
 import { runVideoAnalysis } from './video-analysis-service'
 import type { VideoPreprocessor } from './video-preprocessor'
+import {
+  referenceImageAnalysisSchema,
+  type ReferenceImageAnalyst,
+  type ReferenceImageAnalysis,
+} from './reference-image-analyst'
+import type { ReferenceAnalysisToolCall } from './playable-agent-adapter'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -35,6 +44,7 @@ export interface PlayableTaskRecord {
   phase: PlayableTaskPhase
   requirementBrief: RequirementBrief | null
   confirmation: ConfirmationProposal | null
+  pendingRevision?: RevisionProposal | null
   latestArtifactKey: string | null
   latestValidation?: unknown
   title?: string | null
@@ -78,6 +88,7 @@ export interface PlayableBuildRecord {
   taskId: string
   status: PlayableBuildStatus
   confirmation: ConfirmationProposal
+  revision?: RevisionProposal | null
   artifactKey: string | null
   validation?: unknown
   createdAt: Date
@@ -92,11 +103,19 @@ export interface PlayableTaskRepository {
   updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean>
   setDraft(taskId: string, userId: string): Promise<boolean>
   setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
+  setAwaitingRevision(
+    taskId: string,
+    userId: string,
+    confirmation: ConfirmationProposal,
+    revision: RevisionProposal,
+  ): Promise<boolean>
+  clearPendingRevision(taskId: string, userId: string): Promise<boolean>
   claimBuild(
     taskId: string,
     userId: string,
     confirmation: ConfirmationProposal,
     buildId: string,
+    revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined>
   compareAndSetPhase(taskId: string, expected: PlayableTaskPhase, next: PlayableTaskPhase): Promise<boolean>
   publishArtifact(
@@ -125,6 +144,13 @@ export interface PlayableTaskRepository {
     pipelineVersion: string
     model: string
   }): Promise<PlayableVideoAnalysisRecord>
+  claimVideoAnalysis?(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>
   findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined>
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
   completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void>
@@ -142,9 +168,12 @@ interface HandlerDependencies {
   artifactStore: ArtifactStore
   schedule: BackgroundScheduler
   buildStartedEventTimeoutMs?: number
+  requirementStreamKeepaliveMs?: number
   mediaGenerator?: MediaGenerator
+  imageAnalyst?: ReferenceImageAnalyst
   videoAnalyst?: VideoGameplayAnalyst
   videoPreprocessor?: VideoPreprocessor
+  videoToolTimeoutMs?: number
   generateId(): string
 }
 
@@ -192,6 +221,7 @@ function safeTaskState(task: PlayableTaskRecord) {
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
     requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
     confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
+    pendingRevision: task.pendingRevision ? sanitizeRevisionProposal(task.pendingRevision) : null,
   }
 }
 
@@ -206,6 +236,26 @@ function safeVideoAnalysis(analysis: PlayableVideoAnalysisRecord | undefined) {
     createdAt: analysis.createdAt.toISOString(),
     completedAt: analysis.completedAt?.toISOString() ?? null,
   }
+}
+
+const TOOL_PROGRESS_COPY = {
+  inspect_reference_images: {
+    tool_started: '正在分析参考图片',
+    tool_completed: '参考图片分析完成',
+    tool_failed: '参考图片分析暂不可用',
+  },
+  analyze_reference_video: {
+    tool_started: '正在分析参考视频',
+    tool_completed: '参考视频分析完成',
+    tool_failed: '参考视频分析暂不可用',
+  },
+} as const
+
+function toolProgressEvent(
+  type: 'tool_started' | 'tool_completed' | 'tool_failed',
+  tool: ReferenceAnalysisToolCall['name'],
+) {
+  return { type, tool, message: TOOL_PROGRESS_COPY[tool][type] }
 }
 
 const ARTIFACT_CSP =
@@ -324,6 +374,31 @@ function sanitizeRequirementBrief(value: RequirementBrief, secrets: readonly str
   return requirementBriefSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
 }
 
+function sanitizeRevisionProposal(value: RevisionProposal, secrets: readonly string[] = []): RevisionProposal {
+  return revisionProposalSchema.parse(JSON.parse(redactSecrets(JSON.stringify(value), secrets)))
+}
+
+function resolveRevisionProposal(input: {
+  plan: RevisionPlan
+  builds: PlayableBuildRecord[]
+  latestArtifactKey: string
+  id: string
+}): RevisionProposal {
+  const successfulBuilds = input.builds.filter(
+    (build): build is PlayableBuildRecord & { artifactKey: string } =>
+      build.status === 'succeeded' && Boolean(build.artifactKey),
+  )
+  const baseIndex = successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
+  if (baseIndex < 0) throw new Error('Current playable build is missing')
+  return revisionProposalSchema.parse({
+    id: input.id,
+    baseBuildId: successfulBuilds[baseIndex].id,
+    baseVersion: baseIndex + 1,
+    targetVersion: successfulBuilds.length + 1,
+    ...input.plan,
+  })
+}
+
 function conversationContent(message: PlayableTaskMessageRecord, secrets: readonly string[]): string {
   const safeContent = safeString(message.content, secrets)
   if (message.role === 'user') return safeContent
@@ -363,10 +438,19 @@ async function recordBuildFailure(repository: PlayableTaskRepository, taskId: st
   ])
 }
 
-type ConfirmedBuildStage = 'confirmation' | 'assets' | 'media' | 'agent' | 'validation' | 'artifact_store' | 'publish'
+type ConfirmedBuildStage =
+  | 'confirmation'
+  | 'base_artifact'
+  | 'assets'
+  | 'media'
+  | 'agent'
+  | 'validation'
+  | 'artifact_store'
+  | 'publish'
 
 function logConfirmedBuildFailure(stage: ConfirmedBuildStage): void {
   if (stage === 'confirmation') console.error('Playable build failed during confirmation validation')
+  else if (stage === 'base_artifact') console.error('Playable build failed while loading the base artifact')
   else if (stage === 'assets') console.error('Playable build failed while loading assets')
   else if (stage === 'media') console.error('Playable build failed during media generation')
   else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
@@ -409,6 +493,20 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       ...(mediaApiKey ? [mediaApiKey] : []),
     ])
+    const revision = task.pendingRevision
+      ? sanitizeRevisionProposal(task.pendingRevision, [apiKey, ...(mediaApiKey ? [mediaApiKey] : [])])
+      : undefined
+    let baseHtml: string | undefined
+    if (revision?.strategy === 'patch') {
+      stage = 'base_artifact'
+      const baseBuild = await repository.findBuild(task.id, revision.baseBuildId)
+      if (!baseBuild || baseBuild.status !== 'succeeded' || !baseBuild.artifactKey) {
+        throw new Error('Revision base artifact is missing')
+      }
+      const baseStream = await artifactStore.get(baseBuild.artifactKey)
+      if (!baseStream) throw new Error('Revision base artifact is missing')
+      baseHtml = new TextDecoder().decode(await readAll(baseStream))
+    }
     if (
       !MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration &&
       Object.values(sanitizedConfirmation.resources).some((resource) => resource.status === '待生成')
@@ -456,6 +554,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
+      ...(revision ? { revision } : {}),
+      ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
     stage = 'validation'
@@ -511,6 +611,156 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 }
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
+  const videoToolLocks = new Set<string>()
+  const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
+
+  const claimVideoAnalysis = async (taskId: string, assetId: string) => {
+    const key = `${assetId}:${VIDEO_ANALYSIS_PIPELINE_VERSION}:${VIDEO_ANALYSIS_MODEL}`
+    const pending = videoAnalysisClaims.get(key)
+    if (pending) {
+      const result = await pending
+      return { analysis: result.analysis, claimed: false }
+    }
+    const claim = dependencies.repository.claimVideoAnalysis
+      ? dependencies.repository.claimVideoAnalysis({
+          id: dependencies.generateId(),
+          taskId,
+          assetId,
+          pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+          model: VIDEO_ANALYSIS_MODEL,
+        })
+      : dependencies.repository
+          .createVideoAnalysis({
+            id: dependencies.generateId(),
+            taskId,
+            assetId,
+            pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+            model: VIDEO_ANALYSIS_MODEL,
+          })
+          .then((analysis) => ({ analysis, claimed: true }))
+    videoAnalysisClaims.set(key, claim)
+    try {
+      return await claim
+    } finally {
+      videoAnalysisClaims.delete(key)
+    }
+  }
+
+  const executeReferenceTool = async (input: {
+    call: ReferenceAnalysisToolCall
+    task: PlayableTaskRecord
+    userId: string
+    apiKey: string
+    allowedAssetIds: ReadonlySet<string>
+    cache: Map<string, unknown>
+    budget: { imagesExecuted: boolean; videoExecuted: boolean }
+    abortSignal?: AbortSignal
+  }): Promise<ReferenceImageAnalysis | { status: string; blueprint?: GameplayBlueprint; reason?: string }> => {
+    if (input.call.name === 'inspect_reference_images') {
+      const assetIds = [...new Set(input.call.assetIds)].sort()
+      const cacheKey = JSON.stringify({ name: input.call.name, assetIds })
+      if (input.cache.has(cacheKey)) return input.cache.get(cacheKey) as ReferenceImageAnalysis
+      if (assetIds.some((assetId) => !input.allowedAssetIds.has(assetId))) {
+        return { status: 'unavailable', reason: 'asset_not_attached' }
+      }
+      if (input.budget.imagesExecuted) return { status: 'unavailable', reason: 'budget_exceeded' }
+      if (!dependencies.imageAnalyst) return { status: 'unavailable', reason: 'analysis_unavailable' }
+      const assets = await Promise.all(
+        assetIds.map((assetId) => dependencies.repository.findOwnedAsset(input.task.id, input.userId, assetId)),
+      )
+      if (assets.some((asset) => !asset || asset.slot !== 'referenceImage')) {
+        return { status: 'unavailable', reason: 'asset_unavailable' }
+      }
+      const images = await Promise.all(
+        assets.map(async (asset) => {
+          if (!asset) throw new Error('Reference image is unavailable')
+          const stream = await dependencies.artifactStore.get(asset.storageKey)
+          if (!stream) throw new Error('Reference image is unavailable')
+          return {
+            assetId: asset.id,
+            mimeType: asset.mimeType,
+            bytes: await readAll(stream),
+          }
+        }),
+      )
+      input.budget.imagesExecuted = true
+      const analysis = await dependencies.imageAnalyst.analyze({
+        taskId: input.task.id,
+        apiKey: input.apiKey,
+        prompt: input.task.prompt,
+        images,
+        abortSignal: input.abortSignal,
+      })
+      const result = referenceImageAnalysisSchema.parse(
+        JSON.parse(redactSecrets(JSON.stringify(analysis)).split(input.apiKey).join('[REDACTED]')),
+      )
+      input.cache.set(cacheKey, result)
+      return result
+    }
+
+    const cacheKey = JSON.stringify({ name: input.call.name, assetId: input.call.assetId })
+    if (input.cache.has(cacheKey)) {
+      return input.cache.get(cacheKey) as { status: string; blueprint?: GameplayBlueprint; reason?: string }
+    }
+    if (!input.allowedAssetIds.has(input.call.assetId)) {
+      return { status: 'unavailable', reason: 'asset_not_attached' }
+    }
+    if (input.budget.videoExecuted) return { status: 'unavailable', reason: 'budget_exceeded' }
+    if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
+      return { status: 'unavailable', reason: 'analysis_unavailable' }
+    }
+    const asset = await dependencies.repository.findOwnedAsset(input.task.id, input.userId, input.call.assetId)
+    if (!asset || asset.slot !== 'referenceVideo') return { status: 'unavailable', reason: 'asset_unavailable' }
+    const lockKey = `${input.task.id}:${asset.id}`
+    if (videoToolLocks.has(lockKey)) return { status: 'unavailable', reason: 'analysis_pending' }
+    videoToolLocks.add(lockKey)
+    try {
+      const latest = await dependencies.repository.findLatestVideoAnalysis(input.task.id)
+      if (latest?.assetId === asset.id && latest.status === 'succeeded' && latest.blueprint) {
+        const result = { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(latest.blueprint) }
+        input.cache.set(cacheKey, result)
+        return result
+      }
+      if (latest?.assetId === asset.id && ['pending', 'preprocessing', 'analyzing'].includes(latest.status)) {
+        return { status: 'unavailable', reason: 'analysis_pending' }
+      }
+      const timeoutSignal = AbortSignal.timeout(dependencies.videoToolTimeoutMs ?? 5 * 60 * 1000)
+      const abortSignal = input.abortSignal ? AbortSignal.any([input.abortSignal, timeoutSignal]) : timeoutSignal
+      const claim = await claimVideoAnalysis(input.task.id, asset.id)
+      if (!claim.claimed) {
+        if (claim.analysis.status === 'succeeded' && claim.analysis.blueprint) {
+          return { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(claim.analysis.blueprint) }
+        }
+        return { status: 'unavailable', reason: 'analysis_pending' }
+      }
+      input.budget.videoExecuted = true
+      const analysis = claim.analysis
+      await dependencies.repository.appendEvent({
+        taskId: input.task.id,
+        type: 'video_gameplay_analysis_queued',
+        message: 'Reference video analysis queued',
+      })
+      const blueprint = await runVideoAnalysis({
+        task: input.task,
+        asset,
+        analysis,
+        apiKey: input.apiKey,
+        repository: dependencies.repository,
+        artifactStore: dependencies.artifactStore,
+        preprocessor: dependencies.videoPreprocessor,
+        analyst: dependencies.videoAnalyst,
+        abortSignal,
+      })
+      const result = blueprint
+        ? { status: 'succeeded', blueprint }
+        : { status: 'analysis_failed', reason: 'analysis_failed' }
+      input.cache.set(cacheKey, result)
+      return result
+    } finally {
+      videoToolLocks.delete(lockKey)
+    }
+  }
+
   return {
     async list(request: NextRequest): Promise<Response> {
       const userId = await dependencies.authenticate(request)
@@ -544,9 +794,30 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async message(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      const body = (await request.json().catch(() => undefined)) as { message?: unknown } | undefined
+      const body = (await request.json().catch(() => undefined)) as
+        | { message?: unknown; attachmentIds?: unknown }
+        | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
-      if (!['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(access.task.phase)) {
+      if (
+        body.attachmentIds !== undefined &&
+        (!Array.isArray(body.attachmentIds) ||
+          body.attachmentIds.length > 10 ||
+          body.attachmentIds.some((assetId) => typeof assetId !== 'string'))
+      ) {
+        return jsonError(400, 'Invalid request')
+      }
+      const attachedAssetIds = [...new Set((body.attachmentIds ?? []) as string[])]
+      const attachedAssets = await Promise.all(
+        attachedAssetIds.map((assetId) =>
+          dependencies.repository.findOwnedAsset(access.task.id, access.userId, assetId),
+        ),
+      )
+      if (attachedAssets.some((asset) => !asset)) return jsonError(400, 'Invalid request')
+      if (
+        !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(
+          access.task.phase,
+        )
+      ) {
         return jsonError(409, 'Task phase conflict')
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
@@ -555,6 +826,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
 
       const encoder = new TextEncoder()
       let cancelled = false
+      let stopKeepalive: () => void = () => undefined
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           const enqueue = (event: unknown): boolean => {
@@ -576,18 +848,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             }
           }
           const processing = (async () => {
+            const keepalive = setInterval(
+              () => enqueue({ type: 'keepalive' }),
+              dependencies.requirementStreamKeepaliveMs ?? 15_000,
+            )
+            stopKeepalive = () => clearInterval(keepalive)
             const prompt = safeString(message, [apiKey])
             let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
-              const [history, assets, videoAnalysis] = await Promise.all([
+              const [history, assets, videoAnalysis, builds] = await Promise.all([
                 dependencies.repository.listMessages(access.task.id),
                 dependencies.repository.listAssets(access.task.id, access.userId),
                 dependencies.repository.findLatestVideoAnalysis(access.task.id),
+                dependencies.repository.listBuilds(access.task.id),
               ])
+              const latestReferenceVideo = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
               stage = 'user_message_store'
               await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
               stage = 'agent_reply'
+              const referenceToolCache = new Map<string, unknown>()
+              const referenceToolBudget = { imagesExecuted: false, videoExecuted: false }
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -604,18 +885,40 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
                     : null,
                   assets: assets.map(safeAsset),
+                  attachedAssetIds,
+                  hasArtifact: Boolean(access.task.latestArtifactKey),
+                  pendingRevision: access.task.pendingRevision
+                    ? sanitizeRevisionProposal(access.task.pendingRevision, [apiKey])
+                    : null,
                   gameplayBlueprint:
-                    videoAnalysis?.status === 'succeeded' && videoAnalysis.blueprint
+                    videoAnalysis?.status === 'succeeded' &&
+                    videoAnalysis.blueprint &&
+                    videoAnalysis.assetId === latestReferenceVideo?.id
                       ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
                       : undefined,
                 },
                 {
                   onProgress(progress) {
+                    if ('type' in progress) {
+                      enqueue(toolProgressEvent(progress.type, progress.toolCall.name))
+                      return
+                    }
                     const message = progress.message ? safeString(progress.message, [apiKey]) : undefined
                     const reasoning = progress.reasoning ? safeString(progress.reasoning, [apiKey]) : undefined
                     if (!message && !reasoning) return
                     enqueue({ type: 'assistant_progress', message, reasoning })
                   },
+                  executeTool: (call, toolOptions) =>
+                    executeReferenceTool({
+                      call,
+                      task: access.task,
+                      userId: access.userId,
+                      apiKey,
+                      allowedAssetIds: new Set(attachedAssetIds),
+                      cache: referenceToolCache,
+                      budget: referenceToolBudget,
+                      abortSignal: toolOptions?.abortSignal,
+                    }),
                 },
               )
               if (cancelled) return
@@ -624,7 +927,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (containsExactSecret(JSON.stringify(parsedReply), apiKey)) {
                 throw new Error('Agent reply contains a credential')
               }
-              const validatedReply = sanitizeAgentReply(parsedReply)
+              const validatedReply = sanitizeAgentReply(parsedReply, [apiKey])
               const fallbackBrief =
                 validatedReply.kind === 'informational'
                   ? (access.task.requirementBrief ?? createRequirementBrief())
@@ -655,12 +958,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               }
               if (validatedReply.kind === 'clarification') {
                 stage = 'phase_transition'
-                const transitioned = await dependencies.repository.setDraft(access.task.id, access.userId)
+                const transitioned = access.task.latestArtifactKey
+                  ? await dependencies.repository.clearPendingRevision(access.task.id, access.userId)
+                  : await dependencies.repository.setDraft(access.task.id, access.userId)
                 if (!transitioned) throw new Error('Task phase conflict')
                 await dependencies.repository.appendEvent({
                   taskId: access.task.id,
                   type: 'clarification_requested',
-                  phase: 'draft',
+                  phase: access.task.latestArtifactKey ? 'ready' : 'draft',
                   message: 'Playable requirements need clarification',
                 })
                 enqueue({
@@ -676,6 +981,38 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               }
               const validated = validatedReply.confirmation
               stage = 'phase_transition'
+              if (validatedReply.kind === 'revision') {
+                if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
+                const revision = resolveRevisionProposal({
+                  plan: validatedReply.revision,
+                  builds,
+                  latestArtifactKey: access.task.latestArtifactKey,
+                  id: dependencies.generateId(),
+                })
+                const transitioned = await dependencies.repository.setAwaitingRevision(
+                  access.task.id,
+                  access.userId,
+                  validated,
+                  revision,
+                )
+                if (!transitioned) throw new Error('Task phase conflict')
+                await dependencies.repository.appendEvent({
+                  taskId: access.task.id,
+                  type: 'revision_proposed',
+                  phase: 'awaiting_revision_confirmation',
+                  message: 'Playable revision is ready',
+                })
+                enqueue({
+                  type: 'revision',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  confirmation: validated,
+                  revision,
+                  brief: nextBrief,
+                  tools: validatedReply.tools ?? [],
+                })
+                return
+              }
               const transitioned = await dependencies.repository.setAwaitingConfirmation(
                 access.task.id,
                 access.userId,
@@ -705,6 +1042,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 enqueue({ type: 'error', message: requirementStageFailureMessage(stage) })
               }
             } finally {
+              stopKeepalive()
               close()
             }
           })()
@@ -712,6 +1050,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         },
         async cancel() {
           cancelled = true
+          stopKeepalive()
           await dependencies.agent.cancel(access.task.id).catch(() => undefined)
         },
       })
@@ -752,21 +1091,22 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(428, 'OpenAI key required')
-      const analysis = await dependencies.repository.createVideoAnalysis({
-        id: dependencies.generateId(),
-        taskId: access.task.id,
-        assetId: video.id,
-        pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
-        model: VIDEO_ANALYSIS_MODEL,
-      })
+      const claim = await claimVideoAnalysis(access.task.id, video.id)
+      const analysis = claim.analysis
+      if (!claim.claimed) {
+        return Response.json(
+          { analysis: safeVideoAnalysis(analysis) },
+          { status: analysis.status === 'succeeded' ? 200 : 202 },
+        )
+      }
       await dependencies.repository.appendEvent({
         taskId: access.task.id,
         type: 'video_gameplay_analysis_queued',
         message: 'Reference video analysis queued',
       })
       try {
-        dependencies.schedule(() =>
-          runVideoAnalysis({
+        dependencies.schedule(async () => {
+          await runVideoAnalysis({
             task: access.task,
             asset: video,
             analysis,
@@ -775,8 +1115,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             artifactStore: dependencies.artifactStore,
             preprocessor: dependencies.videoPreprocessor!,
             analyst: dependencies.videoAnalyst!,
-          }),
-        )
+          })
+        })
       } catch {
         await dependencies.repository.failVideoAnalysis(analysis.id, 'schedule_failed')
         return jsonError(500, 'Unable to schedule video analysis')
@@ -787,7 +1127,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async confirm(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      const body = (await request.json().catch(() => undefined)) as { confirmation?: unknown } | undefined
+      const body = (await request.json().catch(() => undefined)) as
+        | { confirmation?: unknown; revisionId?: unknown }
+        | undefined
+      const revision =
+        typeof body?.revisionId === 'string' && access.task.pendingRevision?.id === body.revisionId
+          ? access.task.pendingRevision
+          : undefined
+      if (body?.revisionId !== undefined && !revision) return jsonError(409, 'Revision state conflict')
       const parsed = confirmationProposalSchema.safeParse(body?.confirmation)
       if (!parsed.success) return jsonError(400, 'Invalid confirmation')
       const apiKey = await dependencies.readApiKey(request, access.userId)
@@ -818,6 +1165,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.repository.listAssets(access.task.id, access.userId),
         dependencies.repository.findLatestVideoAnalysis(access.task.id),
       ])
+      const latestReferenceVideo = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
@@ -825,7 +1173,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
 
       const buildId = dependencies.generateId()
-      const claimed = await dependencies.repository.claimBuild(access.task.id, access.userId, sanitized, buildId)
+      const claimed = await dependencies.repository.claimBuild(
+        access.task.id,
+        access.userId,
+        sanitized,
+        buildId,
+        revision,
+      )
       if (!claimed) return jsonError(409, 'Task phase conflict')
       try {
         dependencies.schedule(async () => {
@@ -848,7 +1202,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             artifactStore: dependencies.artifactStore,
             mediaGenerator: dependencies.mediaGenerator,
             gameplayBlueprint:
-              videoAnalysis?.status === 'succeeded' && videoAnalysis.blueprint
+              videoAnalysis?.status === 'succeeded' &&
+              videoAnalysis.blueprint &&
+              videoAnalysis.assetId === latestReferenceVideo?.id
                 ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
                 : undefined,
           })

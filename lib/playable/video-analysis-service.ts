@@ -1,6 +1,6 @@
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
-import { gameplayBlueprintSchema } from './schemas'
+import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
@@ -34,9 +34,10 @@ export interface RunVideoAnalysisInput {
   artifactStore: ArtifactStore
   preprocessor: VideoPreprocessor
   analyst: VideoGameplayAnalyst
+  abortSignal?: AbortSignal
 }
 
-export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<void> {
+export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<GameplayBlueprint | undefined> {
   try {
     await input.repository.updateVideoAnalysisStatus(input.analysis.id, 'preprocessing')
     await input.repository.appendEvent({
@@ -50,6 +51,7 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<vo
       taskId: input.task.id,
       video: await readAll(stream),
       mimeType: input.asset.mimeType,
+      abortSignal: input.abortSignal,
     })
     await input.repository.updateVideoAnalysisStatus(input.analysis.id, 'analyzing')
     await input.repository.appendEvent({
@@ -62,6 +64,7 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<vo
       apiKey: input.apiKey,
       prompt: input.task.prompt,
       video,
+      abortSignal: input.abortSignal,
     })
     const sanitizedBlueprint = gameplayBlueprintSchema.parse(
       JSON.parse(redactSecrets(JSON.stringify(blueprint)).split(input.apiKey).join('[REDACTED]')),
@@ -72,6 +75,7 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<vo
       type: 'video_gameplay_analysis_succeeded',
       message: 'Gameplay blueprint is ready',
     })
+    return sanitizedBlueprint
   } catch {
     console.error('QDAI video gameplay analysis failed')
     await input.repository.failVideoAnalysis(input.analysis.id, 'analysis_failed').catch(() => undefined)

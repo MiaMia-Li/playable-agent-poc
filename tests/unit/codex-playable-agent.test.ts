@@ -64,10 +64,10 @@ const confirmationOutput = {
   message: confirmationReply.message,
   reasoning: confirmationReply.reasoning,
   calls: [
-    { name: 'update_requirement_brief', brief: requirementBrief, request: null, confirmation: null },
-    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null },
-    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null },
-    { name: 'submit_confirmation', brief: null, request: null, confirmation: validProposal },
+    { name: 'update_requirement_brief', brief: requirementBrief, request: null, confirmation: null, revision: null },
+    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
+    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+    { name: 'submit_confirmation', brief: null, request: null, confirmation: validProposal, revision: null },
   ],
 } as const
 
@@ -235,7 +235,12 @@ describe('CodexPlayableAgent', () => {
 
   it('uses the direct Responses API with low-latency structured output and no Sandbox', async () => {
     const apiKey = 'sk-unit-test-only'
-    const input: AgentInput = { taskId: 'task-1', prompt: `中心碰撞 ${apiKey}`, apiKey }
+    const input: AgentInput = {
+      taskId: 'task-1',
+      prompt: `中心碰撞 ${apiKey}`,
+      apiKey,
+      attachedAssetIds: ['current-image'],
+    }
     const agent = new CodexPlayableAgent()
     const onProgress = vi.fn()
 
@@ -263,9 +268,83 @@ describe('CodexPlayableAgent', () => {
       strictJsonSchema: true,
     })
     expect(settings.prompt).not.toContain(apiKey)
+    expect(settings.prompt).toContain('"attachedAssetIds":["current-image"]')
     expect(onProgress).toHaveBeenCalledWith({ message: confirmationOutput.message, reasoning: undefined })
     expect(harnessMocks.createVercelSandbox).not.toHaveBeenCalled()
     expect(harnessMocks.createSession).not.toHaveBeenCalled()
+  })
+
+  it('executes reference analysis tools and supplies their structured results to the next model step', async () => {
+    const toolCall = {
+      name: 'inspect_reference_images' as const,
+      assetIds: ['image-1', 'image-2'],
+      assetId: null,
+    }
+    responseMocks.streamText
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'tool_calls',
+          message: null,
+          reasoning: '需要先分析参考图片。',
+          toolCalls: [toolCall, toolCall],
+          plan: null,
+        }),
+      } as never)
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'terminal',
+          message: null,
+          reasoning: '分析结果足以完成决策。',
+          toolCalls: [],
+          plan: confirmationOutput,
+        }),
+      } as never)
+    const executeTool = vi.fn(async () => ({ observations: ['蓝色海洋主题'], confidence: 0.9 }))
+    const onProgress = vi.fn()
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'task-analysis-loop', prompt: '参考这些图片制作游戏', apiKey: 'sk-unit-test-only' },
+        { executeTool, onProgress },
+      ),
+    ).resolves.toMatchObject(confirmationReply)
+
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(executeTool).toHaveBeenCalledWith(toolCall, {
+      abortSignal: expect.any(AbortSignal),
+    })
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
+    const secondPrompt = (responseMocks.streamText.mock.calls[1][0] as { prompt: string }).prompt
+    expect(secondPrompt).toContain('"tool":"inspect_reference_images"')
+    expect(secondPrompt).toContain('"observations":["蓝色海洋主题"]')
+    expect(onProgress).toHaveBeenCalledWith({ type: 'tool_started', toolCall })
+    expect(onProgress).toHaveBeenCalledWith({ type: 'tool_completed', toolCall })
+  })
+
+  it('fails analysis requests safely when no tool executor is available', async () => {
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve({
+        kind: 'tool_calls',
+        message: null,
+        reasoning: '需要先分析视频。',
+        toolCalls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1' }],
+        plan: null,
+      }),
+    } as never)
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'task-analysis-without-executor',
+        prompt: '分析参考视频',
+        apiKey: 'sk-unit-test-only',
+      }),
+    ).rejects.toMatchObject({ code: 'output_invalid' })
   })
 
   it('rejects invalid structured output without silently repairing it', async () => {

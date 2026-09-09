@@ -4,9 +4,8 @@ import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
 import { Metadata } from 'next'
 import { isLocalDemoMode, localDemoRuntime, localDemoSession } from '@/lib/playable/local-demo-prototype'
 import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/playable/local-codex-runtime'
-import { playableAgentReplySchema } from '@/lib/playable/schemas'
-import type { ConversationMessage } from '@/components/playable/chat-workspace'
 import { publicPlayableSession } from '@/lib/playable/public-access'
+import { restorePlayableConversation } from '@/lib/playable/conversation'
 
 interface TaskPageProps {
   params: Promise<{
@@ -23,33 +22,13 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets, videoAnalysis] = await Promise.all([
+  const [storedMessages, initialAssets, videoAnalysis, builds] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
     repository.findLatestVideoAnalysis(task.id),
+    repository.listBuilds(task.id),
   ])
-  const initialConversation = storedMessages.flatMap((stored): ConversationMessage[] => {
-    if (stored.role === 'user') {
-      return [{ id: stored.id, role: 'user', content: stored.content, status: 'sent' }]
-    }
-    try {
-      const parsed = playableAgentReplySchema.safeParse(JSON.parse(stored.content))
-      if (!parsed.success) return []
-      return [
-        {
-          id: stored.id,
-          role: 'assistant',
-          content: parsed.data.message,
-          reasoning: parsed.data.reasoning,
-          options: parsed.data.kind === 'clarification' ? parsed.data.options : undefined,
-          request: parsed.data.kind === 'clarification' ? parsed.data.request : undefined,
-          status: 'sent',
-        },
-      ]
-    } catch {
-      return []
-    }
-  })
+  const initialConversation = restorePlayableConversation(storedMessages, task.pendingRevision, builds)
 
   return (
     <PlayableWorkspace
@@ -57,6 +36,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialPrompt={task.prompt}
       initialPhase={task.phase}
       initialProposal={task.phase === 'draft' ? undefined : (task.confirmation ?? undefined)}
+      initialRevision={task.pendingRevision ?? undefined}
       initialBrief={task.requirementBrief ?? undefined}
       initialConversation={initialConversation}
       initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size }) => ({

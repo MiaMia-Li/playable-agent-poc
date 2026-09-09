@@ -93,4 +93,77 @@ describe('PlayableHome reference uploads', () => {
     expect(screen.getByRole('button', { name: '新建试玩' })).toBeDisabled()
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
+
+  it('reuses the created task and skips successful uploads on an unchanged retry', async () => {
+    let failedOnce = false
+    let taskCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+      if (url === '/api/playable-tasks' && init?.method === 'POST') {
+        taskCount += 1
+        return Response.json({ task: { id: `task-${taskCount}` } }, { status: 201 })
+      }
+      const filename = ((init?.body as FormData).get('file') as File).name
+      if (filename === 'retry.png' && !failedOnce) {
+        failedOnce = true
+        return new Response(null, { status: 500 })
+      }
+      return Response.json({ asset: { id: filename } }, { status: 201 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '原样重试' } })
+    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), {
+      target: {
+        files: [
+          new File(['ok'], 'success.png', { type: 'image/png' }),
+          new File(['retry'], 'retry.png', { type: 'image/png' }),
+        ],
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+    expect(await screen.findByText('参考素材上传失败')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/task-1'))
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => String(url) === '/api/playable-tasks' && init?.method),
+    ).toHaveLength(1)
+    const uploads = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/assets'))
+    expect(uploads.map(([, init]) => ((init?.body as FormData).get('file') as File).name)).toEqual([
+      'success.png',
+      'retry.png',
+      'retry.png',
+    ])
+  })
+
+  it('does not reuse a failed task after the prompt changes', async () => {
+    let taskCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+      if (String(input) === '/api/playable-tasks') {
+        taskCount += 1
+        return Response.json({ task: { id: `task-${taskCount}` } }, { status: 201 })
+      }
+      return new Response(null, { status: 500 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '第一版' } })
+    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), {
+      target: { files: [new File(['x'], 'reference.png', { type: 'image/png' })] },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+    expect(await screen.findByText('参考素材上传失败')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '第二版' } })
+    fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+    await waitFor(() => expect(taskCount).toBe(2))
+  })
 })
