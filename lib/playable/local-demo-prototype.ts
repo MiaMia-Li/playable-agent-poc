@@ -13,7 +13,13 @@ import type {
   PlayableAssetManifest,
   PlayableBuildAsset,
 } from './playable-agent-adapter'
-import type { ConfirmationProposal, PlayableAgentReply, PlayableTaskPhase, RequirementBrief } from './schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableAgentReply,
+  PlayableTaskPhase,
+  RequirementBrief,
+} from './schemas'
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import type {
@@ -22,6 +28,7 @@ import type {
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
+  PlayableVideoAnalysisRecord,
 } from './task-api'
 import type { PlayableModeId } from './types'
 import { createRequirementBrief } from './requirement-tools'
@@ -498,6 +505,13 @@ class LocalDemoAgent implements PlayableAgentAdapter {
       const assets = input.assets ?? []
       const assetManifest = createAssetSourceManifest(input.confirmation, assets)
       await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation), 'utf8')
+      if (input.gameplayBlueprint) {
+        await writeFile(
+          path.join(workspace, 'gameplay-blueprint.json'),
+          JSON.stringify(input.gameplayBlueprint),
+          'utf8',
+        )
+      }
       for (const asset of assets) {
         const manifestAsset = assetManifest.assets.find((candidate) => candidate.id === asset.id)
         if (!manifestAsset) throw new Error('Playable asset manifest is incomplete')
@@ -569,6 +583,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
   private readonly assets = new Map<string, PlayableAsset[]>()
   private readonly messages = new Map<string, PlayableTaskMessageRecord[]>()
   private readonly builds = new Map<string, PlayableBuildRecord[]>()
+  private readonly videoAnalyses = new Map<string, PlayableVideoAnalysisRecord[]>()
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -742,6 +757,52 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       (this.assets.get(taskId) ?? []).filter((candidate) => candidate.id !== assetId),
     )
     return asset
+  }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      status: 'pending',
+      blueprint: null,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: null,
+    }
+    const analyses = this.videoAnalyses.get(input.taskId) ?? []
+    analyses.push(analysis)
+    this.videoAnalyses.set(input.taskId, analyses)
+    return analysis
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses.get(taskId)?.at(-1)
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (analysis) analysis.status = status
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'succeeded'
+    analysis.blueprint = structuredClone(blueprint)
+    analysis.completedAt = new Date()
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'failed'
+    analysis.errorCode = errorCode
+    analysis.completedAt = new Date()
   }
 }
 

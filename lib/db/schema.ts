@@ -470,6 +470,34 @@ export const playableTaskAssets = pgTable(
   }),
 )
 
+export const playableVideoAnalyses = pgTable(
+  'playable_video_analyses',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    assetId: text('asset_id')
+      .notNull()
+      .references(() => playableTaskAssets.id, { onDelete: 'cascade' }),
+    status: text('status', {
+      enum: ['pending', 'preprocessing', 'analyzing', 'succeeded', 'failed'],
+    })
+      .notNull()
+      .default('pending'),
+    pipelineVersion: text('pipeline_version').notNull(),
+    model: text('model').notNull(),
+    blueprint: jsonb('blueprint'),
+    errorCode: text('error_code'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    completedAt: timestamp('completed_at'),
+  },
+  (table) => ({
+    taskCreatedIndex: index('playable_video_analyses_task_created_idx').on(table.taskId, table.createdAt),
+    assetPipelineIndex: index('playable_video_analyses_asset_pipeline_idx').on(table.assetId, table.pipelineVersion),
+  }),
+)
+
 // Settings table - key-value pairs for overriding environment variables per user
 export const settings = pgTable(
   'settings',

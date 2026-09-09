@@ -3,12 +3,16 @@ import type { ArtifactStore } from './artifact-store'
 import { PlayableAgentError, type PlayableAgentAdapter, type PlayableBuildAsset } from './playable-agent-adapter'
 import {
   confirmationProposalSchema,
+  gameplayBlueprintSchema,
   playableAgentReplySchema,
   requirementBriefSchema,
+  videoAnalysisStatusSchema,
   type ConfirmationProposal,
+  type GameplayBlueprint,
   type PlayableAgentReply,
   type PlayableTaskPhase,
   type RequirementBrief,
+  type VideoAnalysisStatus,
 } from './schemas'
 import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
@@ -17,6 +21,10 @@ import { createAssetSourceManifest, createProductionConfig } from './production-
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { isPlayableResourceAssetSlot } from './asset-policy'
 import { createRequirementBrief } from './requirement-tools'
+import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
+import { VIDEO_ANALYSIS_MODEL, VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
+import { runVideoAnalysis } from './video-analysis-service'
+import type { VideoPreprocessor } from './video-preprocessor'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -48,6 +56,19 @@ export interface PlayableTaskMessageRecord {
   role: 'user' | 'agent'
   content: string
   createdAt: Date
+}
+
+export interface PlayableVideoAnalysisRecord {
+  id: string
+  taskId: string
+  assetId: string
+  status: VideoAnalysisStatus
+  pipelineVersion: string
+  model: string
+  blueprint: GameplayBlueprint | null
+  errorCode: string | null
+  createdAt: Date
+  completedAt: Date | null
 }
 
 export type PlayableBuildStatus = 'building' | 'failed' | 'succeeded'
@@ -97,6 +118,17 @@ export interface PlayableTaskRepository {
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
   findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
   deleteOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
+  createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord>
+  findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined>
+  updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
+  completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void>
+  failVideoAnalysis(id: string, errorCode: string): Promise<void>
 }
 
 export type BackgroundScheduler = (work: () => Promise<void>) => void
@@ -111,6 +143,8 @@ interface HandlerDependencies {
   schedule: BackgroundScheduler
   buildStartedEventTimeoutMs?: number
   mediaGenerator?: MediaGenerator
+  videoAnalyst?: VideoGameplayAnalyst
+  videoPreprocessor?: VideoPreprocessor
   generateId(): string
 }
 
@@ -129,6 +163,7 @@ interface ConfirmedBuildDependencies {
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
   mediaGenerator?: MediaGenerator
+  gameplayBlueprint?: GameplayBlueprint
 }
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -157,6 +192,19 @@ function safeTaskState(task: PlayableTaskRecord) {
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
     requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
     confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
+  }
+}
+
+function safeVideoAnalysis(analysis: PlayableVideoAnalysisRecord | undefined) {
+  if (!analysis) return null
+  return {
+    id: analysis.id,
+    assetId: analysis.assetId,
+    status: videoAnalysisStatusSchema.parse(analysis.status),
+    blueprint: analysis.blueprint ? gameplayBlueprintSchema.parse(analysis.blueprint) : null,
+    errorCode: analysis.errorCode,
+    createdAt: analysis.createdAt.toISOString(),
+    completedAt: analysis.completedAt?.toISOString() ?? null,
   }
 }
 
@@ -408,6 +456,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
+      ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
     stage = 'validation'
     if (!result.validation.passed || Object.values(result.validation.gates).includes('failed')) {
@@ -431,6 +480,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     await artifactStore.put(`${prefix}/production-config.json`, JSON.stringify(productionConfig), 'application/json')
     await artifactStore.put(`${prefix}/asset-manifest.json`, JSON.stringify(assetManifest), 'application/json')
     await artifactStore.put(`${prefix}/validation-report.json`, JSON.stringify(validationReport), 'application/json')
+    if (dependencies.gameplayBlueprint) {
+      await artifactStore.put(
+        `${prefix}/gameplay-blueprint.json`,
+        JSON.stringify(dependencies.gameplayBlueprint),
+        'application/json',
+      )
+    }
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
 
     stage = 'publish'
@@ -524,9 +580,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
-              const [history, assets] = await Promise.all([
+              const [history, assets, videoAnalysis] = await Promise.all([
                 dependencies.repository.listMessages(access.task.id),
                 dependencies.repository.listAssets(access.task.id, access.userId),
+                dependencies.repository.findLatestVideoAnalysis(access.task.id),
               ])
               stage = 'user_message_store'
               await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
@@ -547,6 +604,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
                     : null,
                   assets: assets.map(safeAsset),
+                  gameplayBlueprint:
+                    videoAnalysis?.status === 'succeeded' && videoAnalysis.blueprint
+                      ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
+                      : undefined,
                 },
                 {
                   onProgress(progress) {
@@ -663,6 +724,66 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       })
     },
 
+    async analysis(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      const latest = await dependencies.repository.findLatestVideoAnalysis(access.task.id)
+      if (request.method === 'GET') {
+        return Response.json(
+          { analysis: safeVideoAnalysis(latest) },
+          { headers: { 'Cache-Control': 'private, no-store' } },
+        )
+      }
+      if (request.method !== 'POST') return jsonError(405, 'Method not allowed')
+      if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
+        return jsonError(503, 'Video analysis is unavailable')
+      }
+      const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
+      const video = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
+      if (!video) return jsonError(404, 'Reference video not found')
+      if (
+        latest?.assetId === video.id &&
+        ['pending', 'preprocessing', 'analyzing', 'succeeded'].includes(latest.status)
+      ) {
+        return Response.json(
+          { analysis: safeVideoAnalysis(latest) },
+          { status: latest.status === 'succeeded' ? 200 : 202 },
+        )
+      }
+      const apiKey = await dependencies.readApiKey(request, access.userId)
+      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      const analysis = await dependencies.repository.createVideoAnalysis({
+        id: dependencies.generateId(),
+        taskId: access.task.id,
+        assetId: video.id,
+        pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+        model: VIDEO_ANALYSIS_MODEL,
+      })
+      await dependencies.repository.appendEvent({
+        taskId: access.task.id,
+        type: 'video_gameplay_analysis_queued',
+        message: 'Reference video analysis queued',
+      })
+      try {
+        dependencies.schedule(() =>
+          runVideoAnalysis({
+            task: access.task,
+            asset: video,
+            analysis,
+            apiKey,
+            repository: dependencies.repository,
+            artifactStore: dependencies.artifactStore,
+            preprocessor: dependencies.videoPreprocessor!,
+            analyst: dependencies.videoAnalyst!,
+          }),
+        )
+      } catch {
+        await dependencies.repository.failVideoAnalysis(analysis.id, 'schedule_failed')
+        return jsonError(500, 'Unable to schedule video analysis')
+      }
+      return Response.json({ analysis: safeVideoAnalysis(analysis) }, { status: 202 })
+    },
+
     async confirm(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
@@ -693,7 +814,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (needsGeneratedMedia && !mediaApiKey) {
         return jsonError(428, 'OpenAI key required for AI media generation')
       }
-      const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
+      const [assets, videoAnalysis] = await Promise.all([
+        dependencies.repository.listAssets(access.task.id, access.userId),
+        dependencies.repository.findLatestVideoAnalysis(access.task.id),
+      ])
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
@@ -723,6 +847,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             agent: dependencies.agent,
             artifactStore: dependencies.artifactStore,
             mediaGenerator: dependencies.mediaGenerator,
+            gameplayBlueprint:
+              videoAnalysis?.status === 'succeeded' && videoAnalysis.blueprint
+                ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
+                : undefined,
           })
         })
       } catch {
@@ -830,6 +958,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           key: `${prefix}/validation-report.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'validation-report.json',
+        },
+        blueprint: {
+          key: `${prefix}/gameplay-blueprint.json`,
+          contentType: 'application/json; charset=utf-8',
+          filename: 'gameplay-blueprint.json',
         },
       } as const
       if (!kind || !(kind in artifacts)) return jsonError(404, 'Not found')

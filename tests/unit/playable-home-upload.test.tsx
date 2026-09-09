@@ -83,7 +83,7 @@ describe('PlayableHome reference uploads', () => {
       target: {
         files: [
           new File(['svg'], 'unsafe.svg', { type: 'image/svg+xml' }),
-          new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'large.mp4', { type: 'video/mp4' }),
+          new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }),
         ],
       },
     })

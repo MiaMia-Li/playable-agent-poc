@@ -1,4 +1,4 @@
-import type { ConfirmationProposal, PlayableAgentReply, RequirementBrief } from './schemas'
+import type { ConfirmationProposal, GameplayBlueprint, PlayableAgentReply, RequirementBrief } from './schemas'
 import type { PlayableResourceAssetSlot } from './asset-policy'
 import type { SafePlayableAsset } from './task-assets'
 
@@ -62,6 +62,7 @@ export interface AgentInput {
   confirmation?: ConfirmationProposal | null
   brief?: RequirementBrief | null
   assets?: SafePlayableAsset[]
+  gameplayBlueprint?: GameplayBlueprint
 }
 
 export interface AgentReplyProgress {
@@ -91,6 +92,7 @@ export interface ConfirmedBuildInput {
   apiKey: string
   confirmation: ConfirmationProposal
   assets?: PlayableBuildAsset[]
+  gameplayBlueprint?: GameplayBlueprint
 }
 
 export interface BuildResult {

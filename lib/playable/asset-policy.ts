@@ -14,6 +14,8 @@ export type PlayableReferenceAssetSlot = (typeof playableReferenceAssetSlots)[nu
 export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
 
 export const MAX_ASSET_BYTES = 4 * 1024 * 1024
+export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
 export const MAX_HOME_ATTACHMENTS = 6
 export const MAX_ASSETS_PER_SLOT = 8
 export const MAX_TASK_ASSETS = 30
@@ -46,6 +48,10 @@ export function playableAssetAccept(slot: PlayableAssetSlot): string {
 
 export function isMimeTypeAllowedForSlot(slot: PlayableAssetSlot, mimeType: string): boolean {
   return policies[slot].includes(mimeType)
+}
+
+export function maxAssetBytesForSlot(slot: PlayableAssetSlot): number {
+  return slot === 'referenceVideo' ? MAX_REFERENCE_VIDEO_BYTES : MAX_ASSET_BYTES
 }
 
 export function referenceSlotForMimeType(mimeType: string): PlayableReferenceAssetSlot | undefined {

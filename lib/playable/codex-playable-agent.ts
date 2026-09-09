@@ -31,7 +31,8 @@ const CODEX_INSTRUCTIONS = [
   'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the four registered gameplay modes as concise selectable options.',
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
   'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
-  'Uploaded referenceImage and referenceVideo entries provide metadata only in this POC. You may acknowledge their filenames, but never claim to have inspected their visual or audio content.',
+  'Raw uploaded referenceImage and referenceVideo entries provide metadata only. You may acknowledge their filenames, but never claim to have inspected their visual or audio content directly.',
+  'When a QDAI gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
   'For clarification output, set confirmation to null and provide one to six options. For confirmation output, set options to an empty array and provide the complete confirmation object.',
   'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by a registered mode. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
   'If the core input model, state machine, or win/loss rules cannot be represented by a registered mode, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
@@ -100,6 +101,7 @@ async function createProposal(
     currentConfirmation: input.confirmation ?? null,
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
+    gameplayBlueprint: input.gameplayBlueprint ?? null,
     capabilities: playableCapabilitiesForAgent(),
     latestUserMessage: input.prompt,
   }
@@ -185,7 +187,7 @@ async function executeBuildAgent(
       prompt:
         route === 'freeform'
           ? [
-              'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+              'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
               'The confirmed route is freeform because no registered template can express the requested core gameplay.',
               'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
               'Produce one offline responsive Canvas HTML under 5 MiB with no external resources.',
@@ -193,8 +195,8 @@ async function executeBuildAgent(
               'Run the freeform validation command before completing.',
             ].join('\n')
           : route === 'approximate'
-            ? 'Build the selected registered mode as a baseline from confirmed-config.json and asset-manifest.json, then implement every confirmed routing difference and gameplay requirement in output.html. Preserve the mode runtime contract and pass its behavioral test.'
-            : 'Build the approved playable from confirmed-config.json and asset-manifest.json, using only this workspace.',
+            ? 'Build the selected registered mode as a baseline from confirmed-config.json and asset-manifest.json, using gameplay-blueprint.json as observational evidence when present. Then implement every confirmed routing difference and gameplay requirement in output.html. Preserve the mode runtime contract and pass its behavioral test.'
+            : 'Build the approved playable from confirmed-config.json and asset-manifest.json, using gameplay-blueprint.json as observational evidence when present and staying inside this workspace.',
       abortSignal: input.abortSignal,
     })
   } finally {

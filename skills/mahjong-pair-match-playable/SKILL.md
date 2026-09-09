@@ -42,7 +42,7 @@ After the gameplay route is known, read [references/configuration-checklist.md](
 - Label each resource as `用户上传`, `内置默认`, or `待上传` and show the exact file or proposed treatment.
 - When no assets are supplied, propose bundled defaults rather than asking a chain of asset questions. Tell the user they may upload replacements before confirming.
 - AI media generation is disabled in the current POC. Keep its UI action disabled, never return `待生成`, and offer bundled defaults or local upload instead.
-- Homepage and confirmation-stage `referenceImage`/`referenceVideo` attachments are metadata-only context in the current POC. Acknowledge their filenames when useful, but never claim to have inspected their contents and never treat them as production assets.
+- Raw `referenceImage`/`referenceVideo` attachments remain metadata-only context for this Skill and are never production assets. When `gameplay-blueprint.json` is present, it contains QDAI's timestamped observations from a separately analyzed reference video. Use that blueprint as evidence for gameplay behavior, preserve its uncertainties, and let the confirmed configuration override it whenever they differ.
 - For an included mode, keep its encoded gameplay defaults unless the user overrides them.
 - Ask the user to approve or amend the whole table once. Do not start implementation before that approval. Do not reintroduce the old eight-stage confirmation sequence.
 

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SQL } from 'drizzle-orm'
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
-import { playableTaskAssets, playableTaskBuilds, playableTaskEvents } from '@/lib/db/schema'
+import { playableTaskAssets, playableTaskBuilds, playableTaskEvents, playableVideoAnalyses } from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -145,5 +145,18 @@ describe('playable task asset storage', () => {
     const index = config.indexes.find((candidate) => candidate.config.name === 'playable_task_assets_task_slot_idx')
     expect(index?.config.columns.map((column) => (column as { name?: string }).name)).toEqual(['task_id', 'slot'])
     expect(config.columns.find((column) => column.name === 'storage_key')?.isUnique).toBe(true)
+  })
+})
+
+describe('playable video analysis storage', () => {
+  it('indexes analysis history by task and source video pipeline', () => {
+    const config = getTableConfig(playableVideoAnalyses)
+    expect(config.foreignKeys).toHaveLength(2)
+    expect(config.indexes.map((index) => index.config.name)).toEqual(
+      expect.arrayContaining([
+        'playable_video_analyses_task_created_idx',
+        'playable_video_analyses_asset_pipeline_idx',
+      ]),
+    )
   })
 })

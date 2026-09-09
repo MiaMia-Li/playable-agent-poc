@@ -7,9 +7,15 @@ import {
   type PlayableBuildRecord,
   type PlayableTaskRecord,
   type PlayableTaskRepository,
+  type PlayableVideoAnalysisRecord,
 } from '@/lib/playable/task-api'
 import { PrivateVercelArtifactStore, type ArtifactStore, type PrivateBlobClient } from '@/lib/playable/artifact-store'
-import type { ConfirmationProposal, PlayableAgentReply, RequirementBrief } from '@/lib/playable/schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableAgentReply,
+  RequirementBrief,
+} from '@/lib/playable/schemas'
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
@@ -44,6 +50,27 @@ const confirmationReply: PlayableAgentReply = {
   confirmation,
 }
 
+const gameplayBlueprint: GameplayBlueprint = {
+  version: 1,
+  summary: '点击相同目标后消除。',
+  orientation: 'portrait',
+  controls: [
+    { value: '点击', confidence: 0.9, evidence: [{ startSeconds: 1, endSeconds: 2, observation: '发生点击' }] },
+  ],
+  sceneStructure: { value: '网格', confidence: 0.9, evidence: [] },
+  entities: [],
+  coreLoop: { value: '点击并消除相同目标', confidence: 0.9, evidence: [] },
+  stateTransitions: [{ value: '目标消失', confidence: 0.9, evidence: [] }],
+  objective: { value: '清空目标', confidence: 0.8, evidence: [] },
+  failureConditions: [],
+  progression: [],
+  tutorial: [],
+  endCard: null,
+  visualStyle: '卡通风格',
+  uncertainties: [],
+  overallConfidence: 0.88,
+}
+
 type EventRecord = {
   id: string
   taskId: string
@@ -70,6 +97,7 @@ class MemoryRepository implements PlayableTaskRepository {
   latestAssignments: string[] = []
   assets: PlayableAsset[] = []
   builds: PlayableBuildRecord[] = []
+  videoAnalyses: PlayableVideoAnalysisRecord[] = []
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -251,6 +279,50 @@ class MemoryRepository implements PlayableTaskRepository {
     if (index < 0) return undefined
     return this.assets.splice(index, 1)[0]
   }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      status: 'pending',
+      blueprint: null,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: null,
+    }
+    this.videoAnalyses.push(analysis)
+    return analysis
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses.filter((analysis) => analysis.taskId === taskId).at(-1)
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (analysis) analysis.status = status
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'succeeded'
+    analysis.blueprint = blueprint
+    analysis.completedAt = new Date()
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'failed'
+    analysis.errorCode = errorCode
+    analysis.completedAt = new Date()
+  }
 }
 
 function createHarness() {
@@ -297,6 +369,14 @@ function createHarness() {
       artifacts.delete(key)
     }),
   }
+  const videoPreprocessor = {
+    preprocess: vi.fn(async () => ({
+      durationSeconds: 3,
+      sampleRate: 1,
+      frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
+    })),
+  }
+  const videoAnalyst = { analyze: vi.fn(async () => gameplayBlueprint) }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
   let mediaApiKey: string | undefined = 'sk-test-media-secret'
@@ -307,6 +387,8 @@ function createHarness() {
     repository,
     agent,
     artifactStore,
+    videoPreprocessor,
+    videoAnalyst,
     schedule: scheduler,
     buildStartedEventTimeoutMs: 10,
     generateId: (() => {
@@ -320,6 +402,8 @@ function createHarness() {
     scheduled,
     agent,
     artifactStore,
+    videoPreprocessor,
+    videoAnalyst,
     artifacts,
     handlers,
     setAuthenticatedUser(value: string | undefined) {
@@ -355,12 +439,52 @@ describe('playable task API', () => {
       harness.handlers.list(request('/api/playable-tasks')),
       harness.handlers.create(request('/api/playable-tasks', 'POST', { prompt: 'game' })),
       harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', { message: 'hello' }), context),
+      harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context),
       harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), context),
       harness.handlers.events(request('/api/playable-tasks/owned/events'), context),
       harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), context),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401])
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401])
+  })
+
+  it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
+    const video: PlayableAsset = {
+      id: 'video-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'private-video',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const queued = await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST'), context)
+
+    expect(queued.status).toBe(202)
+    expect(harness.scheduled).toHaveLength(1)
+    await harness.scheduled[0]()
+    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    await expect(harness.repository.findLatestVideoAnalysis('owned')).resolves.toMatchObject({
+      status: 'succeeded',
+      blueprint: gameplayBlueprint,
+    })
+
+    const messageResponse = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '参考视频制作试玩' }),
+      context,
+    )
+    await messageResponse.text()
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ gameplayBlueprint }),
+      expect.any(Object),
+    )
   })
 
   it('creates an authenticated task in draft without returning private fields', async () => {

@@ -5,7 +5,13 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowRight, Loader2, Paperclip, Plus, Sparkles } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
-import type { ConfirmationProposal, PlayableTaskPhase, RequirementBrief } from '@/lib/playable/schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableTaskPhase,
+  RequirementBrief,
+  VideoAnalysisStatus,
+} from '@/lib/playable/schemas'
 import { User } from '@/components/auth/user'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,9 +23,9 @@ import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
 import { AssetPreviewList } from './asset-preview-list'
 import {
-  MAX_ASSET_BYTES,
   MAX_HOME_ATTACHMENTS,
   PLAYABLE_REFERENCE_ACCEPT,
+  maxAssetBytesForSlot,
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
@@ -39,6 +45,8 @@ interface PlayableWorkspaceProps {
   publicAccess?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
+  initialVideoAnalysisStatus?: VideoAnalysisStatus
+  initialGameplayBlueprint?: GameplayBlueprint
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -68,6 +76,8 @@ export function PlayableWorkspace({
   publicAccess = false,
   initialConversation = [],
   initialAssets = [],
+  initialVideoAnalysisStatus,
+  initialGameplayBlueprint,
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
@@ -76,6 +86,11 @@ export function PlayableWorkspace({
   const [brief, setBrief] = useState(initialBrief)
   const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
   const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
+  const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
+    initialVideoAnalysisStatus,
+  )
+  const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
+  const hasReferenceVideo = initialAssets.some((asset) => asset.slot === 'referenceVideo')
 
   useEffect(() => {
     if (initialApiKeyConfigured !== undefined) return
@@ -97,6 +112,62 @@ export function PlayableWorkspace({
       active = false
     }
   }, [initialApiKeyConfigured])
+
+  useEffect(() => {
+    if (!hasReferenceVideo || localDemo || apiKeyConfigured !== true || videoAnalysisStatus) return
+    let active = true
+    void fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, { method: 'POST' })
+      .then(async (response) => {
+        if (response.status === 428) {
+          setKeyDialogOpen(true)
+          return undefined
+        }
+        if (!response.ok) throw new Error('Unable to start video analysis')
+        return (await response.json()) as {
+          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
+        }
+      })
+      .then((body) => {
+        if (!active || !body?.analysis) return
+        setVideoAnalysisStatus(body.analysis.status)
+        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+      })
+      .catch(() => {
+        if (active) setVideoAnalysisStatus('failed')
+      })
+    return () => {
+      active = false
+    }
+  }, [apiKeyConfigured, hasReferenceVideo, localDemo, taskId, videoAnalysisStatus])
+
+  useEffect(() => {
+    if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
+    let active = true
+    let timeout: number | undefined
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, {
+          cache: 'no-store',
+        })
+        if (!response.ok) return
+        const body = (await response.json()) as {
+          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
+        }
+        if (!active || !body.analysis) return
+        setVideoAnalysisStatus(body.analysis.status)
+        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+      } catch {
+        // Keep polling after transient analysis status failures.
+      } finally {
+        if (active) timeout = window.setTimeout(poll, 2000)
+      }
+    }
+    void poll()
+    return () => {
+      active = false
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }, [taskId, videoAnalysisStatus])
 
   useEffect(() => {
     if (!['building', 'validating'].includes(phase)) return
@@ -176,9 +247,15 @@ export function PlayableWorkspace({
           onBrief={setBrief}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
-          autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
+          autoSubmitInitialPrompt={
+            apiKeyConfigured === true &&
+            initialConversation.length === 0 &&
+            (!hasReferenceVideo || localDemo || videoAnalysisStatus === 'succeeded' || videoAnalysisStatus === 'failed')
+          }
           initialConversation={initialConversation}
           initialAssets={initialAssets}
+          videoAnalysisStatus={videoAnalysisStatus}
+          gameplayBlueprint={gameplayBlueprint}
         />
         <PlayablePreview
           taskId={taskId}
@@ -317,12 +394,13 @@ export function PlayableHome({
         setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
         break
       }
-      if (!referenceSlotForMimeType(file.type)) {
+      const slot = referenceSlotForMimeType(file.type)
+      if (!slot) {
         setError('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
         continue
       }
-      if (file.size <= 0 || file.size > MAX_ASSET_BYTES) {
-        setError('单个参考素材不能超过 4 MiB')
+      if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
+        setError(slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB')
         continue
       }
       const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined

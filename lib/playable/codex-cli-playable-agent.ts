@@ -37,7 +37,7 @@ export function requirementPlanOutputSchema(): Record<string, unknown> {
   return codexOutputSchema(requirementAgentPlanSchema)
 }
 
-interface CodexInvocation {
+export interface CodexInvocation {
   workspace: string
   prompt: string
   schema: Record<string, unknown>
@@ -45,6 +45,7 @@ interface CodexInvocation {
   sandbox: 'read-only' | 'workspace-write'
   reasoningEffort: 'low' | 'medium'
   onEvent?: (event: CodexJsonEvent) => void
+  images?: string[]
 }
 
 interface CodexJsonEvent {
@@ -103,6 +104,7 @@ export async function invokeCodexCli(input: CodexInvocation): Promise<unknown> {
           '--json',
           '--color',
           'never',
+          ...(input.images ?? []).flatMap((image) => ['--image', image]),
           '-',
         ],
         {
@@ -168,6 +170,7 @@ export function createRequirementAgentPrompt(input: AgentInput): string {
       currentConfirmation: input.confirmation ?? null,
       requirementBrief: input.brief ?? null,
       uploadedAssets: input.assets ?? [],
+      gameplayBlueprint: input.gameplayBlueprint ?? null,
       capabilities: playableCapabilitiesForAgent(),
       latestUserMessage: input.prompt,
     }),
@@ -184,6 +187,13 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'playable-codex-work-'))
   await cp(skillRoot, workspace, { recursive: true })
   await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation, null, 2), 'utf8')
+  if (input.gameplayBlueprint) {
+    await writeFile(
+      path.join(workspace, 'gameplay-blueprint.json'),
+      JSON.stringify(input.gameplayBlueprint, null, 2),
+      'utf8',
+    )
+  }
 
   const manifest = {
     assets: [] as Array<Record<string, unknown>>,
@@ -279,7 +289,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         prompt:
           input.confirmation.routing.match === 'freeform'
             ? [
-                'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+                'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
                 'The confirmed route is freeform because no registered template can express the requested core gameplay.',
                 'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
                 'Produce one offline responsive Canvas HTML under 5 MiB with no external resources.',
@@ -291,7 +301,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               ].join('\n')
             : input.confirmation.routing.match === 'approximate'
               ? [
-                  'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+                  'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
                   'The confirmed route is approximate: use the selected registered mode as the working baseline, then implement every confirmed routing difference and gameplay requirement in output.html.',
                   'Run the existing template build first when useful, but do not stop at the unmodified template.',
                   'Preserve the registered mode runtime contract and pass its required behavioral test after adapting the experience.',
@@ -301,7 +311,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                   'When the adapted playable passes, return {"completed":true}.',
                 ].join('\n')
               : [
-                  'Read SKILL.md, confirmed-config.json, and asset-manifest.json.',
+                  'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
                   'Build the approved playable in this workspace and run the required behavioral test.',
                   'Write the final single-file playable to output.html.',
                   'For a registered mode, use its existing template immediately; do not rewrite the large shared runtime.',

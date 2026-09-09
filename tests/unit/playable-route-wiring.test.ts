@@ -25,6 +25,7 @@ const infrastructure = vi.hoisted(() => {
       listOwnedTasks: vi.fn(),
       saveAsset: vi.fn(),
       listAssets: vi.fn(),
+      findLatestVideoAnalysis: vi.fn(),
     },
     agent: {
       proposeConfirmation: vi.fn(),
@@ -106,6 +107,7 @@ describe('real playable task route wiring', () => {
     infrastructure.repository.publishArtifact.mockResolvedValue(true)
     infrastructure.repository.markFailed.mockResolvedValue(undefined)
     infrastructure.repository.listAssets.mockResolvedValue([])
+    infrastructure.repository.findLatestVideoAnalysis.mockResolvedValue(undefined)
     infrastructure.agent.build.mockResolvedValue({
       html: '<script>window.__PLAYABLE__={}</script>',
       validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),

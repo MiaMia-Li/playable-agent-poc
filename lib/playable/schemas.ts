@@ -1,6 +1,44 @@
 import { z } from 'zod'
 import { playableModeIds } from './types'
 
+export const videoAnalysisStatuses = ['pending', 'preprocessing', 'analyzing', 'succeeded', 'failed'] as const
+
+export const videoAnalysisStatusSchema = z.enum(videoAnalysisStatuses)
+
+const gameplayEvidenceSchema = z.strictObject({
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+  observation: z.string().trim().min(1).max(500),
+})
+
+const gameplayInferenceSchema = z.strictObject({
+  value: z.string().trim().min(1).max(1000),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(gameplayEvidenceSchema).max(12),
+})
+
+export const gameplayBlueprintSchema = z.strictObject({
+  version: z.literal(1),
+  summary: z.string().trim().min(1).max(1000),
+  orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
+  controls: z.array(gameplayInferenceSchema).max(8),
+  sceneStructure: gameplayInferenceSchema,
+  entities: z.array(gameplayInferenceSchema).max(20),
+  coreLoop: gameplayInferenceSchema,
+  stateTransitions: z.array(gameplayInferenceSchema).max(20),
+  objective: gameplayInferenceSchema,
+  failureConditions: z.array(gameplayInferenceSchema).max(8),
+  progression: z.array(gameplayInferenceSchema).max(12),
+  tutorial: z.array(gameplayInferenceSchema).max(8),
+  endCard: gameplayInferenceSchema.nullable(),
+  visualStyle: z.string().trim().max(1000),
+  uncertainties: z.array(z.string().trim().min(1).max(500)).max(12),
+  overallConfidence: z.number().min(0).max(1),
+})
+
+export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
+export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
+
 export const playableTaskPhases = [
   'draft',
   'awaiting_confirmation',

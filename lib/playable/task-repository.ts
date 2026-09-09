@@ -1,11 +1,20 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
-import { playableTaskAssets, playableTaskBuilds, playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
+import {
+  playableTaskAssets,
+  playableTaskBuilds,
+  playableTaskEvents,
+  playableVideoAnalyses,
+  taskMessages,
+  tasks,
+} from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
+  gameplayBlueprintSchema,
   playableTaskPhaseSchema,
   requirementBriefSchema,
+  videoAnalysisStatusSchema,
   type ConfirmationProposal,
   type PlayableTaskPhase,
   type RequirementBrief,
@@ -16,6 +25,7 @@ import type {
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
+  PlayableVideoAnalysisRecord,
 } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import { createRequirementBrief } from './requirement-tools'
@@ -43,6 +53,21 @@ function toBuild(row: typeof playableTaskBuilds.$inferSelect): PlayableBuildReco
     confirmation: confirmationProposalSchema.parse(row.confirmation),
     artifactKey: row.artifactKey,
     validation: row.validation,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
+  }
+}
+
+function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): PlayableVideoAnalysisRecord {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    assetId: row.assetId,
+    status: videoAnalysisStatusSchema.parse(row.status),
+    pipelineVersion: row.pipelineVersion,
+    model: row.model,
+    blueprint: row.blueprint ? gameplayBlueprintSchema.parse(row.blueprint) : null,
+    errorCode: row.errorCode,
     createdAt: row.createdAt,
     completedAt: row.completedAt,
   }
@@ -342,5 +367,45 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       )
       .returning()
     return asset as PlayableAsset | undefined
+  }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const [analysis] = await db.insert(playableVideoAnalyses).values(input).returning()
+    return toVideoAnalysis(analysis)
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const [analysis] = await db
+      .select()
+      .from(playableVideoAnalyses)
+      .where(eq(playableVideoAnalyses.taskId, taskId))
+      .orderBy(desc(playableVideoAnalyses.createdAt))
+      .limit(1)
+    return analysis ? toVideoAnalysis(analysis) : undefined
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    await db.update(playableVideoAnalyses).set({ status }).where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: PlayableVideoAnalysisRecord['blueprint']): Promise<void> {
+    if (!blueprint) throw new Error('Gameplay blueprint is required')
+    await db
+      .update(playableVideoAnalyses)
+      .set({ status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(blueprint), completedAt: new Date() })
+      .where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    await db
+      .update(playableVideoAnalyses)
+      .set({ status: 'failed', errorCode, completedAt: new Date() })
+      .where(eq(playableVideoAnalyses.id, id))
   }
 }

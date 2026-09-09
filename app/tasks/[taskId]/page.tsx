@@ -23,9 +23,10 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets] = await Promise.all([
+  const [storedMessages, initialAssets, videoAnalysis] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
+    repository.findLatestVideoAnalysis(task.id),
   ])
   const initialConversation = storedMessages.flatMap((stored): ConversationMessage[] => {
     if (stored.role === 'user') {
@@ -65,6 +66,8 @@ export default async function TaskPage({ params }: TaskPageProps) {
         mimeType,
         size,
       }))}
+      initialVideoAnalysisStatus={videoAnalysis?.status}
+      initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialApiKeyConfigured={localDemo || localCodex ? true : undefined}

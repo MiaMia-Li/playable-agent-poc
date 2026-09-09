@@ -6,9 +6,11 @@ import { ArrowUp, Check, Loader2, Sparkles, Square } from 'lucide-react'
 import type {
   ClarificationOption,
   ConfirmationProposal,
+  GameplayBlueprint,
   PlayableTaskPhase,
   RequirementBrief,
   RequirementInputRequest,
+  VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
 import type { PlayableAssetSlot } from '@/lib/playable/asset-policy'
 import {
@@ -70,6 +72,8 @@ interface ChatWorkspaceProps {
   autoSubmitInitialPrompt?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
+  videoAnalysisStatus?: VideoAnalysisStatus
+  gameplayBlueprint?: GameplayBlueprint
 }
 
 export interface ConversationMessage {
@@ -164,6 +168,8 @@ export function ChatWorkspace({
   autoSubmitInitialPrompt = false,
   initialConversation = [],
   initialAssets = [],
+  videoAnalysisStatus,
+  gameplayBlueprint,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -183,7 +189,9 @@ export function ChatWorkspace({
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
   const autoSubmitted = useRef(false)
-  const canCompose = ['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(phase)
+  const videoAnalysisInProgress =
+    videoAnalysisStatus !== undefined && ['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)
+  const canCompose = ['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(phase) && !videoAnalysisInProgress
   const currentStage =
     phase === 'building' || phase === 'validating' || phase === 'failed'
       ? 'generating'
@@ -459,6 +467,39 @@ export function ChatWorkspace({
             当前状态：{phaseNames[phase]}
           </p>
         </section>
+
+        {videoAnalysisStatus && (
+          <section aria-label="参考视频分析" className="space-y-2 rounded-xl border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">QDAI 视频玩法分析</h2>
+              <Badge variant={videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}>
+                {videoAnalysisStatus === 'pending'
+                  ? '等待分析'
+                  : videoAnalysisStatus === 'preprocessing'
+                    ? '提取关键画面'
+                    : videoAnalysisStatus === 'analyzing'
+                      ? '理解玩法'
+                      : videoAnalysisStatus === 'succeeded'
+                        ? '蓝图已生成'
+                        : '分析失败'}
+              </Badge>
+            </div>
+            {gameplayBlueprint ? (
+              <>
+                <p className="text-muted-foreground text-xs leading-5">{gameplayBlueprint.summary}</p>
+                {gameplayBlueprint.uncertainties.length > 0 && (
+                  <p className="text-xs">待确认：{gameplayBlueprint.uncertainties.join('、')}</p>
+                )}
+              </>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                {videoAnalysisStatus === 'failed'
+                  ? '将继续使用文字需求，你也可以重新上传参考视频。'
+                  : '正在把参考视频转换为可供玩法 Agent 使用的结构化蓝图。'}
+              </p>
+            )}
+          </section>
+        )}
 
         {brief && (
           <section aria-label="需求 Brief" className="space-y-2 border-b pb-4">
