@@ -5,7 +5,14 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowRight, Loader2, Paperclip, Plus, Sparkles } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
-import type { ConfirmationProposal, PlayableTaskPhase, RequirementBrief } from '@/lib/playable/schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableTaskPhase,
+  RequirementBrief,
+  RevisionProposal,
+  VideoAnalysisStatus,
+} from '@/lib/playable/schemas'
 import { User } from '@/components/auth/user'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,9 +24,9 @@ import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
 import { AssetPreviewList } from './asset-preview-list'
 import {
-  MAX_ASSET_BYTES,
   MAX_HOME_ATTACHMENTS,
   PLAYABLE_REFERENCE_ACCEPT,
+  maxAssetBytesForSlot,
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
@@ -30,6 +37,7 @@ interface PlayableWorkspaceProps {
   initialPrompt?: string
   initialPhase?: PlayableTaskPhase
   initialProposal?: ConfirmationProposal
+  initialRevision?: RevisionProposal
   initialBrief?: RequirementBrief
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
@@ -39,11 +47,14 @@ interface PlayableWorkspaceProps {
   publicAccess?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
+  initialVideoAnalysisStatus?: VideoAnalysisStatus
+  initialGameplayBlueprint?: GameplayBlueprint
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
   draft: 0,
   awaiting_confirmation: 1,
+  awaiting_revision_confirmation: 1,
   building: 2,
   validating: 3,
   reviewing: 4,
@@ -59,6 +70,7 @@ export function PlayableWorkspace({
   initialPrompt,
   initialPhase = 'draft',
   initialProposal,
+  initialRevision,
   initialBrief,
   initialHasArtifact = false,
   initialArtifactVersion = null,
@@ -68,14 +80,23 @@ export function PlayableWorkspace({
   publicAccess = false,
   initialConversation = [],
   initialAssets = [],
+  initialVideoAnalysisStatus,
+  initialGameplayBlueprint,
 }: PlayableWorkspaceProps) {
   const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
   const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposalDraft, setProposalDraft] = useState(initialProposal)
+  const [revisionDraft, setRevisionDraft] = useState(initialRevision)
   const [brief, setBrief] = useState(initialBrief)
   const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
   const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
+  const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
+    initialVideoAnalysisStatus,
+  )
+  const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
+  const [assets, setAssets] = useState(initialAssets)
+  const latestReferenceVideoId = useRef(initialAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id)
 
   useEffect(() => {
     if (initialApiKeyConfigured !== undefined) return
@@ -99,6 +120,35 @@ export function PlayableWorkspace({
   }, [initialApiKeyConfigured])
 
   useEffect(() => {
+    if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
+    let active = true
+    let timeout: number | undefined
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, {
+          cache: 'no-store',
+        })
+        if (!response.ok) return
+        const body = (await response.json()) as {
+          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
+        }
+        if (!active || !body.analysis) return
+        setVideoAnalysisStatus(body.analysis.status)
+        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+      } catch {
+        // Keep polling after transient analysis status failures.
+      } finally {
+        if (active) timeout = window.setTimeout(poll, 2000)
+      }
+    }
+    void poll()
+    return () => {
+      active = false
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }, [taskId, videoAnalysisStatus])
+
+  useEffect(() => {
     if (!['building', 'validating'].includes(phase)) return
     let active = true
     let timeout: number | undefined
@@ -114,11 +164,15 @@ export function PlayableWorkspace({
             hasArtifact: boolean
             artifactVersion: string | null
             requirementBrief: RequirementBrief | null
+            confirmation: ConfirmationProposal | null
+            pendingRevision: RevisionProposal | null
           }
         }
         if (!active || !body.task) return
         setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
         if (body.task.requirementBrief) setBrief(body.task.requirementBrief)
+        if (body.task.confirmation) setProposalDraft(body.task.confirmation)
+        setRevisionDraft(body.task.pendingRevision ?? undefined)
         setHasArtifact(body.task.hasArtifact)
         setArtifactVersion(body.task.artifactVersion)
       } catch {
@@ -135,6 +189,48 @@ export function PlayableWorkspace({
   }, [phase, taskId])
 
   const requireApiKey = useCallback(() => setKeyDialogOpen(true), [])
+  const handleAssetsChange = useCallback((nextAssets: SafePlayableAsset[]) => {
+    const nextReferenceVideoId = nextAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id
+    if (nextReferenceVideoId !== latestReferenceVideoId.current) {
+      latestReferenceVideoId.current = nextReferenceVideoId
+      setVideoAnalysisStatus(undefined)
+      setGameplayBlueprint(undefined)
+    }
+    setAssets(nextAssets)
+  }, [])
+  const handleVideoAnalysisToolStatus = useCallback(
+    async (status: 'started' | 'completed' | 'failed') => {
+      if (status === 'started') {
+        setVideoAnalysisStatus('analyzing')
+        return
+      }
+      if (status === 'failed') {
+        setVideoAnalysisStatus('failed')
+        return
+      }
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, {
+          cache: 'no-store',
+        })
+        if (!response.ok) {
+          setVideoAnalysisStatus('failed')
+          return
+        }
+        const body = (await response.json()) as {
+          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
+        }
+        if (!body.analysis) {
+          setVideoAnalysisStatus('failed')
+          return
+        }
+        setVideoAnalysisStatus(body.analysis.status)
+        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+      } catch {
+        setVideoAnalysisStatus('failed')
+      }
+    },
+    [taskId],
+  )
 
   return (
     <main className="bg-background flex h-full min-h-0 flex-col overflow-hidden">
@@ -171,14 +267,21 @@ export function PlayableWorkspace({
           initialPrompt={initialPrompt}
           phase={phase}
           proposal={proposalDraft}
+          revision={revisionDraft}
+          hasArtifact={hasArtifact}
           brief={brief}
           onProposal={setProposalDraft}
+          onRevision={setRevisionDraft}
           onBrief={setBrief}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
           autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
           initialConversation={initialConversation}
-          initialAssets={initialAssets}
+          initialAssets={assets}
+          videoAnalysisStatus={videoAnalysisStatus}
+          gameplayBlueprint={gameplayBlueprint}
+          onAssetsChange={handleAssetsChange}
+          onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
         />
         <PlayablePreview
           taskId={taskId}
@@ -186,6 +289,7 @@ export function PlayableWorkspace({
           hasArtifact={hasArtifact}
           artifactVersion={artifactVersion}
           confirmation={proposalDraft}
+          revision={revisionDraft}
           onPhase={setPhase}
           onRequireApiKey={requireApiKey}
         />
@@ -230,6 +334,7 @@ interface PlayableHomeProps {
 const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
   draft: '整理方案',
   awaiting_confirmation: '方案待确认',
+  awaiting_revision_confirmation: '修改待确认',
   building: '生成中',
   validating: '检查中',
   reviewing: '可试玩',
@@ -250,6 +355,9 @@ export function PlayableHome({
   const attachmentInput = useRef<HTMLInputElement>(null)
   const attachmentSequence = useRef(0)
   const attachmentUrls = useRef(new Set<string>())
+  const attachmentsRef = useRef<HomeAttachment[]>([])
+  const creatingRef = useRef(false)
+  const retryRef = useRef<{ fingerprint: string; taskId: string; uploadedIds: Set<string> } | undefined>(undefined)
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<HomeAttachment[]>([])
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
@@ -278,51 +386,74 @@ export function PlayableHome({
 
   async function createPlayable() {
     const content = prompt.trim() || '请根据上传的参考素材制作试玩'
-    if ((!prompt.trim() && attachments.length === 0) || creating) return
+    const attachmentSnapshot = attachmentsRef.current
+    if ((!prompt.trim() && attachmentSnapshot.length === 0) || creatingRef.current) return
+    const fingerprint = JSON.stringify({
+      content,
+      attachments: attachmentSnapshot.map(({ id, file }) => ({
+        id,
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified,
+      })),
+    })
+    creatingRef.current = true
     setCreating(true)
     setError('')
     try {
-      const response = await fetch('/api/playable-tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: content }),
-      })
-      if (!response.ok) throw new Error('创建试玩失败')
-      const body = (await response.json()) as { task: { id: string } }
-      for (const { file } of attachments) {
+      let retry = retryRef.current
+      if (!retry || retry.fingerprint !== fingerprint) {
+        const response = await fetch('/api/playable-tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: content }),
+        })
+        if (!response.ok) throw new Error('创建试玩失败')
+        const body = (await response.json()) as { task: { id: string } }
+        retry = { fingerprint, taskId: body.task.id, uploadedIds: new Set() }
+        retryRef.current = retry
+      }
+      for (const { id, file } of attachmentSnapshot) {
+        if (retry.uploadedIds.has(id)) continue
         const slot = referenceSlotForMimeType(file.type)
         if (!slot) throw new Error('参考素材格式不受支持')
         const uploadBody = new FormData()
         uploadBody.set('slot', slot)
         uploadBody.set('file', file)
-        const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(body.task.id)}/assets`, {
+        const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(retry.taskId)}/assets`, {
           method: 'POST',
           body: uploadBody,
         })
         if (!uploadResponse.ok) throw new Error('参考素材上传失败')
+        retry.uploadedIds.add(id)
       }
-      router.push(`/tasks/${body.task.id}`)
+      retryRef.current = undefined
+      router.push(`/tasks/${retry.taskId}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建试玩失败')
       setCreating(false)
+    } finally {
+      creatingRef.current = false
     }
   }
 
   function addAttachments(files: FileList | null) {
     if (!files) return
     const accepted: HomeAttachment[] = []
-    const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachments.length)
+    const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachmentsRef.current.length)
     for (const file of Array.from(files)) {
       if (accepted.length >= remaining) {
         setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
         break
       }
-      if (!referenceSlotForMimeType(file.type)) {
+      const slot = referenceSlotForMimeType(file.type)
+      if (!slot) {
         setError('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
         continue
       }
-      if (file.size <= 0 || file.size > MAX_ASSET_BYTES) {
-        setError('单个参考素材不能超过 4 MiB')
+      if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
+        setError(slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB')
         continue
       }
       const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined
@@ -330,7 +461,9 @@ export function PlayableHome({
       attachmentSequence.current += 1
       accepted.push({ id: `attachment-${attachmentSequence.current}`, file, previewUrl })
     }
-    setAttachments((current) => [...current, ...accepted])
+    const next = [...attachmentsRef.current, ...accepted]
+    attachmentsRef.current = next
+    setAttachments(next)
   }
 
   function removeAttachment(id: string) {
@@ -340,7 +473,9 @@ export function PlayableHome({
         URL.revokeObjectURL(target.previewUrl)
         attachmentUrls.current.delete(target.previewUrl)
       }
-      return current.filter((attachment) => attachment.id !== id)
+      const next = current.filter((attachment) => attachment.id !== id)
+      attachmentsRef.current = next
+      return next
     })
   }
 
@@ -410,7 +545,7 @@ export function PlayableHome({
                 onClick={() => attachmentInput.current?.click()}
               >
                 <Paperclip aria-hidden="true" />
-                添加图片/视频
+                {/* 添加图片/视频 */}
               </Button>
               <input
                 ref={attachmentInput}

@@ -23,7 +23,7 @@ export function AssetPreviewList({
   ariaLabel?: string
   disabled?: boolean
   removingId?: string
-  onRemove: (item: PreviewAssetItem) => void
+  onRemove?: (item: PreviewAssetItem) => void
 }) {
   if (items.length === 0) return null
 
@@ -73,18 +73,20 @@ export function AssetPreviewList({
               </span>
             )}
           </div>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="absolute top-1.5 right-1.5 size-7"
-            aria-label={`删除素材 ${item.filename}`}
-            title="删除素材"
-            disabled={disabled || removingId === item.id}
-            onClick={() => onRemove(item)}
-          >
-            <X aria-hidden="true" />
-          </Button>
+          {onRemove && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="absolute top-1.5 right-1.5 size-7"
+              aria-label={`删除素材 ${item.filename}`}
+              title="删除素材"
+              disabled={disabled || removingId === item.id}
+              onClick={() => onRemove(item)}
+            >
+              <X aria-hidden="true" />
+            </Button>
+          )}
         </li>
       ))}
     </ul>

@@ -7,13 +7,22 @@ import {
   type PlayableBuildRecord,
   type PlayableTaskRecord,
   type PlayableTaskRepository,
+  type PlayableVideoAnalysisRecord,
 } from '@/lib/playable/task-api'
 import { PrivateVercelArtifactStore, type ArtifactStore, type PrivateBlobClient } from '@/lib/playable/artifact-store'
-import type { ConfirmationProposal, PlayableAgentReply, RequirementBrief } from '@/lib/playable/schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableAgentReply,
+  RequirementBrief,
+  RevisionPlan,
+  RevisionProposal,
+} from '@/lib/playable/schemas'
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
+import type { ReferenceImageAnalysis } from '@/lib/playable/reference-image-analyst'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -44,6 +53,54 @@ const confirmationReply: PlayableAgentReply = {
   confirmation,
 }
 
+const patchRevision: RevisionPlan = {
+  strategy: 'patch',
+  summary: '移除顶部进度标题',
+  changes: ['移除顶部“下落补位 0/4”标题'],
+  preserved: ['核心玩法', '素材和结束卡'],
+}
+
+const gameplayBlueprint: GameplayBlueprint = {
+  version: 1,
+  summary: '点击相同目标后消除。',
+  orientation: 'portrait',
+  controls: [
+    { value: '点击', confidence: 0.9, evidence: [{ startSeconds: 1, endSeconds: 2, observation: '发生点击' }] },
+  ],
+  sceneStructure: { value: '网格', confidence: 0.9, evidence: [] },
+  entities: [],
+  coreLoop: { value: '点击并消除相同目标', confidence: 0.9, evidence: [] },
+  stateTransitions: [{ value: '目标消失', confidence: 0.9, evidence: [] }],
+  objective: { value: '清空目标', confidence: 0.8, evidence: [] },
+  failureConditions: [],
+  progression: [],
+  tutorial: [],
+  endCard: null,
+  visualStyle: '卡通风格',
+  uncertainties: [],
+  overallConfidence: 0.88,
+}
+
+const referenceImageAnalysis: ReferenceImageAnalysis = {
+  version: 1,
+  images: [
+    {
+      assetId: 'image-1',
+      visualSummary: '竖屏卡通棋盘',
+      layoutAndUi: ['顶部目标区', '中央棋盘'],
+      visibleText: ['PLAY'],
+      gameplayClues: ['点击配对'],
+      uncertainties: ['失败条件未知'],
+    },
+  ],
+  crossImageDirection: {
+    visual: '明亮卡通',
+    layoutAndUi: '顶部状态区与中央棋盘',
+    gameplay: '点击配对',
+    uncertainties: ['结束流程未知'],
+  },
+}
+
 type EventRecord = {
   id: string
   taskId: string
@@ -70,6 +127,7 @@ class MemoryRepository implements PlayableTaskRepository {
   latestAssignments: string[] = []
   assets: PlayableAsset[] = []
   builds: PlayableBuildRecord[] = []
+  videoAnalyses: PlayableVideoAnalysisRecord[] = []
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -79,6 +137,7 @@ class MemoryRepository implements PlayableTaskRepository {
       phase: 'draft',
       requirementBrief: null,
       confirmation: null,
+      pendingRevision: null,
       latestArtifactKey: null,
     }
     this.tasks.set(task.id, task)
@@ -102,7 +161,11 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.requirementBrief = brief
     return true
   }
@@ -112,13 +175,41 @@ class MemoryRepository implements PlayableTaskRepository {
     if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
+    task.pendingRevision = null
+    return true
+  }
+
+  async setAwaitingRevision(
+    taskId: string,
+    userId: string,
+    confirmation: ConfirmationProposal,
+    revision: RevisionProposal,
+  ): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'awaiting_revision_confirmation'
+    task.confirmation = confirmation
+    task.pendingRevision = revision
+    return true
+  }
+
+  async clearPendingRevision(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'ready'
+    task.pendingRevision = null
     return true
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.phase = 'draft'
+    task.pendingRevision = null
     return true
   }
 
@@ -127,9 +218,16 @@ class MemoryRepository implements PlayableTaskRepository {
     userId: string,
     value: ConfirmationProposal,
     buildId: string,
+    revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['awaiting_confirmation', 'failed'].includes(task.phase)) return
+    if (
+      !task ||
+      !(revision
+        ? ['awaiting_revision_confirmation', 'failed'].includes(task.phase)
+        : ['awaiting_confirmation', 'failed'].includes(task.phase))
+    )
+      return
     task.phase = 'building'
     task.confirmation = value
     this.builds.push({
@@ -137,6 +235,7 @@ class MemoryRepository implements PlayableTaskRepository {
       taskId,
       status: 'building',
       confirmation: value,
+      revision: revision ?? null,
       artifactKey: null,
       createdAt: new Date(),
     })
@@ -166,6 +265,7 @@ class MemoryRepository implements PlayableTaskRepository {
     task.phase = 'ready'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
+    task.pendingRevision = null
     const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
     if (build) {
       build.status = 'succeeded'
@@ -178,6 +278,7 @@ class MemoryRepository implements PlayableTaskRepository {
         taskId,
         status: 'succeeded',
         confirmation: task.confirmation,
+        revision: task.pendingRevision,
         artifactKey,
         validation,
         createdAt: new Date(),
@@ -251,6 +352,50 @@ class MemoryRepository implements PlayableTaskRepository {
     if (index < 0) return undefined
     return this.assets.splice(index, 1)[0]
   }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      status: 'pending',
+      blueprint: null,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: null,
+    }
+    this.videoAnalyses.push(analysis)
+    return analysis
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses.filter((analysis) => analysis.taskId === taskId).at(-1)
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (analysis) analysis.status = status
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'succeeded'
+    analysis.blueprint = blueprint
+    analysis.completedAt = new Date()
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'failed'
+    analysis.errorCode = errorCode
+    analysis.completedAt = new Date()
+  }
 }
 
 function createHarness() {
@@ -262,6 +407,7 @@ function createHarness() {
     phase: 'draft',
     requirementBrief: null,
     confirmation: null,
+    pendingRevision: null,
     latestArtifactKey: null,
   })
   repository.tasks.set('foreign', {
@@ -271,6 +417,7 @@ function createHarness() {
     phase: 'ready',
     requirementBrief: null,
     confirmation,
+    pendingRevision: null,
     latestArtifactKey: 'users/user-2/tasks/foreign/build/playable.html',
   })
 
@@ -297,6 +444,15 @@ function createHarness() {
       artifacts.delete(key)
     }),
   }
+  const videoPreprocessor = {
+    preprocess: vi.fn(async () => ({
+      durationSeconds: 3,
+      sampleRate: 1,
+      frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
+    })),
+  }
+  const videoAnalyst = { analyze: vi.fn(async () => gameplayBlueprint) }
+  const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
   let mediaApiKey: string | undefined = 'sk-test-media-secret'
@@ -307,6 +463,9 @@ function createHarness() {
     repository,
     agent,
     artifactStore,
+    videoPreprocessor,
+    videoAnalyst,
+    imageAnalyst,
     schedule: scheduler,
     buildStartedEventTimeoutMs: 10,
     generateId: (() => {
@@ -320,6 +479,9 @@ function createHarness() {
     scheduled,
     agent,
     artifactStore,
+    videoPreprocessor,
+    videoAnalyst,
+    imageAnalyst,
     artifacts,
     handlers,
     setAuthenticatedUser(value: string | undefined) {
@@ -355,12 +517,558 @@ describe('playable task API', () => {
       harness.handlers.list(request('/api/playable-tasks')),
       harness.handlers.create(request('/api/playable-tasks', 'POST', { prompt: 'game' })),
       harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', { message: 'hello' }), context),
+      harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context),
       harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), context),
       harness.handlers.events(request('/api/playable-tasks/owned/events'), context),
       harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), context),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401])
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401])
+  })
+
+  it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
+    const video: PlayableAsset = {
+      id: 'video-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'private-video',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const queued = await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST'), context)
+
+    expect(queued.status).toBe(202)
+    expect(harness.scheduled).toHaveLength(1)
+    await harness.scheduled[0]()
+    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    await expect(harness.repository.findLatestVideoAnalysis('owned')).resolves.toMatchObject({
+      status: 'succeeded',
+      blueprint: gameplayBlueprint,
+    })
+
+    const messageResponse = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '参考视频制作试玩' }),
+      context,
+    )
+    await messageResponse.text()
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ gameplayBlueprint }),
+      expect.any(Object),
+    )
+  })
+
+  it('does not pass an older video blueprint after a new reference video is uploaded', async () => {
+    harness.repository.assets.push(
+      {
+        id: 'video-old',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceVideo',
+        filename: 'old.mp4',
+        mimeType: 'video/mp4',
+        size: 1,
+        storageKey: 'old-video',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        id: 'video-new',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceVideo',
+        filename: 'new.mp4',
+        mimeType: 'video/mp4',
+        size: 1,
+        storageKey: 'new-video',
+        createdAt: new Date('2026-01-02T00:00:00Z'),
+      },
+    )
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-old',
+      taskId: 'owned',
+      assetId: 'video-old',
+      status: 'succeeded',
+      pipelineVersion: 'v1',
+      model: 'model',
+      blueprint: gameplayBlueprint,
+      errorCode: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      completedAt: new Date('2026-01-01T00:01:00Z'),
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '使用新视频制作试玩' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    await response.text()
+
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ gameplayBlueprint: undefined }),
+      expect.any(Object),
+    )
+  })
+
+  it('executes reference image inspection only when requested and returns private bytes to the agent tool loop', async () => {
+    const image: PlayableAsset = {
+      id: 'image-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'private-name.png',
+      mimeType: 'image/png',
+      size: 2,
+      storageKey: 'private-image-key',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(image)
+    harness.artifacts.set(image.storageKey, new Uint8Array([1, 2]))
+    let toolResult: unknown
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      const toolCall = { name: 'inspect_reference_images' as const, assetIds: ['image-1'], assetId: null }
+      options?.onProgress?.({ type: 'tool_started', toolCall })
+      toolResult = await options?.executeTool?.(toolCall)
+      options?.onProgress?.({ type: 'tool_completed', toolCall })
+      return {
+        kind: 'informational',
+        message: '已分析参考图片。',
+        reasoning: '图片提供了布局和玩法线索。',
+        brief: createRequirementBrief(),
+        tools: ['respond_to_user'],
+      }
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '请参考这张图',
+        attachmentIds: ['image-1'],
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const events = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+
+    expect(toolResult).toEqual(referenceImageAnalysis)
+    expect(harness.imageAnalyst.analyze).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'owned',
+        images: [{ assetId: 'image-1', mimeType: 'image/png', bytes: new Uint8Array([1, 2]) }],
+      }),
+    )
+    expect(events.filter((event) => String(event.type).startsWith('tool_'))).toEqual([
+      { type: 'tool_started', tool: 'inspect_reference_images', message: '正在分析参考图片' },
+      { type: 'tool_completed', tool: 'inspect_reference_images', message: '参考图片分析完成' },
+      { type: 'tool_completed', tool: 'respond_to_user' },
+    ])
+    expect(JSON.stringify(events)).not.toContain('image-1')
+    expect(JSON.stringify(events)).not.toContain('private-name.png')
+    expect(JSON.stringify(events)).not.toContain('private-image-key')
+  })
+
+  it('restricts tools to this turn attachments and budgets one canonical call per paid tool type', async () => {
+    const assets: PlayableAsset[] = [
+      {
+        id: 'image-a',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: 'a.png',
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: 'image-a-key',
+        createdAt: new Date(),
+      },
+      {
+        id: 'image-b',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: 'b.png',
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: 'image-b-key',
+        createdAt: new Date(),
+      },
+      {
+        id: 'old-image',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: 'old.png',
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: 'old-image-key',
+        createdAt: new Date(),
+      },
+      ...['video-a', 'video-b'].map(
+        (id): PlayableAsset => ({
+          id,
+          taskId: 'owned',
+          userId: 'user-1',
+          slot: 'referenceVideo',
+          filename: `${id}.mp4`,
+          mimeType: 'video/mp4',
+          size: 1,
+          storageKey: `${id}-key`,
+          createdAt: new Date(),
+        }),
+      ),
+    ]
+    harness.repository.assets.push(...assets)
+    for (const asset of assets) harness.artifacts.set(asset.storageKey, new Uint8Array([1]))
+    const results: unknown[] = []
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      for (const call of [
+        { name: 'inspect_reference_images' as const, assetIds: ['image-b', 'image-a', 'image-a'], assetId: null },
+        { name: 'inspect_reference_images' as const, assetIds: ['image-a', 'image-b'], assetId: null },
+        { name: 'inspect_reference_images' as const, assetIds: ['image-a'], assetId: null },
+        { name: 'inspect_reference_images' as const, assetIds: ['old-image'], assetId: null },
+        { name: 'analyze_reference_video' as const, assetIds: [] as [], assetId: 'video-a' },
+        { name: 'analyze_reference_video' as const, assetIds: [] as [], assetId: 'video-b' },
+      ]) {
+        results.push(await options?.executeTool?.(call))
+      }
+      return confirmationReply
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '分析本轮附件',
+          attachmentIds: ['image-a', 'image-b', 'video-a', 'video-b', 'image-a'],
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(harness.imageAnalyst.analyze).toHaveBeenCalledOnce()
+    expect(harness.imageAnalyst.analyze).toHaveBeenCalledWith(
+      expect.objectContaining({
+        images: [expect.objectContaining({ assetId: 'image-a' }), expect.objectContaining({ assetId: 'image-b' })],
+      }),
+    )
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    expect(results[1]).toEqual(results[0])
+    expect(results[2]).toEqual({ status: 'unavailable', reason: 'budget_exceeded' })
+    expect(results[3]).toEqual({ status: 'unavailable', reason: 'asset_not_attached' })
+    expect(results[5]).toEqual({ status: 'unavailable', reason: 'budget_exceeded' })
+  })
+
+  it('rejects non-owned and wrong-slot assets requested by reference tools without reading private bytes', async () => {
+    harness.repository.assets.push(
+      {
+        id: 'foreign-image',
+        taskId: 'foreign',
+        userId: 'user-2',
+        slot: 'referenceImage',
+        filename: 'foreign.png',
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: 'foreign-key',
+        createdAt: new Date(),
+      },
+      {
+        id: 'wrong-slot',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'audio',
+        filename: 'audio.mp3',
+        mimeType: 'audio/mpeg',
+        size: 1,
+        storageKey: 'audio-key',
+        createdAt: new Date(),
+      },
+    )
+    const outcomes: unknown[] = []
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      for (const assetIds of [['foreign-image'], ['wrong-slot']]) {
+        outcomes.push(await options?.executeTool?.({ name: 'inspect_reference_images', assetIds, assetId: null }))
+      }
+      return {
+        kind: 'informational',
+        message: '无法分析指定图片。',
+        reasoning: '指定素材不可用。',
+        brief: createRequirementBrief(),
+        tools: ['respond_to_user'],
+      }
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '分析指定图片',
+          attachmentIds: ['wrong-slot'],
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(outcomes).toEqual([
+      { status: 'unavailable', reason: 'asset_not_attached' },
+      { status: 'unavailable', reason: 'asset_unavailable' },
+    ])
+    expect(harness.imageAnalyst.analyze).not.toHaveBeenCalled()
+    expect(harness.artifactStore.get).not.toHaveBeenCalled()
+  })
+
+  it('streams a static failed-tool event without exposing asset metadata or the underlying error', async () => {
+    const image: PlayableAsset = {
+      id: 'secret-asset-id',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'secret-filename.png',
+      mimeType: 'image/png',
+      size: 1,
+      storageKey: 'secret-storage-path',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(image)
+    harness.artifacts.set(image.storageKey, new Uint8Array([1]))
+    harness.imageAnalyst.analyze.mockRejectedValueOnce(new Error('provider credential and private path'))
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      const toolCall = {
+        name: 'inspect_reference_images' as const,
+        assetIds: ['secret-asset-id'],
+        assetId: null,
+      }
+      options?.onProgress?.({ type: 'tool_started', toolCall })
+      await options?.executeTool?.(toolCall).catch(() => undefined)
+      options?.onProgress?.({ type: 'tool_failed', toolCall })
+      return {
+        kind: 'informational',
+        message: '参考图片暂时无法分析。',
+        reasoning: '工具暂不可用。',
+        brief: createRequirementBrief(),
+        tools: ['respond_to_user'],
+      }
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '分析图片' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const body = await response.text()
+
+    expect(body).toContain('{"type":"tool_failed","tool":"inspect_reference_images","message":"参考图片分析暂不可用"}')
+    expect(body).not.toContain('secret-asset-id')
+    expect(body).not.toContain('secret-filename.png')
+    expect(body).not.toContain('secret-storage-path')
+    expect(body).not.toContain('provider credential')
+  })
+
+  it('awaits a newly requested video analysis and returns the blueprint to the next agent decision', async () => {
+    const video: PlayableAsset = {
+      id: 'video-tool',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'video-tool-key',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    let toolResult: unknown
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      toolResult = await options?.executeTool?.({
+        name: 'analyze_reference_video',
+        assetIds: [],
+        assetId: 'video-tool',
+      })
+      return confirmationReply
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '分析视频再给方案',
+          attachmentIds: ['video-tool'],
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(toolResult).toEqual({ status: 'succeeded', blueprint: gameplayBlueprint })
+    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    expect(harness.scheduled).toHaveLength(0)
+  })
+
+  it('claims one analysis when the agent tool and legacy POST race for the same video', async () => {
+    const video: PlayableAsset = {
+      id: 'video-race',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'video-race-key',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      await options?.executeTool?.({
+        name: 'analyze_reference_video',
+        assetIds: [],
+        assetId: video.id,
+      })
+      return confirmationReply
+    })
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const message = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '分析视频',
+        attachmentIds: [video.id],
+      }),
+      context,
+    )
+    const post = harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST'), context)
+    await Promise.all([message.text(), post])
+    await Promise.all(harness.scheduled.map((work) => work()))
+
+    expect(harness.repository.videoAnalyses).toHaveLength(1)
+    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+  })
+
+  it('rejects video analysis tool calls for cross-user assets and non-referenceVideo slots', async () => {
+    harness.repository.assets.push(
+      {
+        id: 'foreign-video',
+        taskId: 'foreign',
+        userId: 'user-2',
+        slot: 'referenceVideo',
+        filename: 'foreign.mp4',
+        mimeType: 'video/mp4',
+        size: 1,
+        storageKey: 'foreign-video-key',
+        createdAt: new Date(),
+      },
+      {
+        id: 'audio-as-video',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'audio',
+        filename: 'audio.mp3',
+        mimeType: 'audio/mpeg',
+        size: 1,
+        storageKey: 'audio-key',
+        createdAt: new Date(),
+      },
+    )
+    const outcomes: unknown[] = []
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      for (const assetId of ['foreign-video', 'audio-as-video']) {
+        outcomes.push(await options?.executeTool?.({ name: 'analyze_reference_video', assetIds: [], assetId }))
+      }
+      return confirmationReply
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '分析这些视频',
+          attachmentIds: ['audio-as-video'],
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(outcomes).toEqual([
+      { status: 'unavailable', reason: 'asset_not_attached' },
+      { status: 'unavailable', reason: 'asset_unavailable' },
+    ])
+    expect(harness.repository.videoAnalyses).toHaveLength(0)
+    expect(harness.videoPreprocessor.preprocess).not.toHaveBeenCalled()
+  })
+
+  it('reuses succeeded video analysis and returns a structured pending result without creating duplicates', async () => {
+    const video: PlayableAsset = {
+      id: 'video-cache',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'video-cache-key',
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    const invokeTool = async () => {
+      let result: unknown
+      vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+        result = await options?.executeTool?.({
+          name: 'analyze_reference_video',
+          assetIds: [],
+          assetId: 'video-cache',
+        })
+        return confirmationReply
+      })
+      await (
+        await harness.handlers.message(
+          request('/api/playable-tasks/owned/messages', 'POST', {
+            message: '分析视频',
+            attachmentIds: ['video-cache'],
+          }),
+          {
+            params: Promise.resolve({ taskId: 'owned' }),
+          },
+        )
+      ).text()
+      return result
+    }
+    harness.repository.videoAnalyses.push({
+      id: 'cached',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: 'v1',
+      model: 'model',
+      blueprint: gameplayBlueprint,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+
+    await expect(invokeTool()).resolves.toEqual({ status: 'succeeded', blueprint: gameplayBlueprint })
+    expect(harness.repository.videoAnalyses).toHaveLength(1)
+
+    harness.repository.videoAnalyses[0] = {
+      ...harness.repository.videoAnalyses[0],
+      status: 'analyzing',
+      blueprint: null,
+      completedAt: null,
+    }
+    await expect(invokeTool()).resolves.toEqual({ status: 'unavailable', reason: 'analysis_pending' })
+    expect(harness.repository.videoAnalyses).toHaveLength(1)
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
+  })
+
+  it('does not invoke reference analysts when the agent does not request a tool', async () => {
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '直接给我方案' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(harness.imageAnalyst.analyze).not.toHaveBeenCalled()
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
   })
 
   it('creates an authenticated task in draft without returning private fields', async () => {
@@ -436,6 +1144,50 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
 
+  it('validates current-message attachment IDs and forwards them to the requirement agent', async () => {
+    harness.repository.assets.push({
+      id: 'current-image',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'current.png',
+      mimeType: 'image/png',
+      size: 3,
+      storageKey: 'private-current-image',
+      createdAt: new Date(0),
+    })
+
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '只分析本轮图片',
+        attachmentIds: ['current-image'],
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    await response.text()
+
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ attachedAssetIds: ['current-image'] }),
+      expect.any(Object),
+    )
+  })
+
+  it.each([
+    { attachmentIds: 'current-image' },
+    { attachmentIds: [1] },
+    { attachmentIds: Array.from({ length: 11 }, (_, index) => `asset-${index}`) },
+    { attachmentIds: ['missing-asset'] },
+  ])('rejects invalid or non-owned current-message attachment IDs', async ({ attachmentIds }) => {
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '分析附件', attachmentIds }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'Invalid request' })
+    expect(harness.agent.proposeConfirmation).not.toHaveBeenCalled()
+  })
+
   it('forwards sanitized partial agent output before the validated final event', async () => {
     vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
       options?.onProgress?.({ message: '方案正在整理', reasoning: '正在匹配可用玩法' })
@@ -478,6 +1230,70 @@ describe('playable task API', () => {
     expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
     expect(harness.repository.tasks.get('owned')?.requirementBrief).toEqual(emptyBrief)
     expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
+  })
+
+  it('proposes and confirms a lightweight v2 patch that receives the current successful HTML', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = confirmation
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build-1/playable.html'
+    harness.repository.builds.push({
+      id: 'build-1',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation,
+      artifactKey: task.latestArtifactKey,
+      createdAt: new Date(1),
+      completedAt: new Date(2),
+    })
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>version one</html>'))
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'revision',
+      message: '我会移除顶部标题，其他内容保持不变。',
+      reasoning: '这是一个明确的局部修改。',
+      revision: patchRevision,
+      confirmation,
+    })
+
+    const messageResponse = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '去掉顶部 0/4 标题' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    const messageBody = await messageResponse.text()
+
+    expect(messageBody).toContain('"type":"revision"')
+    expect(task.phase).toBe('awaiting_revision_confirmation')
+    expect(task.pendingRevision).toMatchObject({
+      baseBuildId: 'build-1',
+      baseVersion: 1,
+      targetVersion: 2,
+      strategy: 'patch',
+    })
+
+    const editedConfirmation = {
+      ...confirmation,
+      copy: { ...confirmation.copy, title: '用户确认后的 v2 标题' },
+    }
+    const confirmResponse = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        revisionId: task.pendingRevision?.id,
+        confirmation: editedConfirmation,
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(confirmResponse.status).toBe(202)
+    await harness.scheduled.at(-1)!()
+
+    expect(harness.agent.build).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        confirmation: editedConfirmation,
+        revision: expect.objectContaining({ strategy: 'patch', baseBuildId: 'build-1' }),
+        baseHtml: '<html>version one</html>',
+      }),
+    )
+    expect(task.phase).toBe('ready')
+    expect(task.pendingRevision).toBeNull()
+    expect(harness.repository.builds.filter((build) => build.status === 'succeeded')).toHaveLength(2)
   })
 
   it('keeps an ambiguous theme in draft and streams a clarification with full conversation context', async () => {
@@ -893,7 +1709,14 @@ describe('playable task API', () => {
       params: Promise.resolve({ taskId: 'owned' }),
     })
     expect(await response.json()).toEqual({
-      task: { phase: 'building', hasArtifact: false, artifactVersion: null, requirementBrief: null, confirmation },
+      task: {
+        phase: 'building',
+        hasArtifact: false,
+        artifactVersion: null,
+        requirementBrief: null,
+        confirmation,
+        pendingRevision: null,
+      },
       events: [],
     })
   })

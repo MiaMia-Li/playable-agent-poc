@@ -13,7 +13,14 @@ import type {
   PlayableAssetManifest,
   PlayableBuildAsset,
 } from './playable-agent-adapter'
-import type { ConfirmationProposal, PlayableAgentReply, PlayableTaskPhase, RequirementBrief } from './schemas'
+import type {
+  ConfirmationProposal,
+  GameplayBlueprint,
+  PlayableAgentReply,
+  PlayableTaskPhase,
+  RequirementBrief,
+  RevisionProposal,
+} from './schemas'
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import type {
@@ -22,6 +29,7 @@ import type {
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
+  PlayableVideoAnalysisRecord,
 } from './task-api'
 import type { PlayableModeId } from './types'
 import { createRequirementBrief } from './requirement-tools'
@@ -245,8 +253,47 @@ class LocalDemoAgent implements PlayableAgentAdapter {
     const brief: RequirementBrief = input.brief
       ? structuredClone(input.brief)
       : createRequirementBrief(input.history?.find((turn) => turn.role === 'user')?.content ?? input.prompt)
+    const informationalAfterBuild =
+      input.hasArtifact &&
+      input.confirmation &&
+      /^(?:你好|您好|你是谁|你能做什么|怎么使用|如何使用|当前是什么版本|现在是什么版本)[？?。！!]*$/.test(
+        input.prompt.trim(),
+      )
+    if (informationalAfterBuild) {
+      return {
+        kind: 'informational',
+        message: '当前试玩已生成。你可以继续描述明确的修改内容，我会先整理修改计划，等你确认后再构建下一版。',
+        reasoning: '这是一条使用或状态咨询，不会修改当前试玩。',
+        brief,
+        tools: ['respond_to_user'],
+      }
+    }
     brief.summary = context.slice(0, 600)
     brief.gameplay.concept = context.slice(0, 500)
+    if (input.hasArtifact && input.confirmation) {
+      const regenerate = /重新生成|重新制作|重新构建|重做|效果.{0,4}(?:差|不好)/.test(input.prompt)
+      return {
+        kind: 'revision',
+        message: regenerate
+          ? '我会保留已确认的需求和素材，重新生成下一版试玩。'
+          : '我会基于当前版本完成这次修改，其他内容保持不变。',
+        reasoning: regenerate ? '当前要求涉及整体效果重做。' : '当前要求适合在现有版本上局部修改。',
+        revision: {
+          strategy: regenerate ? 'regenerate' : 'patch',
+          summary: input.prompt.slice(0, 600),
+          changes: [input.prompt.slice(0, 300)],
+          preserved: regenerate ? ['已确认的需求和用户素材'] : ['未在本次要求中提及的内容'],
+        },
+        confirmation: input.confirmation,
+        brief,
+        tools: [
+          'update_requirement_brief',
+          'list_playable_capabilities',
+          'validate_implementation_route',
+          'submit_revision',
+        ],
+      }
+    }
     const selectedMode =
       selectMode(input.prompt) ??
       [...(input.history ?? [])]
@@ -498,6 +545,13 @@ class LocalDemoAgent implements PlayableAgentAdapter {
       const assets = input.assets ?? []
       const assetManifest = createAssetSourceManifest(input.confirmation, assets)
       await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation), 'utf8')
+      if (input.gameplayBlueprint) {
+        await writeFile(
+          path.join(workspace, 'gameplay-blueprint.json'),
+          JSON.stringify(input.gameplayBlueprint),
+          'utf8',
+        )
+      }
       for (const asset of assets) {
         const manifestAsset = assetManifest.assets.find((candidate) => candidate.id === asset.id)
         if (!manifestAsset) throw new Error('Playable asset manifest is incomplete')
@@ -506,7 +560,15 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         await writeFile(assetPath, asset.bytes)
       }
       await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(assetManifest), 'utf8')
-      if (input.confirmation.routing.match === 'freeform') {
+      if (input.revision?.strategy === 'patch' && input.baseHtml) {
+        await writeFile(outputPath, input.baseHtml, 'utf8')
+        await execFileAsync(process.execPath, [
+          input.confirmation.routing.match === 'freeform'
+            ? path.join(starterRoot, 'work/test-freeform-playable.mjs')
+            : path.join(starterRoot, 'work/test-playable.mjs'),
+          outputPath,
+        ])
+      } else if (input.confirmation.routing.match === 'freeform') {
         await writeFile(outputPath, createLocalFreeformPlayable(input.confirmation.storeUrl), 'utf8')
         await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-freeform-playable.mjs'), outputPath])
       } else {
@@ -569,6 +631,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
   private readonly assets = new Map<string, PlayableAsset[]>()
   private readonly messages = new Map<string, PlayableTaskMessageRecord[]>()
   private readonly builds = new Map<string, PlayableBuildRecord[]>()
+  private readonly videoAnalyses = new Map<string, PlayableVideoAnalysisRecord[]>()
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -576,6 +639,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       phase: 'draft',
       requirementBrief: createRequirementBrief(),
       confirmation: null,
+      pendingRevision: null,
       latestArtifactKey: null,
       createdAt: new Date(),
     }
@@ -606,23 +670,59 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
 
   async updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.requirementBrief = structuredClone(brief)
     return true
   }
 
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.phase = 'draft'
+    task.pendingRevision = null
     return true
   }
 
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['draft', 'awaiting_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    if (
+      !task ||
+      !['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)
+    )
+      return false
     task.phase = 'awaiting_confirmation'
     task.confirmation = confirmation
+    task.pendingRevision = null
+    return true
+  }
+
+  async setAwaitingRevision(
+    taskId: string,
+    userId: string,
+    confirmation: ConfirmationProposal,
+    revision: RevisionProposal,
+  ): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'awaiting_revision_confirmation'
+    task.confirmation = structuredClone(confirmation)
+    task.pendingRevision = structuredClone(revision)
+    return true
+  }
+
+  async clearPendingRevision(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['awaiting_revision_confirmation', 'ready', 'failed'].includes(task.phase)) return false
+    task.phase = 'ready'
+    task.pendingRevision = null
     return true
   }
 
@@ -631,9 +731,16 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     userId: string,
     confirmation: ConfirmationProposal,
     buildId: string,
+    revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined> {
     const task = await this.findOwnedTask(taskId, userId)
-    if (!task || !['awaiting_confirmation', 'failed'].includes(task.phase)) return
+    if (
+      !task ||
+      !(revision
+        ? ['awaiting_revision_confirmation', 'failed'].includes(task.phase)
+        : ['awaiting_confirmation', 'failed'].includes(task.phase))
+    )
+      return
     task.phase = 'building'
     task.confirmation = confirmation
     const builds = this.builds.get(taskId) ?? []
@@ -642,6 +749,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       taskId,
       status: 'building',
       confirmation: structuredClone(confirmation),
+      revision: revision ? structuredClone(revision) : null,
       artifactKey: null,
       createdAt: new Date(),
     })
@@ -671,6 +779,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     task.phase = 'ready'
     task.latestArtifactKey = artifactKey
     task.latestValidation = validation
+    task.pendingRevision = null
     build.status = 'succeeded'
     build.artifactKey = artifactKey
     build.validation = validation
@@ -742,6 +851,52 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       (this.assets.get(taskId) ?? []).filter((candidate) => candidate.id !== assetId),
     )
     return asset
+  }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      status: 'pending',
+      blueprint: null,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: null,
+    }
+    const analyses = this.videoAnalyses.get(input.taskId) ?? []
+    analyses.push(analysis)
+    this.videoAnalyses.set(input.taskId, analyses)
+    return analysis
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses.get(taskId)?.at(-1)
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (analysis) analysis.status = status
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'succeeded'
+    analysis.blueprint = structuredClone(blueprint)
+    analysis.completedAt = new Date()
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
+    if (!analysis) return
+    analysis.status = 'failed'
+    analysis.errorCode = errorCode
+    analysis.completedAt = new Date()
   }
 }
 

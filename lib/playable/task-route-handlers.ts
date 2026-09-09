@@ -18,7 +18,10 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
+import { CodexCliVideoGameplayAnalyst, OpenAIVideoGameplayAnalyst } from './video-gameplay-analyst'
+import { LocalFfmpegVideoPreprocessor, SandboxFfmpegVideoPreprocessor } from './video-preprocessor'
 import { authenticatePublicPlayable } from './public-access'
+import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
@@ -31,6 +34,21 @@ const playableAgent = localDemo
   : localCodex
     ? new CodexCliPlayableAgent()
     : new CodexPlayableAgent()
+const videoAnalyst = localDemo
+  ? undefined
+  : localCodex
+    ? new CodexCliVideoGameplayAnalyst()
+    : new OpenAIVideoGameplayAnalyst()
+const imageAnalyst = localDemo
+  ? undefined
+  : localCodex
+    ? new CodexCliReferenceImageAnalyst()
+    : new OpenAIReferenceImageAnalyst()
+const videoPreprocessor = localDemo
+  ? undefined
+  : localCodex
+    ? new LocalFfmpegVideoPreprocessor()
+    : new SandboxFfmpegVideoPreprocessor()
 
 const authenticate = localDemo
   ? authenticateLocalDemo
@@ -47,6 +65,9 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   artifactStore: playableArtifactStore,
   schedule: localDemo ? (work) => void work().catch(() => undefined) : (work) => after(work),
   mediaGenerator: localDemo ? localDemoRuntime.mediaGenerator : undefined,
+  imageAnalyst,
+  videoAnalyst,
+  videoPreprocessor,
   generateId,
 })
 

@@ -7,6 +7,25 @@ afterEach(() => {
 })
 
 describe('local demo prototype', () => {
+  it('does not turn an informational message into a revision after a build', async () => {
+    const initial = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: 'informational-task',
+      prompt: '经典国风主题，中心碰撞玩法，使用内置默认素材、默认文案和测试链接',
+      apiKey: 'sk-test-local-demo',
+    })
+    if (initial.kind !== 'confirmation') throw new Error('Expected a confirmation reply')
+
+    const reply = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: 'informational-task',
+      prompt: '现在是什么版本？',
+      apiKey: 'sk-test-local-demo',
+      confirmation: initial.confirmation,
+      hasArtifact: true,
+    })
+
+    expect(reply.kind).toBe('informational')
+  })
+
   it('collects gameplay, asset strategy, and launch details before returning a confirmation', async () => {
     const gameplayReply = await localDemoRuntime.agent.proposeConfirmation({
       taskId: 'conversation-task',

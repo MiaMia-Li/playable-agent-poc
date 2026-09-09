@@ -59,10 +59,10 @@ const confirmationPlan = {
   message: confirmationReply.message,
   reasoning: confirmationReply.reasoning,
   calls: [
-    { name: 'update_requirement_brief', brief, request: null, confirmation: null },
-    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null },
-    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null },
-    { name: 'submit_confirmation', brief: null, request: null, confirmation: proposal },
+    { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
+    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+    { name: 'submit_confirmation', brief: null, request: null, confirmation: proposal, revision: null },
   ],
 } as const
 
@@ -83,7 +83,12 @@ describe('CodexCliPlayableAgent', () => {
 
     await expect(
       agent.proposeConfirmation(
-        { taskId: 'task-cli', prompt: '做一个中心碰撞玩法', apiKey: 'local-marker' },
+        {
+          taskId: 'task-cli',
+          prompt: '做一个中心碰撞玩法',
+          apiKey: 'local-marker',
+          attachedAssetIds: ['current-video'],
+        },
         { onProgress },
       ),
     ).resolves.toMatchObject(confirmationReply)
@@ -104,7 +109,74 @@ describe('CodexCliPlayableAgent', () => {
     expect(invocation.prompt).toContain('exact when a mode fully covers')
     expect(invocation.prompt).toContain('freeform')
     expect(invocation.prompt).toContain('AI media generation is unavailable')
+    expect(invocation.prompt).toContain('"attachedAssetIds":["current-video"]')
     expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在整理需求与实现路线。' })
+  })
+
+  it('uses the same multi-step reference analysis loop and reports failed tool execution', async () => {
+    const toolCall = {
+      name: 'analyze_reference_video' as const,
+      assetIds: [],
+      assetId: 'video-1',
+    }
+    const invokeCodex = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'tool_calls',
+        message: null,
+        reasoning: '需要分析视频中的玩法。',
+        toolCalls: [toolCall],
+        plan: null,
+      })
+      .mockResolvedValueOnce({
+        kind: 'terminal',
+        message: null,
+        reasoning: '工具失败后安全询问用户。',
+        toolCalls: [],
+        plan: confirmationPlan,
+      })
+    const executeTool = vi.fn(async () => {
+      throw new Error('private executor detail')
+    })
+    const onProgress = vi.fn()
+
+    await expect(
+      new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation(
+        { taskId: 'task-cli-analysis', prompt: '参考视频制作玩法', apiKey: 'local-marker' },
+        { executeTool, onProgress },
+      ),
+    ).resolves.toMatchObject(confirmationReply)
+
+    expect(invokeCodex).toHaveBeenCalledTimes(2)
+    const calls = invokeCodex.mock.calls as unknown as Array<[{ prompt: string }]>
+    expect(calls[1][0].prompt).toContain('"status":"failed"')
+    expect(calls[1][0].prompt).not.toContain('private executor detail')
+    expect(executeTool).toHaveBeenCalledWith(toolCall, {
+      abortSignal: expect.any(AbortSignal),
+    })
+    expect(onProgress).toHaveBeenCalledWith({ type: 'tool_started', toolCall })
+    expect(onProgress).toHaveBeenCalledWith({ type: 'tool_failed', toolCall })
+  })
+
+  it('stops after six model steps when analysis never reaches a terminal reply', async () => {
+    const invokeCodex = vi.fn(async () => ({
+      kind: 'tool_calls',
+      message: null,
+      reasoning: '继续分析。',
+      toolCalls: [{ name: 'inspect_reference_images', assetIds: ['image-1'], assetId: null }],
+      plan: null,
+    }))
+    const executeTool = vi.fn(async () => ({ observations: [] }))
+
+    await expect(
+      new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation(
+        { taskId: 'task-cli-step-limit', prompt: '持续分析', apiKey: 'local-marker' },
+        { executeTool },
+      ),
+    ).rejects.toMatchObject({ code: 'output_invalid' })
+
+    expect(invokeCodex).toHaveBeenCalledTimes(6)
+    expect(executeTool).toHaveBeenCalledOnce()
   })
 
   it('runs Codex with workspace writes before delegating the isolated build', async () => {

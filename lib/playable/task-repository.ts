@@ -1,14 +1,25 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
-import { playableTaskAssets, playableTaskBuilds, playableTaskEvents, taskMessages, tasks } from '@/lib/db/schema'
+import {
+  playableTaskAssets,
+  playableTaskBuilds,
+  playableTaskEvents,
+  playableVideoAnalyses,
+  taskMessages,
+  tasks,
+} from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
+  gameplayBlueprintSchema,
   playableTaskPhaseSchema,
   requirementBriefSchema,
+  revisionProposalSchema,
+  videoAnalysisStatusSchema,
   type ConfirmationProposal,
   type PlayableTaskPhase,
   type RequirementBrief,
+  type RevisionProposal,
 } from './schemas'
 import type {
   PlayableBuildRecord,
@@ -16,6 +27,7 @@ import type {
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
+  PlayableVideoAnalysisRecord,
 } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import { createRequirementBrief } from './requirement-tools'
@@ -28,6 +40,7 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     phase: playableTaskPhaseSchema.parse(row.phase),
     requirementBrief: row.requirementBrief ? requirementBriefSchema.parse(row.requirementBrief) : null,
     confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
+    pendingRevision: row.pendingRevision ? revisionProposalSchema.parse(row.pendingRevision) : null,
     latestArtifactKey: row.latestArtifactKey,
     latestValidation: row.latestValidation,
     title: row.title,
@@ -41,8 +54,24 @@ function toBuild(row: typeof playableTaskBuilds.$inferSelect): PlayableBuildReco
     taskId: row.taskId,
     status: row.status,
     confirmation: confirmationProposalSchema.parse(row.confirmation),
+    revision: row.revision ? revisionProposalSchema.parse(row.revision) : null,
     artifactKey: row.artifactKey,
     validation: row.validation,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
+  }
+}
+
+function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): PlayableVideoAnalysisRecord {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    assetId: row.assetId,
+    status: videoAnalysisStatusSchema.parse(row.status),
+    pipelineVersion: row.pipelineVersion,
+    model: row.model,
+    blueprint: row.blueprint ? gameplayBlueprintSchema.parse(row.blueprint) : null,
+    errorCode: row.errorCode,
     createdAt: row.createdAt,
     completedAt: row.completedAt,
   }
@@ -60,6 +89,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         status: 'pending',
         phase: 'draft',
         requirementBrief: createRequirementBrief(),
+        pendingRevision: null,
         progress: 0,
         logs: [],
       })
@@ -101,7 +131,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         and(
           eq(tasks.id, taskId),
           eq(tasks.userId, userId),
-          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed']),
         ),
       )
       .returning({ id: tasks.id })
@@ -111,12 +141,12 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
   async setDraft(taskId: string, userId: string): Promise<boolean> {
     const updated = await db
       .update(tasks)
-      .set({ phase: 'draft', updatedAt: new Date() })
+      .set({ phase: 'draft', pendingRevision: null, updatedAt: new Date() })
       .where(
         and(
           eq(tasks.id, taskId),
           eq(tasks.userId, userId),
-          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed']),
         ),
       )
       .returning({ id: tasks.id })
@@ -126,12 +156,52 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
   async setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean> {
     const updated = await db
       .update(tasks)
-      .set({ phase: 'awaiting_confirmation', confirmation, updatedAt: new Date() })
+      .set({ phase: 'awaiting_confirmation', confirmation, pendingRevision: null, updatedAt: new Date() })
       .where(
         and(
           eq(tasks.id, taskId),
           eq(tasks.userId, userId),
-          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'ready', 'failed']),
+          inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed']),
+        ),
+      )
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async setAwaitingRevision(
+    taskId: string,
+    userId: string,
+    confirmation: ConfirmationProposal,
+    revision: RevisionProposal,
+  ): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({
+        phase: 'awaiting_revision_confirmation',
+        confirmation,
+        pendingRevision: revisionProposalSchema.parse(revision),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(tasks.id, taskId),
+          eq(tasks.userId, userId),
+          inArray(tasks.phase, ['awaiting_revision_confirmation', 'ready', 'failed']),
+        ),
+      )
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async clearPendingRevision(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ phase: 'ready', pendingRevision: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(tasks.id, taskId),
+          eq(tasks.userId, userId),
+          inArray(tasks.phase, ['awaiting_revision_confirmation', 'ready', 'failed']),
         ),
       )
       .returning({ id: tasks.id })
@@ -143,6 +213,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     userId: string,
     confirmation: ConfirmationProposal,
     buildId: string,
+    revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined> {
     return db.transaction(async (transaction) => {
       const [task] = await transaction
@@ -151,13 +222,17 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
           phase: 'building',
           playableMode: confirmation.mode,
           confirmation,
+          pendingRevision: revision ?? null,
           updatedAt: new Date(),
         })
         .where(
           and(
             eq(tasks.id, taskId),
             eq(tasks.userId, userId),
-            inArray(tasks.phase, ['awaiting_confirmation', 'failed']),
+            inArray(
+              tasks.phase,
+              revision ? ['awaiting_revision_confirmation', 'failed'] : ['awaiting_confirmation', 'failed'],
+            ),
           ),
         )
         .returning()
@@ -167,6 +242,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         taskId,
         status: 'building',
         confirmation: confirmationProposalSchema.parse(confirmation),
+        revision: revision ? revisionProposalSchema.parse(revision) : null,
       })
       return toTask(task)
     })
@@ -196,6 +272,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
           phase: 'ready',
           latestArtifactKey: artifactKey,
           latestValidation: validation,
+          pendingRevision: null,
           completedAt,
           updatedAt: completedAt,
         })
@@ -342,5 +419,94 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       )
       .returning()
     return asset as PlayableAsset | undefined
+  }
+
+  async createVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<PlayableVideoAnalysisRecord> {
+    const [analysis] = await db.insert(playableVideoAnalyses).values(input).returning()
+    return toVideoAnalysis(analysis)
+  }
+
+  async claimVideoAnalysis(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+  }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const [inserted] = await db
+      .insert(playableVideoAnalyses)
+      .values(input)
+      .onConflictDoNothing({
+        target: [playableVideoAnalyses.assetId, playableVideoAnalyses.pipelineVersion, playableVideoAnalyses.model],
+      })
+      .returning()
+    if (inserted) return { analysis: toVideoAnalysis(inserted), claimed: true }
+    const [reclaimed] = await db
+      .update(playableVideoAnalyses)
+      .set({
+        status: 'pending',
+        blueprint: null,
+        errorCode: null,
+        completedAt: null,
+        createdAt: new Date(),
+      })
+      .where(
+        and(
+          eq(playableVideoAnalyses.assetId, input.assetId),
+          eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
+          eq(playableVideoAnalyses.model, input.model),
+          eq(playableVideoAnalyses.status, 'failed'),
+        ),
+      )
+      .returning()
+    if (reclaimed) return { analysis: toVideoAnalysis(reclaimed), claimed: true }
+    const [existing] = await db
+      .select()
+      .from(playableVideoAnalyses)
+      .where(
+        and(
+          eq(playableVideoAnalyses.assetId, input.assetId),
+          eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
+          eq(playableVideoAnalyses.model, input.model),
+        ),
+      )
+      .limit(1)
+    if (!existing) throw new Error('Video analysis claim failed')
+    return { analysis: toVideoAnalysis(existing), claimed: false }
+  }
+
+  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const [analysis] = await db
+      .select()
+      .from(playableVideoAnalyses)
+      .where(eq(playableVideoAnalyses.taskId, taskId))
+      .orderBy(desc(playableVideoAnalyses.createdAt))
+      .limit(1)
+    return analysis ? toVideoAnalysis(analysis) : undefined
+  }
+
+  async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
+    await db.update(playableVideoAnalyses).set({ status }).where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async completeVideoAnalysis(id: string, blueprint: PlayableVideoAnalysisRecord['blueprint']): Promise<void> {
+    if (!blueprint) throw new Error('Gameplay blueprint is required')
+    await db
+      .update(playableVideoAnalyses)
+      .set({ status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(blueprint), completedAt: new Date() })
+      .where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
+    await db
+      .update(playableVideoAnalyses)
+      .set({ status: 'failed', errorCode, completedAt: new Date() })
+      .where(eq(playableVideoAnalyses.id, id))
   }
 }

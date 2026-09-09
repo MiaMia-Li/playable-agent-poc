@@ -199,6 +199,27 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
+    if (input.revision) {
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'revision-plan.json'),
+        content: JSON.stringify(input.revision, null, 2),
+        abortSignal: dependencies.abortSignal,
+      })
+    }
+    if (input.baseHtml) {
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'current-playable.html'),
+        content: input.baseHtml,
+        abortSignal: dependencies.abortSignal,
+      })
+    }
+    if (input.gameplayBlueprint) {
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'gameplay-blueprint.json'),
+        content: JSON.stringify(input.gameplayBlueprint, null, 2),
+        abortSignal: dependencies.abortSignal,
+      })
+    }
     const assetManifest: PlayableAssetManifest = createAssetSourceManifest(confirmation, [])
     for (const asset of input.assets ?? []) {
       if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')

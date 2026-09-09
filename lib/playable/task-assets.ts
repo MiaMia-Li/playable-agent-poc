@@ -4,9 +4,11 @@ import { redactSecrets } from './redact'
 import {
   isMimeTypeAllowedForSlot,
   isPlayableAssetSlot,
+  maxAssetBytesForSlot,
   MAX_ASSET_BYTES,
   MAX_ASSETS_PER_SLOT,
   MAX_TASK_ASSETS,
+  MAX_UPLOAD_BYTES,
   type PlayableAssetSlot,
 } from './asset-policy'
 
@@ -53,7 +55,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       return Response.json({ error: 'Not found' }, { status: 404 })
     }
     const contentLength = Number(request.headers.get('content-length'))
-    if (Number.isFinite(contentLength) && contentLength > MAX_ASSET_BYTES + 1024 * 1024) {
+    if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES + 1024 * 1024) {
       return Response.json({ error: 'File too large' }, { status: 413 })
     }
     const form = await request.formData().catch(() => undefined)
@@ -65,7 +67,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     if (!isMimeTypeAllowedForSlot(slot, file.type)) {
       return Response.json({ error: 'Unsupported media type' }, { status: 415 })
     }
-    if (file.size <= 0 || file.size > MAX_ASSET_BYTES) {
+    if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
       return Response.json({ error: 'File too large' }, { status: 413 })
     }
     const currentAssets = await dependencies.listAssets(taskId, userId)

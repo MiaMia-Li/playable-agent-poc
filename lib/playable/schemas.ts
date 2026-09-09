@@ -1,9 +1,48 @@
 import { z } from 'zod'
 import { playableModeIds } from './types'
 
+export const videoAnalysisStatuses = ['pending', 'preprocessing', 'analyzing', 'succeeded', 'failed'] as const
+
+export const videoAnalysisStatusSchema = z.enum(videoAnalysisStatuses)
+
+const gameplayEvidenceSchema = z.strictObject({
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+  observation: z.string().trim().min(1).max(500),
+})
+
+const gameplayInferenceSchema = z.strictObject({
+  value: z.string().trim().min(1).max(1000),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(gameplayEvidenceSchema).max(12),
+})
+
+export const gameplayBlueprintSchema = z.strictObject({
+  version: z.literal(1),
+  summary: z.string().trim().min(1).max(1000),
+  orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
+  controls: z.array(gameplayInferenceSchema).max(8),
+  sceneStructure: gameplayInferenceSchema,
+  entities: z.array(gameplayInferenceSchema).max(20),
+  coreLoop: gameplayInferenceSchema,
+  stateTransitions: z.array(gameplayInferenceSchema).max(20),
+  objective: gameplayInferenceSchema,
+  failureConditions: z.array(gameplayInferenceSchema).max(8),
+  progression: z.array(gameplayInferenceSchema).max(12),
+  tutorial: z.array(gameplayInferenceSchema).max(8),
+  endCard: gameplayInferenceSchema.nullable(),
+  visualStyle: z.string().trim().max(1000),
+  uncertainties: z.array(z.string().trim().min(1).max(500)).max(12),
+  overallConfidence: z.number().min(0).max(1),
+})
+
+export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
+export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
+
 export const playableTaskPhases = [
   'draft',
   'awaiting_confirmation',
+  'awaiting_revision_confirmation',
   'building',
   'validating',
   'reviewing',
@@ -156,6 +195,23 @@ export const generatedConfirmationProposalSchema = z
   })
   .superRefine(validateConfirmationPresentation)
 
+export const revisionStrategies = ['patch', 'regenerate'] as const
+
+export const revisionPlanSchema = z.strictObject({
+  strategy: z.enum(revisionStrategies),
+  summary: z.string().trim().min(1).max(600),
+  changes: z.array(z.string().trim().min(1).max(300)).min(1).max(12),
+  preserved: z.array(z.string().trim().min(1).max(300)).max(12),
+})
+
+export const revisionProposalSchema = z.strictObject({
+  id: z.string().trim().min(1),
+  baseBuildId: z.string().trim().min(1),
+  baseVersion: z.number().int().positive(),
+  targetVersion: z.number().int().positive(),
+  ...revisionPlanSchema.shape,
+})
+
 export const clarificationOptionSchema = z.strictObject({
   id: z.string().trim().min(1),
   label: z.string().trim().min(1),
@@ -229,6 +285,15 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     brief: requirementBriefSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
+  z.strictObject({
+    kind: z.literal('revision'),
+    message: z.string().trim().min(1),
+    reasoning: z.string().trim().min(1),
+    revision: revisionPlanSchema,
+    confirmation: confirmationProposalSchema,
+    brief: requirementBriefSchema.optional(),
+    tools: z.array(z.string().trim().min(1)).max(8).optional(),
+  }),
 ])
 
 // The OpenAI structured-output subset does not permit `oneOf`. Keep a flat
@@ -268,4 +333,6 @@ export type ConfirmationProposal = z.infer<typeof confirmationProposalSchema>
 export type ClarificationOption = z.infer<typeof clarificationOptionSchema>
 export type RequirementInputRequest = z.infer<typeof requirementInputRequestSchema>
 export type RequirementBrief = z.infer<typeof requirementBriefSchema>
+export type RevisionPlan = z.infer<typeof revisionPlanSchema>
+export type RevisionProposal = z.infer<typeof revisionProposalSchema>
 export type PlayableAgentReply = z.infer<typeof playableAgentReplySchema>

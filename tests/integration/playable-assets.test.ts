@@ -112,10 +112,7 @@ describe('playable asset upload', () => {
       handler(uploadRequest(new File(['x'], 'x.mp4', { type: 'video/mp4' }), 'backgroundBoard'), context),
       handler(uploadRequest(new File(['x'], 'x.png', { type: 'image/png' }), 'referenceVideo'), context),
       handler(
-        uploadRequest(
-          new File([new Uint8Array(MAX_ASSET_BYTES + 1)], 'large.mp4', { type: 'video/mp4' }),
-          'referenceVideo',
-        ),
+        uploadRequest(new File([new Uint8Array(MAX_ASSET_BYTES + 1)], 'large.mp3', { type: 'audio/mpeg' }), 'audio'),
         context,
       ),
     ])

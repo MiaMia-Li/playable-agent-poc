@@ -5,6 +5,7 @@ import {
   parsePlayableAgentOutput,
   playableAgentReplySchema,
   playableTaskPhases,
+  revisionProposalSchema,
 } from '@/lib/playable/schemas'
 
 const validProposal = {
@@ -199,6 +200,35 @@ describe('playable agent reply schema', () => {
     expect(playableAgentReplySchema.parse(reply)).toEqual(reply)
   })
 
+  it('accepts a lightweight revision proposal tied to a successful base build', () => {
+    const revision = {
+      id: 'revision-2',
+      baseBuildId: 'build-1',
+      baseVersion: 1,
+      targetVersion: 2,
+      strategy: 'patch',
+      summary: '移除顶部进度标题',
+      changes: ['移除“下落补位 0/4”标题和进度文字'],
+      preserved: ['麻将配对玩法', '牌面素材', '结束卡'],
+    } as const
+
+    expect(revisionProposalSchema.parse(revision)).toEqual(revision)
+    expect(
+      playableAgentReplySchema.parse({
+        kind: 'revision',
+        message: '我会基于当前版本移除顶部标题，其他内容保持不变。',
+        reasoning: '这是一个适合局部修改的明确需求。',
+        revision: {
+          strategy: revision.strategy,
+          summary: revision.summary,
+          changes: revision.changes,
+          preserved: revision.preserved,
+        },
+        confirmation: validProposal,
+      }),
+    ).toMatchObject({ kind: 'revision', revision: { strategy: 'patch' } })
+  })
+
   it('returns a freeform confirmation when the state machine is unsupported', () => {
     expect(
       parsePlayableAgentOutput({
@@ -225,6 +255,7 @@ describe('playable task phases', () => {
     expect(playableTaskPhases).toEqual([
       'draft',
       'awaiting_confirmation',
+      'awaiting_revision_confirmation',
       'building',
       'validating',
       'reviewing',

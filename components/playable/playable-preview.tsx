@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileJson2, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
-import type { PlayableTaskPhase } from '@/lib/playable/schemas'
-import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import type { ConfirmationProposal, PlayableTaskPhase, RevisionProposal } from '@/lib/playable/schemas'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -15,6 +14,7 @@ interface PlayablePreviewProps {
   hasArtifact?: boolean
   artifactVersion?: string | null
   confirmation?: ConfirmationProposal
+  revision?: RevisionProposal
   onPhase?: (phase: PlayableTaskPhase) => void
   onRequireApiKey?: () => void
 }
@@ -34,6 +34,7 @@ export function PlayablePreview({
   hasArtifact = phase === 'ready',
   artifactVersion = null,
   confirmation,
+  revision,
   onPhase,
   onRequireApiKey,
 }: PlayablePreviewProps) {
@@ -112,7 +113,7 @@ export function PlayablePreview({
       const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmation }),
+        body: JSON.stringify(revision ? { revisionId: revision.id } : { confirmation }),
       })
       if (response.status === 428) {
         onRequireApiKey?.()
