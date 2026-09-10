@@ -7,6 +7,7 @@ import {
   executeRequirementToolPlan,
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
+  REQUIREMENT_AGENT_INSTRUCTIONS,
   requirementAgentPlanSchema,
   requirementAgentStepSchema,
 } from '@/lib/playable/requirement-tools'
@@ -330,6 +331,80 @@ describe('requirement domain tools', () => {
 
     expect(result.reply.kind).toBe('confirmation')
     if (result.reply.kind === 'confirmation') expect(result.reply.confirmation.routing.match).toBe(match)
+  })
+
+  it('removes sentences containing internal mode IDs from user-facing gameplay', () => {
+    const brief = routedBrief('freeform')
+    const proposedConfirmation = confirmation(brief)
+    proposedConfirmation.gameplay =
+      '点击树木和岩石采集资源，建设设施并完成小岛目标。gravity_fill 仅作为工作区脚手架，不保留麻将配对、网格或下落规则。'
+
+    const result = executeRequirementToolPlan({
+      prompt: '制作一个自由建造小岛的游戏',
+      plan: {
+        message: '方案可以开始构建。',
+        reasoning: '核心玩法需要自由生成。',
+        calls: [
+          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+          { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
+          { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+          {
+            name: 'submit_confirmation',
+            brief: null,
+            request: null,
+            confirmation: proposedConfirmation,
+            revision: null,
+          },
+        ],
+      },
+    })
+
+    expect(result.reply.kind).toBe('confirmation')
+    if (result.reply.kind === 'confirmation') {
+      expect(result.reply.confirmation.gameplay).toBe('点击树木和岩石采集资源，建设设施并完成小岛目标。')
+      expect(result.reply.confirmation.gameplay).not.toContain('gravity_fill')
+    }
+  })
+
+  it('falls back to the requirement brief when generated gameplay contains only an internal mode ID', () => {
+    const brief = routedBrief('freeform')
+    const proposedConfirmation = confirmation(brief)
+    proposedConfirmation.gameplay = 'gravity_fill is only a workspace scaffold.'
+
+    const result = executeRequirementToolPlan({
+      prompt: 'Create a freeform obstacle-dodging game',
+      plan: {
+        message: 'The plan is ready to build.',
+        reasoning: 'The core gameplay requires freeform generation.',
+        calls: [
+          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+          { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
+          { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+          {
+            name: 'submit_confirmation',
+            brief: null,
+            request: null,
+            confirmation: proposedConfirmation,
+            revision: null,
+          },
+        ],
+      },
+    })
+
+    expect(result.reply.kind).toBe('confirmation')
+    if (result.reply.kind === 'confirmation') {
+      expect(result.reply.confirmation.gameplay).toBe(brief.gameplay.coreLoop)
+    }
+  })
+
+  it('instructs the Agent to match user-facing copy to the latest request language', () => {
+    expect(REQUIREMENT_AGENT_INSTRUCTIONS).toContain(
+      "Use concise user-facing copy in the language of the user's latest request.",
+    )
+    expect(REQUIREMENT_AGENT_INSTRUCTIONS).toContain(
+      "Describe bundled resources as system-provided assets in the user's language.",
+    )
+    expect(REQUIREMENT_AGENT_INSTRUCTIONS).not.toContain('Use concise Chinese user-facing copy.')
   })
 
   it('returns a lightweight patch proposal instead of a full first-build confirmation when a playable exists', () => {

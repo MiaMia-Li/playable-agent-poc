@@ -27,4 +27,14 @@ The sanitizer operates only while accepting newly generated confirmations. Persi
 - Verify a gameplay value made entirely of internal mode text falls back to the requirement brief.
 - Verify the instructions require matching the user's language and no longer force Chinese.
 
+## System asset terminology
+
+The persisted resource status `内置默认` remains unchanged for compatibility, but user-facing surfaces present it as `系统素材`. The confirmation table uses:
+
+- Status: `系统素材`
+- Action: `使用系统素材`
+- Explanation: `系统提供，无需上传，可直接构建`
+
+Agent instructions and local-demo choices use equivalent wording in the user's language and do not expose the persisted status value. Existing confirmations benefit from the display mapping without a data migration.
+
 After implementation, run the focused unit tests, formatter, type check, and lint. Do not run a production build.

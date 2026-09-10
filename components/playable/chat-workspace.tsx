@@ -77,11 +77,11 @@ const requirementToolLabels: Record<string, string> = {
   search_market_references: '搜索市场参考',
 }
 const defaultResourceTreatments: Record<string, string> = {
-  tileFaces: '使用内置默认牌面素材',
-  backgroundBoard: '使用内置默认背景与棋盘',
-  animationEffects: '使用内置默认动画与特效',
-  audio: '使用内置默认音频',
-  endCard: '使用内置默认结束卡',
+  tileFaces: '使用系统提供的牌面素材',
+  backgroundBoard: '使用系统提供的背景与棋盘',
+  animationEffects: '使用系统提供的动画与特效',
+  audio: '使用系统提供的音频',
+  endCard: '使用系统提供的结束卡',
 }
 
 interface ChatWorkspaceProps {

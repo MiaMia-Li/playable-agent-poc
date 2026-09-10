@@ -555,6 +555,16 @@ describe('PlayableWorkspace', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ storeUrl: 'https://example.com/store' }))
   })
 
+  it('presents bundled resources as system assets without exposing the persisted status', () => {
+    render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
+
+    const backgroundRow = screen.getByRole('row', { name: /背景与棋盘/ })
+    expect(within(backgroundRow).getByText('系统素材')).toBeInTheDocument()
+    expect(within(backgroundRow).getByText('系统提供，无需上传，可直接构建')).toBeInTheDocument()
+    expect(within(backgroundRow).getByRole('button', { name: '使用系统素材背景与棋盘' })).toBeInTheDocument()
+    expect(within(backgroundRow).queryByText('内置默认')).not.toBeInTheDocument()
+  })
+
   it('keeps delivery and store navigation inside the proposal table', () => {
     render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
 
@@ -1270,7 +1280,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    expect(screen.getByText('AI 素材生成暂不支持，请改用内置默认或本地上传。')).toBeInTheDocument()
+    expect(screen.getByText('AI 素材生成暂不支持，请改用系统素材或本地上传。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '确认方案并开始构建' })).toBeDisabled()
   })
 
