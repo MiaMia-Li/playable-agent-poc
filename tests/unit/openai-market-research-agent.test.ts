@@ -97,14 +97,15 @@ afterEach(() => {
 })
 
 describe('OpenAIMarketResearchAgent', () => {
-  it('accepts grounded discovery output without trusting model-generated source IDs', async () => {
+  it('accepts structured source URLs when the provider source list is empty', async () => {
     vi.mocked(generateText)
       .mockResolvedValueOnce({
         output: {
           candidates: [candidate],
+          sourceUrls: [candidate.sourceUrl],
           warnings: [],
         },
-        sources: [{ sourceType: 'url', url: candidate.sourceUrl }],
+        sources: [],
       } as never)
       .mockResolvedValueOnce({ output: analysis(), sources: [] } as never)
 
