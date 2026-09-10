@@ -150,6 +150,20 @@ class MemoryRepository implements PlayableTaskRepository {
     return task?.userId === userId ? task : undefined
   }
 
+  async renameOwnedTask(taskId: string, userId: string, title: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.title = title
+    return true
+  }
+
+  async deleteOwnedTask(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    this.tasks.delete(taskId)
+    return true
+  }
+
   async appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void> {
     this.messages.push({ taskId, role, content })
   }
@@ -517,6 +531,8 @@ describe('playable task API', () => {
     const responses = await Promise.all([
       harness.handlers.list(request('/api/playable-tasks')),
       harness.handlers.create(request('/api/playable-tasks', 'POST', { prompt: 'game' })),
+      harness.handlers.rename(request('/api/playable-tasks/owned', 'PATCH', { title: 'Renamed' }), context),
+      harness.handlers.remove(request('/api/playable-tasks/owned', 'DELETE'), context),
       harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', { message: 'hello' }), context),
       harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context),
       harness.handlers.confirm(request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }), context),
@@ -524,7 +540,7 @@ describe('playable task API', () => {
       harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), context),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401])
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 401])
   })
 
   it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
@@ -1104,6 +1120,44 @@ describe('playable task API', () => {
     expect(JSON.stringify(body)).not.toContain('users/')
   })
 
+  it('renames an owned conversation through the task API', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const response = await harness.handlers.rename(
+      request('/api/playable-tasks/owned', 'PATCH', { title: '夏日海岛试玩' }),
+      context,
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ task: { id: 'owned', title: '夏日海岛试玩' } })
+    const list = await harness.handlers.list(request('/api/playable-tasks'))
+    expect(await list.json()).toEqual({
+      tasks: [expect.objectContaining({ id: 'owned', title: '夏日海岛试玩' })],
+    })
+  })
+
+  it('rejects blank and oversized conversation titles', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const responses = await Promise.all([
+      harness.handlers.rename(request('/api/playable-tasks/owned', 'PATCH', { title: '   ' }), context),
+      harness.handlers.rename(request('/api/playable-tasks/owned', 'PATCH', { title: 'x'.repeat(121) }), context),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([400, 400])
+    const list = await harness.handlers.list(request('/api/playable-tasks'))
+    expect(await list.json()).toEqual({ tasks: [expect.objectContaining({ id: 'owned', title: null })] })
+  })
+
+  it('deletes an owned conversation from subsequent task lists', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    const response = await harness.handlers.remove(request('/api/playable-tasks/owned', 'DELETE'), context)
+
+    expect(response.status).toBe(204)
+    const list = await harness.handlers.list(request('/api/playable-tasks'))
+    expect(await list.json()).toEqual({ tasks: [] })
+  })
+
   it('returns the same 404 for missing and cross-user resources', async () => {
     const missing = { params: Promise.resolve({ taskId: 'missing' }) }
     const foreign = { params: Promise.resolve({ taskId: 'foreign' }) }
@@ -1112,6 +1166,8 @@ describe('playable task API', () => {
       () => harness.handlers.events(request('/api/playable-tasks/foreign/events'), foreign),
       () => harness.handlers.artifact(request('/api/playable-tasks/missing/artifact?kind=playable'), missing),
       () => harness.handlers.artifact(request('/api/playable-tasks/foreign/artifact?kind=playable'), foreign),
+      () => harness.handlers.rename(request('/api/playable-tasks/foreign', 'PATCH', { title: 'Renamed' }), foreign),
+      () => harness.handlers.remove(request('/api/playable-tasks/foreign', 'DELETE'), foreign),
       () =>
         harness.handlers.message(
           request('/api/playable-tasks/foreign/messages', 'POST', { message: 'steal' }),
@@ -1121,7 +1177,7 @@ describe('playable task API', () => {
     ]
     const responses = await Promise.all(calls.map((call) => call()))
 
-    expect(responses.map((response) => response.status)).toEqual([404, 404, 404, 404, 404, 404])
+    expect(responses.map((response) => response.status)).toEqual([404, 404, 404, 404, 404, 404, 404, 404])
     for (const response of responses) expect(await response.json()).toEqual({ error: 'Not found' })
   })
 

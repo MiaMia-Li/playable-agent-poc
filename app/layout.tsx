@@ -7,6 +7,7 @@ import { SessionProvider } from '@/components/auth/session-provider'
 import { JotaiProvider } from '@/components/providers/jotai-provider'
 import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/next'
+import { PlayableRecentTasksProvider } from '@/components/playable/recent-tasks-context'
 
 export const metadata: Metadata = {
   title: 'Playable Studio',
@@ -24,7 +25,9 @@ export default function RootLayout({
         <JotaiProvider>
           <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
             <SessionProvider />
-            <AppLayoutWrapper>{children}</AppLayoutWrapper>
+            <PlayableRecentTasksProvider>
+              <AppLayoutWrapper>{children}</AppLayoutWrapper>
+            </PlayableRecentTasksProvider>
             <Toaster />
           </ThemeProvider>
         </JotaiProvider>
