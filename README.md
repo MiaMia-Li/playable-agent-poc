@@ -66,6 +66,14 @@ LOCAL_CODEX_MODE=0
 
 No project-wide OpenAI credential belongs in `.env.local` or the deployment environment. Visitors enter their own key in the browser session. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
 
+The deployment network must resolve `vercel.com` and allow outbound HTTPS traffic to `vercel.com:443`, which is the API origin used by `@vercel/sandbox` 3.x. Run the connectivity preflight inside the deployed runtime or its release job:
+
+```bash
+pnpm check:sandbox-connectivity
+```
+
+The command exits unsuccessfully with a static DNS-specific or HTTPS-egress-specific message. A failure must be fixed in the hosting provider's DNS, firewall, proxy, or outbound allowlist; application code cannot override a blocked network route.
+
 ### Production-equivalent local agent
 
 To test the same BYOK, Responses API structured streaming, Codex Harness build, PostgreSQL, Blob, and Vercel Sandbox path used by the

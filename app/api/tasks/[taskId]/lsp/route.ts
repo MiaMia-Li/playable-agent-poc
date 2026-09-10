@@ -54,7 +54,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
         const { Sandbox } = await import('@vercel/sandbox')
         sandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
+          name: task.sandboxId,
           teamId,
           projectId,
           token: sandboxToken,

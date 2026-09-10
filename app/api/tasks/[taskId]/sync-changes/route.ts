@@ -49,7 +49,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tas
 
       if (sandboxToken && teamId && projectId) {
         sandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
+          name: task.sandboxId,
           teamId,
           projectId,
           token: sandboxToken,

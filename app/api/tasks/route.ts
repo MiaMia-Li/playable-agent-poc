@@ -505,7 +505,7 @@ async function processTask(
 
     // Update sandbox URL, sandbox ID, and branch name (only update branch name if not already set by AI)
     const updateData: { sandboxUrl?: string; sandboxId?: string; updatedAt: Date; branchName?: string } = {
-      sandboxId: sandbox?.sandboxId || undefined,
+      sandboxId: sandbox?.name || undefined,
       sandboxUrl: domain || undefined,
       updatedAt: new Date(),
     }
