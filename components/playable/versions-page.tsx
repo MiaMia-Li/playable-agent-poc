@@ -112,7 +112,6 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
             {visibleVersions.map((item) => {
               const taskTitle = item.task.title || item.task.prompt
               const taskUrl = `/tasks/${item.task.id}`
-              const versionUrl = `${taskUrl}?version=${encodeURIComponent(item.id)}`
               const artifactUrl = `/api/playable-tasks/${encodeURIComponent(item.task.id)}/artifact?kind=playable&version=${encodeURIComponent(item.id)}`
               const downloadUrl = `${artifactUrl}&download=1`
               return (
@@ -142,10 +141,10 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
                   </div>
                   <div className="flex flex-wrap gap-2 sm:justify-end">
                     <Button asChild variant="outline" size="sm">
-                      <Link href={versionUrl}>
+                      <a href={artifactUrl} target="_blank" rel="noopener noreferrer">
                         <Eye aria-hidden="true" />
                         打开版本
-                      </Link>
+                      </a>
                     </Button>
                     <Button asChild variant="outline" size="sm">
                       <Link href={taskUrl}>
