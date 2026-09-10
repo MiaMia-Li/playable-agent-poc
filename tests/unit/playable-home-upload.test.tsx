@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
 
 import { PlayableHome } from '@/components/playable/playable-workspace'
+import { BestPracticesPage } from '@/components/playable/best-practices-page'
 
 afterEach(() => {
   cleanup()
@@ -31,7 +32,8 @@ describe('PlayableHome reference uploads', () => {
       />,
     )
 
-    expect(screen.getByText('公开体验 · 任务共享')).toBeInTheDocument()
+    expect(screen.getByText('公开体验')).toBeInTheDocument()
+    expect(screen.getByText('共享')).toBeInTheDocument()
     expect(screen.queryByText(/登录后/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('新试玩需求')).toBeEnabled()
     expect(screen.queryByText('最近生成')).not.toBeInTheDocument()
@@ -103,14 +105,33 @@ describe('PlayableHome reference uploads', () => {
       <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
     )
 
+    expect(document.querySelectorAll('iframe')).toHaveLength(0)
+    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(4)
     fireEvent.click(screen.getByRole('button', { name: '预览中心碰撞模板' }))
 
     const preview = screen.getByTitle('中心碰撞可交互预览')
+    expect(document.querySelectorAll('iframe')).toHaveLength(1)
     expect(preview).toHaveAttribute('src', '/playable-templates/center_collision.html')
     expect(preview).not.toHaveAttribute('tabindex', '-1')
     expect(
       screen.getByText('相同牌向中心碰撞、破碎并计分。可直接在下方试玩，确认后从这个模板继续创作。'),
     ).toBeInTheDocument()
+  })
+
+  it('loads a best-practice HTML only after its cover is opened', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(<BestPracticesPage accountLabel="测试用户" />)
+
+    expect(document.querySelectorAll('iframe')).toHaveLength(0)
+    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(4)
+
+    fireEvent.click(screen.getByRole('button', { name: '预览上方牌架模板' }))
+
+    expect(document.querySelectorAll('iframe')).toHaveLength(1)
+    expect(screen.getByTitle('上方牌架可交互预览')).toHaveAttribute('src', '/playable-templates/top_rack.html')
   })
 
   it('rejects unsupported and oversized references before creating a task', async () => {

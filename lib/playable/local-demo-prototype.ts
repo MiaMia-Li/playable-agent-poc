@@ -733,6 +733,20 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return task?.userId === userId ? task : undefined
   }
 
+  async renameOwnedTask(taskId: string, userId: string, title: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.title = title
+    return true
+  }
+
+  async deleteOwnedTask(taskId: string, userId: string): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    this.tasks.delete(taskId)
+    return true
+  }
+
   async listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]> {
     return [...this.tasks.values()]
       .filter((task) => task.userId === userId)

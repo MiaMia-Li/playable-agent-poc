@@ -154,6 +154,8 @@ export interface PlayableBuildRecord {
 export interface PlayableTaskRepository {
   createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord>
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
+  renameOwnedTask(taskId: string, userId: string, title: string): Promise<boolean>
+  deleteOwnedTask(taskId: string, userId: string): Promise<boolean>
   appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void>
   listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]>
   updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean>
@@ -1091,6 +1093,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         prompt: safeString(body.prompt.trim()),
       })
       return Response.json({ task: { id: task.id, phase: task.phase } }, { status: 201 })
+    },
+
+    async rename(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      const body = (await request.json().catch(() => undefined)) as { title?: unknown } | undefined
+      if (typeof body?.title !== 'string') return jsonError(400, 'Invalid request')
+      const requestedTitle = body.title.trim()
+      if (!requestedTitle || requestedTitle.length > 120) return jsonError(400, 'Invalid request')
+      const title = safeString(requestedTitle)
+      const renamed = await dependencies.repository.renameOwnedTask(access.task.id, access.userId, title)
+      if (!renamed) return jsonError(404, 'Not found')
+      return Response.json({ task: { id: access.task.id, title } })
+    },
+
+    async remove(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      const removed = await dependencies.repository.deleteOwnedTask(access.task.id, access.userId)
+      if (!removed) return jsonError(404, 'Not found')
+      return new Response(null, { status: 204 })
     },
 
     async message(request: NextRequest, context: RouteContext): Promise<Response> {

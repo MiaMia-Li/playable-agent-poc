@@ -2,23 +2,46 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Clock3, Globe2, Home, LayoutGrid, Menu, MessageSquareText, Plus, Search, Sparkles, X } from 'lucide-react'
-import type { PlayableTaskPhase } from '@/lib/playable/schemas'
+import {
+  Clock3,
+  Ellipsis,
+  Globe2,
+  Home,
+  LayoutGrid,
+  Loader2,
+  Menu,
+  MessageSquareText,
+  Pencil,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+  X,
+} from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { PlayableRecentTasksProvider, usePlayableRecentTasks, type PlayableTaskSummary } from './recent-tasks-context'
 
-export interface PlayableTaskSummary {
-  id: string
-  prompt: string
-  title?: string | null
-  phase?: PlayableTaskPhase
-  createdAt: string | null
-  updatedAt?: string | null
-  hasArtifact?: boolean
-  artifactVersion?: string | null
-  mode?: string | null
-}
+export type { PlayableTaskSummary } from './recent-tasks-context'
 
 type StudioSection = 'home' | 'best-practices' | 'versions'
 
@@ -26,7 +49,6 @@ interface PlayableStudioShellProps {
   activeSection: StudioSection
   accountLabel: string
   children: React.ReactNode
-  tasks?: PlayableTaskSummary[]
 }
 
 const navigation = [
@@ -66,40 +88,85 @@ function groupTasks(tasks: PlayableTaskSummary[]) {
 function SidebarContent({
   activeSection,
   accountLabel,
-  tasks: providedTasks,
   onNavigate,
-}: Pick<PlayableStudioShellProps, 'activeSection' | 'accountLabel' | 'tasks'> & { onNavigate?: () => void }) {
-  const [fetchedTasks, setFetchedTasks] = useState<PlayableTaskSummary[]>([])
+}: Pick<PlayableStudioShellProps, 'activeSection' | 'accountLabel'> & { onNavigate?: () => void }) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [renameTarget, setRenameTarget] = useState<PlayableTaskSummary | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [savingRename, setSavingRename] = useState(false)
+  const [renameError, setRenameError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<PlayableTaskSummary | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const recentTasks = usePlayableRecentTasks()
+  if (!recentTasks) throw new Error('Recent task context is unavailable')
   const isPublicExperience = accountLabel === '公开体验 · 任务共享'
+  const { ensureLoaded, removeTask, renameTask, tasks } = recentTasks
 
   useEffect(() => {
-    if (providedTasks !== undefined) return
-    let active = true
-    void fetch('/api/playable-tasks', { cache: 'no-store' })
-      .then(async (response) => {
-        if (!response.ok) return { tasks: [] }
-        return (await response.json()) as { tasks: PlayableTaskSummary[] }
-      })
-      .then((body) => {
-        if (active) setFetchedTasks(body.tasks)
-      })
-      .catch(() => {
-        if (active) setFetchedTasks([])
-      })
-    return () => {
-      active = false
-    }
-  }, [providedTasks])
+    void ensureLoaded()
+  }, [ensureLoaded])
 
   const visibleTasks = useMemo(() => {
-    const tasks = providedTasks ?? fetchedTasks
     const normalized = searchQuery.trim().toLocaleLowerCase()
     const matches = normalized
       ? tasks.filter((task) => (task.title || task.prompt).toLocaleLowerCase().includes(normalized))
       : tasks
     return matches.slice(0, 12)
-  }, [fetchedTasks, providedTasks, searchQuery])
+  }, [searchQuery, tasks])
+
+  function openRename(task: PlayableTaskSummary) {
+    setRenameTarget(task)
+    setRenameTitle(task.title || task.prompt)
+    setRenameError('')
+  }
+
+  async function submitRename(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!renameTarget || savingRename) return
+    const title = renameTitle.trim()
+    if (!title) return
+    setSavingRename(true)
+    setRenameError('')
+    try {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(renameTarget.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      })
+      if (!response.ok) throw new Error('重命名失败，请重试')
+      const body = (await response.json()) as { task: { id: string; title: string } }
+      renameTask(body.task.id, body.task.title)
+      setRenameTarget(null)
+    } catch {
+      setRenameError('重命名失败，请重试')
+    } finally {
+      setSavingRename(false)
+    }
+  }
+
+  function openDelete(task: PlayableTaskSummary) {
+    setDeleteTarget(task)
+    setDeleteError('')
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(deleteTarget.id)}`, {
+        method: 'DELETE',
+      })
+      if (!response.ok) throw new Error('删除失败，请重试')
+      removeTask(deleteTarget.id)
+      setDeleteTarget(null)
+    } catch {
+      setDeleteError('删除失败，请重试')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -168,24 +235,54 @@ function SidebarContent({
             <section key={group.label} className="mb-5">
               <h2 className="text-muted-foreground mb-1 px-2 text-[11px] font-medium">{group.label}</h2>
               <div className="space-y-0.5">
-                {group.tasks.map((task) => (
-                  <Link
-                    key={task.id}
-                    href={`/tasks/${task.id}`}
-                    onClick={onNavigate}
-                    title={task.title || task.prompt}
-                    className="hover:bg-foreground/[0.05] flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{task.title || task.prompt}</span>
-                    <span
-                      className={cn(
-                        'size-1.5 shrink-0 rounded-full',
-                        task.hasArtifact ? 'bg-emerald-500' : 'bg-muted-foreground/30',
-                      )}
-                      aria-label={task.hasArtifact ? '可试玩' : '进行中'}
-                    />
-                  </Link>
-                ))}
+                {group.tasks.map((task) => {
+                  const taskLabel = task.title || task.prompt
+                  return (
+                    <div key={task.id} className="group relative">
+                      <Link
+                        href={`/tasks/${task.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        prefetch={false}
+                        onClick={onNavigate}
+                        title={taskLabel}
+                        className="hover:bg-foreground/[0.05] flex items-center gap-2 rounded-lg px-3 py-2 pr-11 text-sm transition-colors"
+                      >
+                        <span
+                          className={cn(
+                            'size-1.5 shrink-0 rounded-full',
+                            task.hasArtifact ? 'bg-emerald-500' : 'bg-muted-foreground/30',
+                          )}
+                          aria-label={task.hasArtifact ? '可试玩' : '进行中'}
+                        />
+                        <span className="min-w-0 flex-1 truncate">{taskLabel}</span>
+                      </Link>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="absolute right-2 top-1/2 size-7 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                            aria-label={`管理“${taskLabel}”`}
+                          >
+                            <Ellipsis aria-hidden="true" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent side="right" align="start" className="w-36">
+                          <DropdownMenuItem onSelect={() => openRename(task)}>
+                            <Pencil aria-hidden="true" />
+                            重命名
+                          </DropdownMenuItem>
+                          <DropdownMenuItem variant="destructive" onSelect={() => openDelete(task)}>
+                            <Trash2 aria-hidden="true" />
+                            删除
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )
+                })}
               </div>
             </section>
           ))
@@ -211,17 +308,73 @@ function SidebarContent({
           )}
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => {
+          if (!open && !savingRename) setRenameTarget(null)
+        }}
+      >
+        <DialogContent>
+          <form onSubmit={(event) => void submitRename(event)}>
+            <DialogHeader>
+              <DialogTitle>重命名对话</DialogTitle>
+              <DialogDescription>使用一个更容易识别的名称。</DialogDescription>
+            </DialogHeader>
+            <Input
+              className="mt-5"
+              aria-label="对话名称"
+              value={renameTitle}
+              maxLength={120}
+              onChange={(event) => setRenameTitle(event.target.value)}
+              autoFocus
+            />
+            {renameError && <p className="text-destructive mt-2 text-sm">{renameError}</p>}
+            <DialogFooter className="mt-5">
+              <Button type="button" variant="outline" disabled={savingRename} onClick={() => setRenameTarget(null)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={savingRename || !renameTitle.trim()}>
+                {savingRename && <Loader2 className="animate-spin" aria-hidden="true" />}
+                保存
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
+            <AlertDialogDescription>删除后，它将从最近对话和作品库中隐藏。</AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError && <p className="text-destructive text-sm">{deleteError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <Button variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>
+              {deleting && <Loader2 className="animate-spin" aria-hidden="true" />}
+              删除对话
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
 
-export function PlayableStudioShell({ activeSection, accountLabel, children, tasks }: PlayableStudioShellProps) {
+function PlayableStudioShellContent({ activeSection, accountLabel, children }: PlayableStudioShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
     <div className="bg-background flex h-dvh min-h-0 overflow-hidden">
-      <aside className="bg-muted/35 hidden w-64 shrink-0 border-r lg:block">
-        <SidebarContent activeSection={activeSection} accountLabel={accountLabel} tasks={tasks} />
+      <aside className="bg-muted/35 hidden w-72 shrink-0 border-r lg:block">
+        <SidebarContent activeSection={activeSection} accountLabel={accountLabel} />
       </aside>
 
       {mobileOpen && (
@@ -244,7 +397,6 @@ export function PlayableStudioShell({ activeSection, accountLabel, children, tas
             <SidebarContent
               activeSection={activeSection}
               accountLabel={accountLabel}
-              tasks={tasks}
               onNavigate={() => setMobileOpen(false)}
             />
           </aside>
@@ -262,4 +414,16 @@ export function PlayableStudioShell({ activeSection, accountLabel, children, tas
       </div>
     </div>
   )
+}
+
+export function PlayableStudioShell(props: PlayableStudioShellProps) {
+  const recentTasks = usePlayableRecentTasks()
+  if (!recentTasks) {
+    return (
+      <PlayableRecentTasksProvider>
+        <PlayableStudioShellContent {...props} />
+      </PlayableRecentTasksProvider>
+    )
+  }
+  return <PlayableStudioShellContent {...props} />
 }

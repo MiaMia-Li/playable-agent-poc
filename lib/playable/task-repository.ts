@@ -156,6 +156,24 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return task ? toTask(task) : undefined
   }
 
+  async renameOwnedTask(taskId: string, userId: string, title: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ title })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.deletedAt)))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async deleteOwnedTask(taskId: string, userId: string): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.deletedAt)))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
   async listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]> {
     const rows = await db
       .select()

@@ -33,7 +33,7 @@ import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-ad
 import { PLAYABLE_MODES } from '@/lib/playable/template-registry'
 import type { PlayableModeId } from '@/lib/playable/types'
 import { PlayableStudioShell } from './studio-shell'
-import type { PlayableTaskSummary } from './studio-shell'
+import { usePlayableRecentTasks } from './recent-tasks-context'
 import { TemplatePreview } from './template-preview'
 import { TemplatePreviewDialog } from './template-preview-dialog'
 
@@ -316,6 +316,7 @@ export function PlayableHome({
   publicAccess = false,
 }: PlayableHomeProps) {
   const router = useRouter()
+  const recentTasks = usePlayableRecentTasks()
   const attachmentInput = useRef<HTMLInputElement>(null)
   const attachmentSequence = useRef(0)
   const attachmentUrls = useRef(new Set<string>())
@@ -324,7 +325,6 @@ export function PlayableHome({
   const retryRef = useRef<{ fingerprint: string; taskId: string; uploadedIds: Set<string> } | undefined>(undefined)
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<HomeAttachment[]>([])
-  const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
   const [creating, setCreating] = useState(false)
   const [creatingTemplate, setCreatingTemplate] = useState<PlayableModeId>()
   const [previewMode, setPreviewMode] = useState<PlayableModeId>()
@@ -336,17 +336,6 @@ export function PlayableHome({
     },
     [],
   )
-
-  useEffect(() => {
-    if (!user) return
-    void fetch('/api/playable-tasks', { cache: 'no-store' })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('加载试玩列表失败')
-        return (await response.json()) as { tasks: PlayableTaskSummary[] }
-      })
-      .then((body) => setTasks(body.tasks))
-      .catch((cause) => setError(cause instanceof Error ? cause.message : '加载试玩列表失败'))
-  }, [user])
 
   async function createPlayable() {
     const content = prompt.trim() || '请根据上传的参考素材制作试玩'
@@ -377,6 +366,13 @@ export function PlayableHome({
         const body = (await response.json()) as { task: { id: string } }
         retry = { fingerprint, taskId: body.task.id, uploadedIds: new Set() }
         retryRef.current = retry
+        recentTasks?.addTask({
+          id: body.task.id,
+          prompt: content,
+          title: null,
+          phase: 'draft',
+          createdAt: new Date().toISOString(),
+        })
       }
       for (const { id, file } of attachmentSnapshot) {
         if (retry.uploadedIds.has(id)) continue
@@ -415,6 +411,13 @@ export function PlayableHome({
       })
       if (!response.ok) throw new Error('无法从模板创建试玩')
       const body = (await response.json()) as { task: { id: string } }
+      recentTasks?.addTask({
+        id: body.task.id,
+        prompt: templatePrompts[mode],
+        title: null,
+        phase: 'draft',
+        createdAt: new Date().toISOString(),
+      })
       router.push(`/tasks/${body.task.id}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法从模板创建试玩')
@@ -470,7 +473,7 @@ export function PlayableHome({
     : user?.name || user?.username || (authProvider === 'github' ? 'GitHub 用户' : 'Playable Studio')
 
   return (
-    <PlayableStudioShell activeSection="home" accountLabel={accountLabel} tasks={tasks}>
+    <PlayableStudioShell activeSection="home" accountLabel={accountLabel}>
       <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-24 lg:pb-16">
         <section className="mx-auto max-w-4xl text-center" aria-labelledby="home-heading">
           <h1 id="home-heading" className="text-3xl font-semibold tracking-tight sm:text-4xl">
