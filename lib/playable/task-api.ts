@@ -54,6 +54,14 @@ import type {
   ResolvedReferenceSelection,
   SearchBrief,
 } from './research/schemas'
+import { referenceSelectionInputSchema } from './research/schemas'
+import type { MarketResearchAgent, MarketResearchProgressStage } from './research/market-research-agent'
+import {
+  allowedResearchDomains,
+  createResearchCacheKey,
+  MARKET_RESEARCH_CACHE_TTL_MS,
+  MARKET_RESEARCH_STRATEGY_VERSION,
+} from './research/source-registry'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -212,7 +220,12 @@ export interface PlayableTaskRepository {
     sourceIds: string[]
   }): Promise<PlayableResearchRunRecord>
   updateResearchRunStatus?(id: string, taskId: string, status: ResearchRunStatus): Promise<boolean>
-  completeResearchRun?(id: string, taskId: string, report: MarketResearchReport): Promise<MarketResearchReport>
+  completeResearchRun?(
+    id: string,
+    taskId: string,
+    report: MarketResearchReport,
+    cachedFromRunId?: string | null,
+  ): Promise<MarketResearchReport>
   failResearchRun?(id: string, taskId: string, status: 'failed' | 'cancelled', errorCode: string): Promise<void>
   findReusableResearchReport?(
     userId: string,
@@ -247,6 +260,7 @@ interface HandlerDependencies {
   videoAnalyst?: VideoGameplayAnalyst
   videoPreprocessor?: VideoPreprocessor
   videoToolTimeoutMs?: number
+  marketResearchAgent?: MarketResearchAgent
   generateId(): string
 }
 
@@ -380,6 +394,13 @@ const TOOL_PROGRESS_COPY = {
     tool_failed: '同类试玩参考搜索暂不可用',
   },
 } as const
+
+const RESEARCH_PROGRESS_COPY: Record<MarketResearchProgressStage, string> = {
+  searching: '正在检索公开来源',
+  filtering: '正在筛选和去重',
+  analyzing: '正在分析玩法',
+  summarizing: '正在整理推荐',
+}
 
 function toolProgressEvent(
   type: 'tool_started' | 'tool_completed' | 'tool_failed',
@@ -857,9 +878,82 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     cache: Map<string, unknown>
     budget: { imagesExecuted: boolean; videoExecuted: boolean }
     abortSignal?: AbortSignal
-  }): Promise<ReferenceImageAnalysis | { status: string; blueprint?: GameplayBlueprint; reason?: string }> => {
+    onResearchProgress?: (stage: MarketResearchProgressStage) => void
+  }): Promise<
+    ReferenceImageAnalysis | MarketResearchReport | { status: string; blueprint?: GameplayBlueprint; reason?: string }
+  > => {
     if (input.call.name === 'search_market_references') {
-      return { status: 'unavailable', reason: 'research_unavailable' }
+      const repository = dependencies.repository
+      if (
+        !dependencies.marketResearchAgent ||
+        !repository.createResearchRun ||
+        !repository.updateResearchRunStatus ||
+        !repository.completeResearchRun ||
+        !repository.failResearchRun
+      ) {
+        return { status: 'unavailable', reason: 'research_unavailable' }
+      }
+      const runId = dependencies.generateId()
+      const cacheKey = createResearchCacheKey(input.call.searchBrief)
+      await repository.createResearchRun({
+        id: runId,
+        taskId: input.task.id,
+        userId: input.userId,
+        brief: input.call.searchBrief,
+        cacheKey,
+        strategyVersion: MARKET_RESEARCH_STRATEGY_VERSION,
+        sourceIds: allowedResearchDomains(),
+      })
+      await repository.appendEvent({
+        taskId: input.task.id,
+        type: 'research_confirmed',
+        message: 'Market research confirmed',
+      })
+      try {
+        const reusable = repository.findReusableResearchReport
+          ? await repository.findReusableResearchReport(
+              input.userId,
+              cacheKey,
+              MARKET_RESEARCH_STRATEGY_VERSION,
+              new Date(Date.now() - MARKET_RESEARCH_CACHE_TTL_MS),
+            )
+          : undefined
+        await repository.updateResearchRunStatus(runId, input.task.id, 'searching')
+        await repository.appendEvent({
+          taskId: input.task.id,
+          type: 'research_started',
+          message: 'Market research started',
+        })
+        const result =
+          reusable ??
+          (await dependencies.marketResearchAgent.search(
+            { runId, apiKey: input.apiKey, brief: input.call.searchBrief },
+            {
+              abortSignal: input.abortSignal,
+              onProgress(stage) {
+                input.onResearchProgress?.(stage)
+                if (stage === 'analyzing') {
+                  void repository.updateResearchRunStatus?.(runId, input.task.id, 'analyzing')
+                }
+              },
+            },
+          ))
+        return await repository.completeResearchRun(runId, input.task.id, { ...result, runId }, reusable?.runId ?? null)
+      } catch {
+        const cancelled = Boolean(input.abortSignal?.aborted)
+        await repository.failResearchRun(
+          runId,
+          input.task.id,
+          cancelled ? 'cancelled' : 'failed',
+          cancelled ? 'cancelled' : 'unavailable',
+        )
+        await repository.appendEvent({
+          taskId: input.task.id,
+          type: cancelled ? 'research_cancelled' : 'research_failed',
+          message: cancelled ? 'Market research cancelled' : 'Market research failed',
+        })
+        return { status: 'unavailable', reason: cancelled ? 'research_cancelled' : 'research_unavailable' }
+      }
     }
     if (input.call.name === 'inspect_reference_images') {
       const assetIds = [...new Set(input.call.assetIds)].sort()
@@ -1000,7 +1094,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const body = (await request.json().catch(() => undefined)) as
-        | { message?: unknown; attachmentIds?: unknown }
+        | { message?: unknown; attachmentIds?: unknown; referenceSelection?: unknown }
         | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
       if (
@@ -1028,6 +1122,25 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(428, 'OpenAI key required')
       const message = body.message.trim()
+      let referenceSelection: ResolvedReferenceSelection | undefined
+      if (body.referenceSelection !== undefined) {
+        const parsedSelection = referenceSelectionInputSchema.safeParse(body.referenceSelection)
+        if (!parsedSelection.success || !dependencies.repository.saveReferenceSelection) {
+          return jsonError(400, 'Invalid reference selection')
+        }
+        referenceSelection = await dependencies.repository.saveReferenceSelection({
+          id: dependencies.generateId(),
+          taskId: access.task.id,
+          userId: access.userId,
+          selection: parsedSelection.data,
+        })
+        if (!referenceSelection) return jsonError(400, 'Invalid reference selection')
+        await dependencies.repository.appendEvent({
+          taskId: access.task.id,
+          type: 'research_adopted',
+          message: 'Market research direction adopted',
+        })
+      }
 
       const encoder = new TextEncoder()
       let cancelled = false
@@ -1101,6 +1214,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     videoAnalysis.assetId === latestReferenceVideo?.id
                       ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
                       : undefined,
+                  referenceSelection,
                 },
                 {
                   onProgress(progress) {
@@ -1123,6 +1237,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                       cache: referenceToolCache,
                       budget: referenceToolBudget,
                       abortSignal: toolOptions?.abortSignal,
+                      onResearchProgress(stage) {
+                        enqueue({ type: 'research_progress', stage, message: RESEARCH_PROGRESS_COPY[stage] })
+                      },
                     }),
                 },
               )
@@ -1136,6 +1253,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (validatedReply.kind === 'research') {
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
+                await dependencies.repository.appendEvent({
+                  taskId: access.task.id,
+                  type: 'research_completed',
+                  message: 'Market research completed',
+                })
                 enqueue({
                   type: 'research',
                   message: validatedReply.message,
@@ -1178,6 +1300,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   ? await dependencies.repository.clearPendingRevision(access.task.id, access.userId)
                   : await dependencies.repository.setDraft(access.task.id, access.userId)
                 if (!transitioned) throw new Error('Task phase conflict')
+                if (validatedReply.tools?.includes('offer_market_research')) {
+                  await dependencies.repository.appendEvent({
+                    taskId: access.task.id,
+                    type: 'research_suggested',
+                    message: 'Market research suggested',
+                  })
+                }
                 await dependencies.repository.appendEvent({
                   taskId: access.task.id,
                   type: 'clarification_requested',

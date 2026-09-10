@@ -595,7 +595,12 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
-  async completeResearchRun(id: string, taskId: string, value: MarketResearchReport): Promise<MarketResearchReport> {
+  async completeResearchRun(
+    id: string,
+    taskId: string,
+    value: MarketResearchReport,
+    cachedFromRunId: string | null = null,
+  ): Promise<MarketResearchReport> {
     const report = marketResearchReportSchema.parse(value)
     return db.transaction(async (transaction) => {
       const completedAt = new Date()
@@ -619,6 +624,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
           sourceIds: report.sourceCoverage.sourceIds,
           industrySummary: report.industrySummary,
           warnings: report.warnings,
+          cachedFromRunId,
           errorCode: null,
           completedAt,
         })

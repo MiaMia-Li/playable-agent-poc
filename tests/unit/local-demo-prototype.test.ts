@@ -217,6 +217,94 @@ describe('local demo prototype', () => {
     expect(reply.options.map((option) => option.id)).toEqual(['bundled', 'uploaded'])
   })
 
+  it('provides deterministic market research with selectable persisted candidates', async () => {
+    const task = await localDemoRuntime.repository.createTask({
+      id: 'local-research-task',
+      userId: 'local-demo-user',
+      prompt: '搜索麻将配对试玩案例',
+    })
+    const searchBrief = {
+      version: 1 as const,
+      trigger: 'explicit' as const,
+      category: '消除',
+      subcategory: '麻将配对',
+      gameplayKeywords: ['点击配对'],
+      market: '全球',
+      locale: 'zh-CN',
+      adNetwork: 'AppLovin',
+      timeRange: '最近 90 天',
+      focusAreas: ['前三秒'],
+      requirementSummary: '搜索同类试玩',
+    }
+    await localDemoRuntime.repository.createResearchRun?.({
+      id: 'local-research-run',
+      taskId: task.id,
+      userId: task.userId,
+      brief: searchBrief,
+      cacheKey: 'local-demo-cache',
+      strategyVersion: 'public-web-v1',
+      sourceIds: ['tiktok-creative-center'],
+    })
+
+    const report = await localDemoRuntime.marketResearchAgent.search({
+      runId: 'local-research-run',
+      apiKey: 'sk-test-local-demo',
+      brief: searchBrief,
+    })
+    const saved = await localDemoRuntime.repository.completeResearchRun?.('local-research-run', task.id, report)
+    const selected = await localDemoRuntime.repository.saveReferenceSelection?.({
+      id: 'local-selection',
+      taskId: task.id,
+      userId: task.userId,
+      selection: {
+        runId: 'local-research-run',
+        primaryCandidateId: saved?.candidates[0]?.id ?? null,
+        selectedHighlights: saved?.candidates[0]
+          ? [{ candidateId: saved.candidates[0].id, value: saved.candidates[0].borrowableHighlights[0] }]
+          : [],
+        customRequirements: '',
+        exclusions: [],
+      },
+    })
+
+    expect(saved?.candidates).toHaveLength(3)
+    expect(selected?.primaryCandidate?.id).toBe(saved?.candidates[0]?.id)
+  })
+
+  it('routes explicit market-search intent through the research tool', async () => {
+    const search = vi.fn(async () =>
+      localDemoRuntime.marketResearchAgent.search({
+        runId: 'local-intent-run',
+        apiKey: 'sk-test-local-demo',
+        brief: {
+          version: 1,
+          trigger: 'explicit',
+          category: '消除',
+          subcategory: '麻将配对',
+          gameplayKeywords: ['点击配对'],
+          market: '全球',
+          locale: 'zh-CN',
+          adNetwork: 'AppLovin',
+          timeRange: '最近 90 天',
+          focusAreas: ['前三秒'],
+          requirementSummary: '搜索同类试玩',
+        },
+      }),
+    )
+
+    const reply = await localDemoRuntime.agent.proposeConfirmation(
+      {
+        taskId: 'local-intent-task',
+        prompt: '先帮我搜索并分析同类麻将配对试玩广告',
+        apiKey: 'sk-test-local-demo',
+      },
+      { executeTool: search },
+    )
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ name: 'search_market_references' }))
+    expect(reply.kind).toBe('research')
+  })
+
   it('cannot bypass authentication in production', () => {
     vi.stubEnv('LOCAL_DEMO_MODE', '1')
     vi.stubEnv('NODE_ENV', 'production')

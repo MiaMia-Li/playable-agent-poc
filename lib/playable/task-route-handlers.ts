@@ -22,6 +22,7 @@ import { CodexCliVideoGameplayAnalyst, OpenAIVideoGameplayAnalyst } from './vide
 import { LocalFfmpegVideoPreprocessor, SandboxFfmpegVideoPreprocessor } from './video-preprocessor'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
+import { OpenAIMarketResearchAgent } from './research/openai-market-research-agent'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
@@ -49,6 +50,7 @@ const videoPreprocessor = localDemo
   : localCodex
     ? new LocalFfmpegVideoPreprocessor()
     : new SandboxFfmpegVideoPreprocessor()
+const marketResearchAgent = localDemo ? localDemoRuntime.marketResearchAgent : new OpenAIMarketResearchAgent()
 
 const authenticate = localDemo
   ? authenticateLocalDemo
@@ -68,6 +70,7 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   imageAnalyst,
   videoAnalyst,
   videoPreprocessor,
+  marketResearchAgent,
   generateId,
 })
 
