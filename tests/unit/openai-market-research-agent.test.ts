@@ -159,6 +159,27 @@ describe('OpenAIMarketResearchAgent', () => {
     expect(stages).toEqual(['searching', 'filtering', 'analyzing', 'summarizing'])
   })
 
+  it('gives discovery and deep analysis independent timeout signals', async () => {
+    let discoverySignal: AbortSignal | undefined
+    let analysisSignal: AbortSignal | undefined
+    const agent = new OpenAIMarketResearchAgent({
+      discover: async (input) => {
+        discoverySignal = input.abortSignal
+        return discovery()
+      },
+      analyze: async (input) => {
+        analysisSignal = input.abortSignal
+        return analysis()
+      },
+    })
+
+    await agent.search({ runId: 'run-1', apiKey: 'test-key', brief })
+
+    expect(discoverySignal).toBeDefined()
+    expect(analysisSignal).toBeDefined()
+    expect(analysisSignal).not.toBe(discoverySignal)
+  })
+
   it('preserves explicit evidence types', async () => {
     const thirdPartyCandidate: MarketResearchCandidate = {
       ...candidate,

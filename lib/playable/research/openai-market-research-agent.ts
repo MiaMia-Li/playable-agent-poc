@@ -26,7 +26,8 @@ import {
 } from './source-registry'
 
 const RESEARCH_MODEL = 'gpt-5.6-sol'
-const RESEARCH_TIMEOUT_MS = 55_000
+const DISCOVERY_TIMEOUT_MS = 90_000
+const ANALYSIS_TIMEOUT_MS = 45_000
 
 const marketDiscoveryOutputSchema = z.strictObject({
   candidates: z.array(marketResearchCandidateSchema).min(1).max(8),
@@ -153,8 +154,8 @@ async function defaultAnalyze(input: AnalysisInput): Promise<MarketAnalysisResul
   }
 }
 
-function combinedSignal(caller?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(RESEARCH_TIMEOUT_MS)
+function combinedSignal(timeoutMs: number, caller?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
   return caller ? AbortSignal.any([caller, timeout]) : timeout
 }
 
@@ -236,7 +237,7 @@ export class OpenAIMarketResearchAgent implements MarketResearchAgent {
   ): Promise<MarketResearchReport> {
     if (options?.abortSignal?.aborted) throw new MarketResearchError('cancelled')
     const brief = searchBriefSchema.parse(input.brief)
-    const signal = combinedSignal(options?.abortSignal)
+    const discoverySignal = combinedSignal(DISCOVERY_TIMEOUT_MS, options?.abortSignal)
     options?.onProgress?.('searching')
 
     let discovery: MarketDiscoveryResult
@@ -245,10 +246,10 @@ export class OpenAIMarketResearchAgent implements MarketResearchAgent {
         apiKey: input.apiKey,
         brief,
         allowedDomains: allowedResearchDomains(),
-        abortSignal: signal,
+        abortSignal: discoverySignal,
       })
     } catch (cause) {
-      throw mapFailure(cause, options?.abortSignal, signal)
+      throw mapFailure(cause, options?.abortSignal, discoverySignal)
     }
 
     options?.onProgress?.('filtering')
@@ -256,13 +257,14 @@ export class OpenAIMarketResearchAgent implements MarketResearchAgent {
     if (candidates.length === 0) throw new MarketResearchError('unavailable')
 
     options?.onProgress?.('analyzing')
+    const analysisSignal = combinedSignal(ANALYSIS_TIMEOUT_MS, options?.abortSignal)
     let analyzed: MarketAnalysisResult
     try {
       analyzed = marketAnalysisOutputSchema.parse(
-        await this.analyze({ apiKey: input.apiKey, brief, candidates, abortSignal: signal }),
+        await this.analyze({ apiKey: input.apiKey, brief, candidates, abortSignal: analysisSignal }),
       )
     } catch (cause) {
-      const failure = mapFailure(cause, options?.abortSignal, signal)
+      const failure = mapFailure(cause, options?.abortSignal, analysisSignal)
       if (failure.code === 'cancelled' || failure.code === 'output_invalid') throw failure
       analyzed = {
         industrySummary: fallbackSummary(candidates),
