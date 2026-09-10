@@ -53,7 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
 
         sandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
+          name: task.sandboxId,
           teamId,
           projectId,
           token: sandboxToken,

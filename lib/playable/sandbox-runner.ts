@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
+import { readPlayableSandboxCodexEndpointConfig } from './ai-provider'
 import { createExternalErrorLoggingFetch, logExternalRequestError } from './external-request-logging'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import { redactSecrets } from './redact'
@@ -38,7 +39,7 @@ interface BuildLogger {
 }
 
 export interface ExecuteAgentInput {
-  authEnvironment: Readonly<Record<'CODEX_API_KEY', string>>
+  authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
   sandbox: PlayableSandbox
   workspace: string
   taskId: string
@@ -280,7 +281,10 @@ export async function runPlayableBuild(
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
     await dependencies.executeAgent({
-      authEnvironment: { CODEX_API_KEY: input.apiKey },
+      authEnvironment: {
+        CODEX_API_KEY: input.apiKey,
+        OPENAI_BASE_URL: readPlayableSandboxCodexEndpointConfig().baseURL,
+      },
       sandbox,
       workspace,
       taskId: input.taskId,

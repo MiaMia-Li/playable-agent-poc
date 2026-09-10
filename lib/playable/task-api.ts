@@ -39,7 +39,6 @@ import {
   getDeliveryProfile,
   isDeliveryProfileId,
 } from './delivery-standards'
-import type { VideoPreprocessor } from './video-preprocessor'
 import {
   referenceImageAnalysisSchema,
   type ReferenceImageAnalyst,
@@ -174,6 +173,7 @@ export type BackgroundScheduler = (work: () => Promise<void>) => void
 interface HandlerDependencies {
   authenticate(request: NextRequest): Promise<string | undefined>
   readApiKey(request: NextRequest, userId: string): Promise<string | undefined>
+  readBuildApiKey?(request: NextRequest, userId: string): Promise<string | undefined>
   readMediaApiKey?(request: NextRequest, userId: string): Promise<string | undefined>
   repository: PlayableTaskRepository
   agent: PlayableAgentAdapter
@@ -184,7 +184,7 @@ interface HandlerDependencies {
   mediaGenerator?: MediaGenerator
   imageAnalyst?: ReferenceImageAnalyst
   videoAnalyst?: VideoGameplayAnalyst
-  videoPreprocessor?: VideoPreprocessor
+  videoAnalysisModel?: string
   videoToolTimeoutMs?: number
   generateId(): string
 }
@@ -491,7 +491,7 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
 }
 
 const DEFAULT_BUILD_FAILURE_MESSAGE = '试玩构建失败，请重试。'
-const QUOTA_BUILD_FAILURE_MESSAGE = 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。'
+const QUOTA_BUILD_FAILURE_MESSAGE = '公司 AI 服务额度暂时不可用，请联系管理员后重试。'
 const SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE = 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。'
 
 function externalResponseStatus(error: unknown): number | undefined {
@@ -747,11 +747,12 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 }
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
+  const videoAnalysisModel = dependencies.videoAnalysisModel?.trim() || VIDEO_ANALYSIS_MODEL
   const videoToolLocks = new Set<string>()
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
   const claimVideoAnalysis = async (taskId: string, assetId: string) => {
-    const key = `${assetId}:${VIDEO_ANALYSIS_PIPELINE_VERSION}:${VIDEO_ANALYSIS_MODEL}`
+    const key = `${assetId}:${VIDEO_ANALYSIS_PIPELINE_VERSION}:${videoAnalysisModel}`
     const pending = videoAnalysisClaims.get(key)
     if (pending) {
       const result = await pending
@@ -763,7 +764,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           taskId,
           assetId,
           pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
-          model: VIDEO_ANALYSIS_MODEL,
+          model: videoAnalysisModel,
         })
       : dependencies.repository
           .createVideoAnalysis({
@@ -771,7 +772,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             taskId,
             assetId,
             pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
-            model: VIDEO_ANALYSIS_MODEL,
+            model: videoAnalysisModel,
           })
           .then((analysis) => ({ analysis, claimed: true }))
     videoAnalysisClaims.set(key, claim)
@@ -842,7 +843,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       return { status: 'unavailable', reason: 'asset_not_attached' }
     }
     if (input.budget.videoExecuted) return { status: 'unavailable', reason: 'budget_exceeded' }
-    if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
+    if (!dependencies.videoAnalyst) {
       return { status: 'unavailable', reason: 'analysis_unavailable' }
     }
     const asset = await dependencies.repository.findOwnedAsset(input.task.id, input.userId, input.call.assetId)
@@ -883,7 +884,6 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         apiKey: input.apiKey,
         repository: dependencies.repository,
         artifactStore: dependencies.artifactStore,
-        preprocessor: dependencies.videoPreprocessor,
         analyst: dependencies.videoAnalyst,
         abortSignal,
       })
@@ -957,7 +957,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return jsonError(409, 'Task phase conflict')
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       const message = body.message.trim()
 
       const encoder = new TextEncoder()
@@ -1210,7 +1210,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         )
       }
       if (request.method !== 'POST') return jsonError(405, 'Method not allowed')
-      if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
+      if (!dependencies.videoAnalyst) {
         return jsonError(503, 'Video analysis is unavailable')
       }
       const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
@@ -1226,7 +1226,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         )
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       const claim = await claimVideoAnalysis(access.task.id, video.id)
       const analysis = claim.analysis
       if (!claim.claimed) {
@@ -1249,7 +1249,6 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             apiKey,
             repository: dependencies.repository,
             artifactStore: dependencies.artifactStore,
-            preprocessor: dependencies.videoPreprocessor!,
             analyst: dependencies.videoAnalyst!,
           })
         })
@@ -1273,8 +1272,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (body?.revisionId !== undefined && !revision) return jsonError(409, 'Revision state conflict')
       const parsed = confirmationProposalSchema.safeParse(body?.confirmation)
       if (!parsed.success) return jsonError(400, 'Invalid confirmation')
-      const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      const apiKey = await (dependencies.readBuildApiKey ?? dependencies.readApiKey)(request, access.userId)
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       if (containsExactSecret(JSON.stringify(parsed.data), apiKey)) {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -1295,7 +1294,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ? await (dependencies.readMediaApiKey ?? dependencies.readApiKey)(request, access.userId)
         : undefined
       if (needsGeneratedMedia && !mediaApiKey) {
-        return jsonError(428, 'OpenAI key required for AI media generation')
+        return jsonError(503, 'AI media service unavailable')
       }
       const [assets, videoAnalysis] = await Promise.all([
         dependencies.repository.listAssets(access.task.id, access.userId),

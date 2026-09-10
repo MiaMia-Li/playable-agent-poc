@@ -269,6 +269,7 @@ describe('playable agent reply schema', () => {
             differences: ['持续移动和障碍碰撞不受现有模板支持'],
           },
           gameplay: '持续移动、躲避障碍并到达终点',
+          delivery: { ...validProposal.delivery, profileId: 'applovin' },
         },
       }),
     ).toMatchObject({ kind: 'confirmation', confirmation: { routing: { match: 'freeform' } } })

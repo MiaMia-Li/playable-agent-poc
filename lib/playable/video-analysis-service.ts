@@ -3,8 +3,7 @@ import { redactSecrets } from './redact'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
-import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
-import type { VideoPreprocessor } from './video-preprocessor'
+import { GeminiVideoAnalysisError, type VideoGameplayAnalyst } from './video-gameplay-analyst'
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const reader = stream.getReader()
@@ -32,7 +31,6 @@ export interface RunVideoAnalysisInput {
   apiKey: string
   repository: PlayableTaskRepository
   artifactStore: ArtifactStore
-  preprocessor: VideoPreprocessor
   analyst: VideoGameplayAnalyst
   abortSignal?: AbortSignal
 }
@@ -43,21 +41,16 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_preprocessing_started',
-      message: 'Reference video preprocessing started',
+      message: 'Reference video loading started',
     })
     const stream = await input.artifactStore.get(input.asset.storageKey)
     if (!stream) throw new Error('Reference video is missing')
-    const video = await input.preprocessor.preprocess({
-      taskId: input.task.id,
-      video: await readAll(stream),
-      mimeType: input.asset.mimeType,
-      abortSignal: input.abortSignal,
-    })
+    const video = { bytes: await readAll(stream), mimeType: input.asset.mimeType }
     await input.repository.updateVideoAnalysisStatus(input.analysis.id, 'analyzing')
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_gameplay_analysis_started',
-      message: 'QDAI gameplay analysis started',
+      message: 'Gemini gameplay analysis started',
     })
     const blueprint = await input.analyst.analyze({
       taskId: input.task.id,
@@ -76,9 +69,10 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
       message: 'Gameplay blueprint is ready',
     })
     return sanitizedBlueprint
-  } catch {
+  } catch (error) {
     console.error('QDAI video gameplay analysis failed')
-    await input.repository.failVideoAnalysis(input.analysis.id, 'analysis_failed').catch(() => undefined)
+    const errorCode = error instanceof GeminiVideoAnalysisError ? error.code : 'analysis_failed'
+    await input.repository.failVideoAnalysis(input.analysis.id, errorCode).catch(() => undefined)
     await input.repository
       .appendEvent({
         taskId: input.task.id,

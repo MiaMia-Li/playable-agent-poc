@@ -445,13 +445,6 @@ function createHarness() {
       artifacts.delete(key)
     }),
   }
-  const videoPreprocessor = {
-    preprocess: vi.fn(async () => ({
-      durationSeconds: 3,
-      sampleRate: 1,
-      frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
-    })),
-  }
   const videoAnalyst = { analyze: vi.fn(async () => gameplayBlueprint) }
   const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
   let authenticatedUserId: string | undefined = 'user-1'
@@ -464,8 +457,8 @@ function createHarness() {
     repository,
     agent,
     artifactStore,
-    videoPreprocessor,
     videoAnalyst,
+    videoAnalysisModel: 'company-video-model',
     imageAnalyst,
     schedule: scheduler,
     buildStartedEventTimeoutMs: 10,
@@ -480,7 +473,6 @@ function createHarness() {
     scheduled,
     agent,
     artifactStore,
-    videoPreprocessor,
     videoAnalyst,
     imageAnalyst,
     artifacts,
@@ -527,7 +519,7 @@ describe('playable task API', () => {
     expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401])
   })
 
-  it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
+  it('sends a reference video directly for analysis and persists a gameplay blueprint before requirement planning', async () => {
     const video: PlayableAsset = {
       id: 'video-1',
       taskId: 'owned',
@@ -548,10 +540,10 @@ describe('playable task API', () => {
     expect(queued.status).toBe(202)
     expect(harness.scheduled).toHaveLength(1)
     await harness.scheduled[0]()
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
     await expect(harness.repository.findLatestVideoAnalysis('owned')).resolves.toMatchObject({
       status: 'succeeded',
+      model: 'company-video-model',
       blueprint: gameplayBlueprint,
     })
 
@@ -901,7 +893,6 @@ describe('playable task API', () => {
     ).text()
 
     expect(toolResult).toEqual({ status: 'succeeded', blueprint: gameplayBlueprint })
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
     expect(harness.scheduled).toHaveLength(0)
   })
@@ -942,7 +933,6 @@ describe('playable task API', () => {
     await Promise.all(harness.scheduled.map((work) => work()))
 
     expect(harness.repository.videoAnalyses).toHaveLength(1)
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
   })
 
@@ -994,7 +984,7 @@ describe('playable task API', () => {
       { status: 'unavailable', reason: 'asset_unavailable' },
     ])
     expect(harness.repository.videoAnalyses).toHaveLength(0)
-    expect(harness.videoPreprocessor.preprocess).not.toHaveBeenCalled()
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
   })
 
   it('reuses succeeded video analysis and returns a structured pending result without creating duplicates', async () => {
@@ -1569,7 +1559,7 @@ describe('playable task API', () => {
     }
   })
 
-  it('returns 428 from message and confirmation when the session has no API key', async () => {
+  it('reports the server AI service as unavailable when its shared credential is missing', async () => {
     harness.setApiKey(undefined)
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
@@ -1583,8 +1573,10 @@ describe('playable task API', () => {
       context,
     )
 
-    expect(messageResponse.status).toBe(428)
-    expect(confirmResponse.status).toBe(428)
+    expect(messageResponse.status).toBe(503)
+    expect(confirmResponse.status).toBe(503)
+    await expect(messageResponse.json()).resolves.toEqual({ error: 'AI service unavailable' })
+    await expect(confirmResponse.json()).resolves.toEqual({ error: 'AI service unavailable' })
     expect(harness.scheduled).toHaveLength(0)
   })
 
@@ -2099,7 +2091,7 @@ describe('playable task API', () => {
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。',
+      message: '公司 AI 服务额度暂时不可用，请联系管理员后重试。',
     })
     expect(JSON.stringify(harness.repository.events)).not.toContain('platform.openai.com')
   })

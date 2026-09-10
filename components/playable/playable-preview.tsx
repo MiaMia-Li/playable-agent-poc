@@ -41,7 +41,6 @@ export function PlayablePreview({
   confirmation,
   revision,
   onPhase,
-  onRequireApiKey,
   failureMessage,
   initialValidation,
   onRequestCompression,
@@ -130,10 +129,6 @@ export function PlayablePreview({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(revision ? { revisionId: revision.id } : { confirmation }),
       })
-      if (response.status === 428) {
-        onRequireApiKey?.()
-        throw new Error('请先配置 API Key')
-      }
       if (!response.ok) throw new Error('无法重新构建')
       onPhase?.('building')
     } catch (cause) {

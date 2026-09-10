@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
-import { readOpenAIKeyCookie } from './byok-session'
+import { readPlayableAIEndpointConfig, readPlayableSandboxCodexKey, readSharedPlayableAIKey } from './ai-provider'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
@@ -18,14 +18,14 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
-import { CodexCliVideoGameplayAnalyst, OpenAIVideoGameplayAnalyst } from './video-gameplay-analyst'
-import { LocalFfmpegVideoPreprocessor, SandboxFfmpegVideoPreprocessor } from './video-preprocessor'
+import { CodexCliVideoGameplayAnalyst, GeminiVideoGameplayAnalyst } from './video-gameplay-analyst'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
 const localHarness = isLocalHarnessMode()
+const playableAIEndpoint = readPlayableAIEndpointConfig()
 
 export const playableTaskRepository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
 export const playableArtifactStore = localDemo ? localDemoRuntime.artifactStore : new PrivateVercelArtifactStore()
@@ -38,18 +38,12 @@ const videoAnalyst = localDemo
   ? undefined
   : localCodex
     ? new CodexCliVideoGameplayAnalyst()
-    : new OpenAIVideoGameplayAnalyst()
+    : new GeminiVideoGameplayAnalyst()
 const imageAnalyst = localDemo
   ? undefined
   : localCodex
     ? new CodexCliReferenceImageAnalyst()
     : new OpenAIReferenceImageAnalyst()
-const videoPreprocessor = localDemo
-  ? undefined
-  : localCodex
-    ? new LocalFfmpegVideoPreprocessor()
-    : new SandboxFfmpegVideoPreprocessor()
-
 const authenticate = localDemo
   ? authenticateLocalDemo
   : localCodex || localHarness
@@ -58,8 +52,13 @@ const authenticate = localDemo
 
 export const playableTaskHandlers = createPlayableTaskHandlers({
   authenticate,
-  readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : readOpenAIKeyCookie,
-  readMediaApiKey: localCodex ? readOpenAIKeyCookie : undefined,
+  readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : readSharedPlayableAIKey,
+  readBuildApiKey: localDemo
+    ? readLocalDemoApiKey
+    : localCodex
+      ? readLocalCodexAuthMarker
+      : readPlayableSandboxCodexKey,
+  readMediaApiKey: localCodex ? readSharedPlayableAIKey : undefined,
   repository: playableTaskRepository,
   agent: playableAgent,
   artifactStore: playableArtifactStore,
@@ -67,7 +66,7 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   mediaGenerator: localDemo ? localDemoRuntime.mediaGenerator : undefined,
   imageAnalyst,
   videoAnalyst,
-  videoPreprocessor,
+  videoAnalysisModel: playableAIEndpoint.videoModel,
   generateId,
 })
 

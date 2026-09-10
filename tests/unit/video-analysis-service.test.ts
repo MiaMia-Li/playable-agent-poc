@@ -3,6 +3,7 @@ import type { GameplayBlueprint } from '@/lib/playable/schemas'
 import type { PlayableVideoAnalysisRecord, PlayableTaskRecord } from '@/lib/playable/task-api'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { runVideoAnalysis } from '@/lib/playable/video-analysis-service'
+import { GeminiVideoAnalysisError } from '@/lib/playable/video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
   version: 1,
@@ -75,18 +76,12 @@ function harness() {
     failVideoAnalysis: vi.fn(async (_id: string, _errorCode: string) => undefined),
   }
   const artifactStore = { get: vi.fn(async () => stream(new Uint8Array([1]))) }
-  const preprocessed = {
-    durationSeconds: 2,
-    sampleRate: 1,
-    frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
-  }
-  const preprocessor = { preprocess: vi.fn(async () => preprocessed) }
   const analyst = { analyze: vi.fn(async () => blueprint) }
-  return { repository, artifactStore, preprocessor, analyst, preprocessed }
+  return { repository, artifactStore, analyst }
 }
 
 describe('QDAI video analysis service', () => {
-  it('preprocesses private video bytes and persists the structured blueprint', async () => {
+  it('sends private video bytes directly to the analyst and persists the structured blueprint', async () => {
     const dependencies = harness()
 
     const result = await runVideoAnalysis({
@@ -96,7 +91,6 @@ describe('QDAI video analysis service', () => {
       apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
     })
 
@@ -105,11 +99,8 @@ describe('QDAI video analysis service', () => {
       'preprocessing',
       'analyzing',
     ])
-    expect(dependencies.preprocessor.preprocess).toHaveBeenCalledWith(
-      expect.objectContaining({ taskId: task.id, mimeType: 'video/mp4', video: new Uint8Array([1]) }),
-    )
     expect(dependencies.analyst.analyze).toHaveBeenCalledWith(
-      expect.objectContaining({ video: dependencies.preprocessed }),
+      expect.objectContaining({ video: { mimeType: 'video/mp4', bytes: new Uint8Array([1]) } }),
     )
     expect(dependencies.repository.completeVideoAnalysis).toHaveBeenCalledWith(analysis.id, blueprint)
     expect(dependencies.repository.failVideoAnalysis).not.toHaveBeenCalled()
@@ -126,14 +117,10 @@ describe('QDAI video analysis service', () => {
       apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
       abortSignal: controller.signal,
     })
 
-    expect(dependencies.preprocessor.preprocess).toHaveBeenCalledWith(
-      expect.objectContaining({ abortSignal: controller.signal }),
-    )
     expect(dependencies.analyst.analyze).toHaveBeenCalledWith(
       expect.objectContaining({ abortSignal: controller.signal }),
     )
@@ -141,7 +128,7 @@ describe('QDAI video analysis service', () => {
 
   it('records a static failure code without leaking the underlying error', async () => {
     const dependencies = harness()
-    dependencies.preprocessor.preprocess.mockRejectedValueOnce(new Error('private path and details'))
+    dependencies.analyst.analyze.mockRejectedValueOnce(new GeminiVideoAnalysisError('video_too_large'))
 
     const result = await runVideoAnalysis({
       task,
@@ -150,12 +137,11 @@ describe('QDAI video analysis service', () => {
       apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
     })
 
     expect(result).toBeUndefined()
-    expect(dependencies.repository.failVideoAnalysis).toHaveBeenCalledWith(analysis.id, 'analysis_failed')
+    expect(dependencies.repository.failVideoAnalysis).toHaveBeenCalledWith(analysis.id, 'video_too_large')
     expect(dependencies.repository.completeVideoAnalysis).not.toHaveBeenCalled()
   })
 })

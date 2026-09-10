@@ -30,6 +30,7 @@ const validProposal = {
   },
   storeUrl: 'https://example.com/store',
   delivery: {
+    profileId: 'applovin',
     network: 'applovin',
     logicalWidth: 360,
     logicalHeight: 640,
@@ -79,7 +80,7 @@ const harnessMocks = vi.hoisted(() => {
   const stream = vi.fn(async () => ({
     fullStream: (async function* () {})(),
     partialOutputStream: (async function* () {
-      yield { message: confirmationOutput.message }
+      yield { plan: { message: confirmationOutput.message } }
     })(),
     output: Promise.resolve(confirmationOutput),
   }))
@@ -163,7 +164,7 @@ describe('CodexPlayableAgent', () => {
     responseMocks.streamText.mockReturnValue({
       fullStream: (async function* () {})(),
       partialOutputStream: (async function* () {
-        yield { message: confirmationOutput.message }
+        yield { plan: { message: confirmationOutput.message } }
       })(),
       output: Promise.resolve(confirmationOutput),
     } as never)
@@ -190,14 +191,20 @@ describe('CodexPlayableAgent', () => {
     expect(harnessMocks.createSession).not.toHaveBeenCalled()
   })
 
-  it('forwards accumulated Responses API reasoning summaries while structured output is still forming', async () => {
+  it('streams the terminal plan message instead of the outer model-step summary', async () => {
     responseMocks.streamText.mockReturnValueOnce({
       fullStream: (async function* () {
         yield { type: 'reasoning-delta', text: '正在判断' }
         yield { type: 'reasoning-delta', text: '核心玩法' }
       })(),
       partialOutputStream: (async function* () {
-        yield { message: '正在整理方案' }
+        yield {
+          message: '介绍开发商、核心玩法与广告表现。',
+          plan: {
+            message: '《Hero Wars》是一款以英雄收集、队伍养成和关卡战斗为核心的游戏。',
+            reasoning: '用户希望了解游戏详情。',
+          },
+        }
       })(),
       output: Promise.resolve(confirmationOutput),
     } as never)
@@ -210,8 +217,13 @@ describe('CodexPlayableAgent', () => {
 
     expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在判断' })
     expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在判断核心玩法' })
+    expect(onProgress).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: '介绍开发商、核心玩法与广告表现。' }),
+    )
     expect(onProgress).toHaveBeenCalledWith(
-      expect.objectContaining({ message: '正在整理方案', reasoning: expect.any(String) }),
+      expect.objectContaining({
+        message: '《Hero Wars》是一款以英雄收集、队伍养成和关卡战斗为核心的游戏。',
+      }),
     )
   })
 
@@ -234,6 +246,7 @@ describe('CodexPlayableAgent', () => {
   })
 
   it('uses the direct Responses API with low-latency structured output and no Sandbox', async () => {
+    vi.stubEnv('PLAYABLE_AGENT_MODEL', 'company-agent-model')
     const apiKey = 'sk-unit-test-only'
     const input: AgentInput = {
       taskId: 'task-1',
@@ -246,8 +259,11 @@ describe('CodexPlayableAgent', () => {
 
     await expect(agent.proposeConfirmation(input, { onProgress })).resolves.toMatchObject(confirmationReply)
 
-    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({ apiKey })
-    expect(responseMocks.responses).toHaveBeenCalledWith('gpt-5.6-sol')
+    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({
+      apiKey,
+      baseURL: 'https://ai.pocketcity.com/v1',
+    })
+    expect(responseMocks.responses).toHaveBeenCalledWith('company-agent-model')
     const settings = responseMocks.streamText.mock.calls[0][0] as {
       model: unknown
       instructions: string
@@ -259,6 +275,8 @@ describe('CodexPlayableAgent', () => {
     expect(settings.instructions).toContain('respond_to_user')
     expect(settings.instructions).toContain('update_requirement_brief')
     expect(settings.instructions).toContain('validate_implementation_route')
+    expect(settings.instructions).toContain('plan.message must contain the complete user-facing answer')
+    expect(settings.instructions).toContain('Match the language used by the user')
     expect(settings.instructions).toContain('freeform')
     expect(settings.instructions).toContain('AI media generation is unavailable')
     expect(settings.providerOptions.openai).toEqual({

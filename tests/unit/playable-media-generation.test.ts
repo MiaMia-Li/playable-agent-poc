@@ -37,6 +37,11 @@ describe('playable AI media generation', () => {
       { taskId: 'task-1', apiKey: 'sk-test-only', confirmation },
       {
         fetch: fetchMock,
+        environment: {
+          PLAYABLE_AI_BASE_URL: 'https://ai.pocketcity.com',
+          PLAYABLE_IMAGE_MODEL: 'company-image-model',
+          PLAYABLE_SPEECH_MODEL: 'company-speech-model',
+        },
         generateId: (() => {
           let id = 0
           return () => `generated-${++id}`
@@ -49,16 +54,18 @@ describe('playable AI media generation', () => {
       expect.objectContaining({ slot: 'audio', filename: 'audio-ai.mp3', bytes: new Uint8Array([4, 5]) }),
     ])
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://ai.pocketcity.com/v1/images/generations')
+    expect(fetchMock.mock.calls[1][0]).toBe('https://ai.pocketcity.com/v1/audio/speech')
     const imageRequest = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, string>
     expect(imageRequest).toMatchObject({
-      model: 'gpt-image-2',
+      model: 'company-image-model',
       background: 'transparent',
     })
     expect(imageRequest.prompt).toContain('欢乐农场')
     expect(imageRequest.prompt).toContain('相同牌向中心碰撞并消除')
     expect(imageRequest.prompt).toContain('生成农场动物牌面图集，透明背景')
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
-      model: 'gpt-4o-mini-tts',
+      model: 'company-speech-model',
       input: '欢乐农场。立即试玩',
       instructions: '活泼、友好的中文女声宣传配音',
     })

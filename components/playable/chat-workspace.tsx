@@ -92,7 +92,7 @@ interface ChatWorkspaceProps {
   onRevision?: (revision?: RevisionProposal) => void
   onBrief?: (brief: RequirementBrief) => void
   onPhase: (phase: PlayableTaskPhase) => void
-  onRequireApiKey: () => void
+  onRequireApiKey?: () => void
   autoSubmitInitialPrompt?: boolean
   initialConversation?: ConversationMessage[]
   initialAssets?: SafePlayableAsset[]
@@ -266,7 +266,6 @@ export function ChatWorkspace({
   onRevision,
   onBrief,
   onPhase,
-  onRequireApiKey,
   autoSubmitInitialPrompt = false,
   initialConversation = [],
   initialAssets = [],
@@ -420,10 +419,6 @@ export function ChatWorkspace({
           }),
           signal: controller.signal,
         })
-        if (response.status === 428) {
-          onRequireApiKey()
-          throw new Error('请先配置 API Key')
-        }
         if (response.status === 409) throw new Error('当前阶段不接受新需求，请新建试玩后继续')
         if (!response.ok || !response.body) throw new Error('无法生成确认方案')
         if (appendToConversation) {
@@ -575,7 +570,6 @@ export function ChatWorkspace({
       onBrief,
       onPhase,
       onProposal,
-      onRequireApiKey,
       onRevision,
       onVideoAnalysisToolStatus,
       sending,
@@ -677,7 +671,7 @@ export function ChatWorkspace({
           continue
         }
         if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
-          validationError = slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB'
+          validationError = slot === 'referenceVideo' ? '单个参考视频不能超过 14 MiB' : '单个参考素材不能超过 4 MiB'
           continue
         }
         composerAttachmentSequence.current += 1
@@ -770,10 +764,6 @@ export function ChatWorkspace({
           confirmsRevision ? { revisionId: revision?.id, confirmation: proposal } : { confirmation: proposal },
         ),
       })
-      if (response.status === 428) {
-        onRequireApiKey()
-        throw new Error('请先配置 API Key')
-      }
       if (response.status === 409) throw new Error('方案状态已变化，请刷新后重试')
       if (!response.ok) throw new Error('无法开始构建')
       onPhase('building')

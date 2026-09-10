@@ -228,8 +228,11 @@ describe('runPlayableBuild', () => {
       const result = await runPlayableBuild(buildInput(mode, apiKey), {
         createSandbox: async () => sandbox,
         executeAgent: async ({ authEnvironment, workspace, sandbox: agentSandbox, abortSignal }) => {
-          expect(authEnvironment).toEqual({ CODEX_API_KEY: apiKey })
-          expect(Object.keys(authEnvironment)).toEqual(['CODEX_API_KEY'])
+          expect(authEnvironment).toEqual({
+            CODEX_API_KEY: apiKey,
+            OPENAI_BASE_URL: 'https://api.openai.com/v1',
+          })
+          expect(Object.keys(authEnvironment)).toEqual(['CODEX_API_KEY', 'OPENAI_BASE_URL'])
           expect(workspace).toBe(path.join(sandbox.defaultWorkingDirectory, 'work'))
           await agentSandbox.writeTextFile({
             path: path.join(workspace, 'agent-secret-bearing-output.txt'),

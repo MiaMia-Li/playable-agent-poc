@@ -6,6 +6,7 @@ import {
   executeReferenceAnalysisTools,
   executeRequirementToolPlan,
   playableCapabilitiesForAgent,
+  requirementAgentStepSchema,
   requirementAgentPlanSchema,
 } from '@/lib/playable/requirement-tools'
 import {
@@ -56,6 +57,7 @@ function confirmation(brief: RequirementBrief): ConfirmationProposal {
     copy: { title: '夏日挑战', cta: '立即试玩', disclaimer: '演示内容', locale: 'zh-CN' },
     storeUrl: 'https://example.com/app',
     delivery: {
+      profileId: 'applovin',
       network: 'applovin',
       logicalWidth: 360,
       logicalHeight: 640,
@@ -87,6 +89,42 @@ it('marks every requirement tool-call property as required for OpenAI structured
   const callSchema = jsonSchema.properties?.calls?.items
 
   expect(callSchema?.required?.sort()).toEqual(Object.keys(callSchema?.properties ?? {}).sort())
+})
+
+it('marks the generated delivery profile as required for OpenAI structured outputs', async () => {
+  const responseFormat = await Output.object({ schema: requirementAgentStepSchema }).responseFormat
+  if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
+  const jsonSchema = responseFormat.schema as {
+    properties?: {
+      plan?: {
+        anyOf?: Array<{
+          properties?: {
+            calls?: {
+              items?: {
+                properties?: {
+                  confirmation?: {
+                    anyOf?: Array<{
+                      properties?: {
+                        delivery?: {
+                          properties?: Record<string, unknown>
+                          required?: string[]
+                        }
+                      }
+                    }>
+                  }
+                }
+              }
+            }
+          }
+        }>
+      }
+    }
+  }
+  const deliverySchema =
+    jsonSchema.properties?.plan?.anyOf?.[0]?.properties?.calls?.items?.properties?.confirmation?.anyOf?.[0]?.properties
+      ?.delivery
+
+  expect(deliverySchema?.required?.sort()).toEqual(Object.keys(deliverySchema?.properties ?? {}).sort())
 })
 
 describe('requirement domain tools', () => {

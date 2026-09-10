@@ -3,8 +3,13 @@ import path from 'node:path'
 import { HarnessAgent } from '@ai-sdk/harness/agent'
 import type { HarnessV1NetworkSandboxSession, HarnessV1Skill } from '@ai-sdk/harness'
 import { createCodex } from '@ai-sdk/harness-codex'
-import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
+import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
 import { Output, streamText } from 'ai7'
+import {
+  createPlayableOpenAI,
+  readPlayableAIEndpointConfig,
+  readPlayableSandboxCodexEndpointConfig,
+} from './ai-provider'
 import { PlayableAgentError } from './playable-agent-adapter'
 import type {
   AgentInput,
@@ -27,7 +32,6 @@ import {
   type ReferenceAnalysisToolResult,
 } from './requirement-tools'
 
-const CODEX_MODEL = 'gpt-5.6-sol'
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 const CODEX_INSTRUCTIONS = [
@@ -37,7 +41,7 @@ const CODEX_INSTRUCTIONS = [
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
   'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
   'Raw uploaded referenceImage and referenceVideo entries provide metadata only. You may acknowledge their filenames, but never claim to have inspected their visual or audio content directly.',
-  'When a QDAI gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
+  'When a Gemini gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
   'For clarification output, set confirmation to null and provide one to six options. For confirmation output, set options to an empty array and provide the complete confirmation object.',
   'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by a registered mode. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
   'If the core input model, state machine, or win/loss rules cannot be represented by a registered mode, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
@@ -88,8 +92,9 @@ async function loadSkill(root: string): Promise<HarnessV1Skill> {
 }
 
 function codexHarness(apiKey: string, reasoningEffort: 'low' | 'high' = 'high') {
+  const endpoint = readPlayableSandboxCodexEndpointConfig()
   return createCodex({
-    auth: { CODEX_API_KEY: apiKey },
+    auth: { CODEX_API_KEY: apiKey, OPENAI_BASE_URL: endpoint.baseURL },
     reasoningEffort,
     webSearch: false,
   })
@@ -100,7 +105,8 @@ async function createProposal(
   abortSignal: AbortSignal,
   options?: AgentReplyOptions,
 ): Promise<PlayableAgentReply> {
-  const openai = createOpenAI({ apiKey: input.apiKey })
+  const openai = createPlayableOpenAI(input.apiKey)
+  const endpoint = readPlayableAIEndpointConfig()
   const baseContext = {
     history: input.history ?? [],
     currentConfirmation: input.confirmation ?? null,
@@ -127,7 +133,7 @@ async function createProposal(
     }
     const safePrompt = serializedContext.split(input.apiKey).join('[REDACTED]')
     const result = streamText({
-      model: openai.responses(CODEX_MODEL),
+      model: openai.responses(endpoint.model),
       instructions: REQUIREMENT_AGENT_INSTRUCTIONS,
       prompt: safePrompt,
       output: Output.object({ schema: requirementAgentStepSchema }),
@@ -160,9 +166,9 @@ async function createProposal(
         })(),
         (async () => {
           for await (const partial of result.partialOutputStream) {
-            const message = typeof partial.message === 'string' ? partial.message : undefined
+            const message = typeof partial.plan?.message === 'string' ? partial.plan.message : undefined
             const reasoning =
-              typeof partial.reasoning === 'string' && !streamedReasoning ? partial.reasoning : lastReasoning
+              typeof partial.plan?.reasoning === 'string' && !streamedReasoning ? partial.plan.reasoning : lastReasoning
             if (message === lastMessage && reasoning === lastReasoning) continue
             lastMessage = message
             lastReasoning = reasoning
@@ -206,7 +212,7 @@ async function createProposal(
 
 async function executeBuildAgent(
   input: {
-    authEnvironment: Readonly<Record<'CODEX_API_KEY', string>>
+    authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
     sandbox: PlayableSandbox
     taskId: string
     abortSignal?: AbortSignal
@@ -273,10 +279,11 @@ async function executeBuildAgent(
 }
 
 export function createCodexBuildAgent(input: { apiKey: string; skill: HarnessV1Skill }): HarnessAgent {
+  const endpoint = readPlayableSandboxCodexEndpointConfig()
   return new HarnessAgent({
     harness: codexHarness(input.apiKey),
     id: 'playable-build',
-    model: CODEX_MODEL,
+    model: endpoint.model,
     instructions: CODEX_INSTRUCTIONS,
     skills: [input.skill],
     sandboxConfig: { workDir: 'work' },

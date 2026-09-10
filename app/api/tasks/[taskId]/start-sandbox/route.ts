@@ -45,7 +45,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     if (task.sandboxId && task.sandboxUrl) {
       try {
         const existingSandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
+          name: task.sandboxId,
           teamId: process.env.SANDBOX_VERCEL_TEAM_ID!,
           projectId: process.env.SANDBOX_VERCEL_PROJECT_ID!,
           token: process.env.SANDBOX_VERCEL_TOKEN!,
@@ -107,7 +107,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       resources: { vcpus: 4 },
     })
 
-    const sandboxId = sandbox?.sandboxId
+    const sandboxId = sandbox?.name
     await logger.info('Sandbox created')
 
     // Register the sandbox

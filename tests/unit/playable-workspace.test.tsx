@@ -72,36 +72,11 @@ afterEach(() => {
 })
 
 describe('PlayableWorkspace', () => {
-  it('opens the API key dialog when BYOK is missing', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} />)
-
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-    expect(screen.getByLabelText('OpenAI API Key')).toHaveAttribute('type', 'password')
-    fireEvent.click(screen.getByRole('button', { name: '暂不配置' }))
-    expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
-  })
-
-  it('lets local Codex users configure a media API key without blocking chat', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured localCodex />)
+  it('does not expose API key controls when the server owns the credential', () => {
+    render(<PlayableWorkspace taskId="task-7" publicAccess />)
 
     expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '媒体 API Key' }))
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-  })
-
-  it('uses the production API key flow in local Harness mode', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} localHarness />)
-
-    expect(screen.getByText('本地 Harness · 线上 Agent')).toBeInTheDocument()
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-  })
-
-  it('lets public users reopen the API key dialog from the header', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured publicAccess />)
-
-    fireEvent.click(screen.getByRole('button', { name: '公开体验 · 自备 API Key' }))
-
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /API Key|自备/ })).not.toBeInTheDocument()
   })
 
   it('starts the first conversation automatically after the API key is available', async () => {
@@ -123,7 +98,7 @@ describe('PlayableWorkspace', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured initialPrompt="制作农场主题试玩" />)
+    render(<PlayableWorkspace taskId="task-7" initialPrompt="制作农场主题试玩" />)
 
     expect(await screen.findByText('请选择一种玩法。')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
@@ -239,7 +214,7 @@ describe('PlayableWorkspace', () => {
       return Response.json({ builds: [] })
     })
     vi.stubGlobal('fetch', fetchMock)
-    render(<PlayableWorkspace taskId="task-video-tool" initialApiKeyConfigured />)
+    render(<PlayableWorkspace taskId="task-video-tool" />)
 
     fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '分析视频' } })
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
@@ -249,7 +224,7 @@ describe('PlayableWorkspace', () => {
   })
 
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
+    render(<PlayableWorkspace taskId="task-7" />)
 
     expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
@@ -595,7 +570,6 @@ describe('PlayableWorkspace', () => {
     render(
       <PlayableWorkspace
         taskId="task-7"
-        initialApiKeyConfigured
         initialPhase="building"
         initialProposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
         initialHasArtifact
@@ -625,7 +599,7 @@ describe('PlayableWorkspace', () => {
             id: 'event-1',
             type: 'build_failed',
             phase: 'failed',
-            message: 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。',
+            message: '公司 AI 服务额度暂时不可用，请联系管理员后重试。',
             createdAt: new Date(0).toISOString(),
           },
         ],
@@ -633,11 +607,9 @@ describe('PlayableWorkspace', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    render(
-      <PlayableWorkspace taskId="task-7" initialApiKeyConfigured initialPhase="building" initialProposal={proposal} />,
-    )
+    render(<PlayableWorkspace taskId="task-7" initialPhase="building" initialProposal={proposal} />)
 
-    expect(await screen.findByText('OpenAI API 额度已用尽，请充值或更换 API Key 后重试。')).toBeInTheDocument()
+    expect(await screen.findByText('公司 AI 服务额度暂时不可用，请联系管理员后重试。')).toBeInTheDocument()
   })
 
   it('keeps the last safe build error visible after reloading a failed task', () => {
@@ -646,14 +618,13 @@ describe('PlayableWorkspace', () => {
     render(
       <PlayableWorkspace
         taskId="task-7"
-        initialApiKeyConfigured
         initialPhase="failed"
         initialProposal={proposal}
-        initialBuildFailureMessage="OpenAI API 额度已用尽，请充值或更换 API Key 后重试。"
+        initialBuildFailureMessage="公司 AI 服务额度暂时不可用，请联系管理员后重试。"
       />,
     )
 
-    expect(screen.getByText('OpenAI API 额度已用尽，请充值或更换 API Key 后重试。')).toBeInTheDocument()
+    expect(screen.getByText('公司 AI 服务额度暂时不可用，请联系管理员后重试。')).toBeInTheDocument()
   })
 
   it('keeps an AppLovin delivery warning visible after reloading a ready task', async () => {
@@ -665,7 +636,6 @@ describe('PlayableWorkspace', () => {
     render(
       <PlayableWorkspace
         taskId="task-7"
-        initialApiKeyConfigured
         initialPhase="ready"
         initialProposal={{ ...proposal, storeUrl: 'https://example.com/store' }}
         initialHasArtifact
@@ -686,7 +656,7 @@ describe('PlayableWorkspace', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<PlayableWorkspace taskId="task-idle" initialApiKeyConfigured initialPhase="draft" />)
+    render(<PlayableWorkspace taskId="task-idle" initialPhase="draft" />)
 
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -709,7 +679,6 @@ describe('PlayableWorkspace', () => {
     render(
       <PlayableWorkspace
         taskId="task-7"
-        initialApiKeyConfigured
         initialPrompt="参考视频制作试玩"
         initialAssets={[videoAsset]}
         initialVideoAnalysisStatus="analyzing"

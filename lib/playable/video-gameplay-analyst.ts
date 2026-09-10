@@ -1,25 +1,47 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
+import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
 import { generateText, Output } from 'ai7'
 import { toJSONSchema } from 'zod'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
+import { MAX_REFERENCE_VIDEO_BYTES } from './asset-policy'
+import { createPlayableOpenAI, readPlayableAIEndpointConfig } from './ai-provider'
 import { invokeCodexCli } from './codex-cli-playable-agent'
 import { logExternalRequestError } from './external-request-logging'
-import type { PreprocessedVideo } from './video-preprocessor'
+import {
+  LocalFfmpegVideoPreprocessor,
+  SandboxFfmpegVideoPreprocessor,
+  type PreprocessedVideo,
+  type VideoPreprocessor,
+} from './video-preprocessor'
 
-export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'qdai-video-v1'
-export const VIDEO_ANALYSIS_MODEL = 'gpt-5.6-sol'
+export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'gemini-native-video-v1'
+export const VIDEO_ANALYSIS_MODEL = 'gemini-3.5-flash'
+export const MAX_GEMINI_INLINE_VIDEO_BYTES = MAX_REFERENCE_VIDEO_BYTES
+
+export interface VideoSource {
+  mimeType: string
+  bytes: Uint8Array
+}
 
 export interface VideoGameplayAnalyst {
   analyze(input: {
     taskId: string
     apiKey: string
     prompt: string
-    video: PreprocessedVideo
+    video: VideoSource
     abortSignal?: AbortSignal
   }): Promise<GameplayBlueprint>
+}
+
+export type GeminiVideoAnalysisErrorCode = 'video_too_large' | 'gemini_request_failed' | 'gemini_output_invalid'
+
+export class GeminiVideoAnalysisError extends Error {
+  constructor(readonly code: GeminiVideoAnalysisErrorCode) {
+    super(code)
+    this.name = 'GeminiVideoAnalysisError'
+  }
 }
 
 const QDAI_INSTRUCTIONS = [
@@ -81,25 +103,139 @@ function validateEvidenceTimes(blueprint: GameplayBlueprint, durationSeconds: nu
   return serialized
 }
 
-export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
+function validateEvidenceOrder(blueprint: GameplayBlueprint): GameplayBlueprint {
+  const serialized = gameplayBlueprintSchema.parse(blueprint)
+  const inferences = [
+    ...serialized.controls,
+    serialized.sceneStructure,
+    ...serialized.entities,
+    serialized.coreLoop,
+    ...serialized.stateTransitions,
+    serialized.objective,
+    ...serialized.failureConditions,
+    ...serialized.progression,
+    ...serialized.tutorial,
+    ...(serialized.endCard ? [serialized.endCard] : []),
+  ]
+  if (inferences.some((inference) => inference.evidence.some((item) => item.endSeconds < item.startSeconds))) {
+    throw new GeminiVideoAnalysisError('gemini_output_invalid')
+  }
+  return serialized
+}
+
+interface GeminiVideoGameplayAnalystDependencies {
+  fetch?: typeof fetch
+  environment?: Record<string, string | undefined>
+}
+
+export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
+  private readonly request: typeof fetch
+  private readonly environment: Record<string, string | undefined> | undefined
+
+  constructor(dependencies: GeminiVideoGameplayAnalystDependencies = {}) {
+    this.request = dependencies.fetch ?? fetch
+    this.environment = dependencies.environment
+  }
+
   async analyze(input: {
+    taskId: string
     apiKey: string
     prompt: string
-    video: PreprocessedVideo
+    video: VideoSource
     abortSignal?: AbortSignal
   }): Promise<GameplayBlueprint> {
+    if (input.video.bytes.byteLength > MAX_GEMINI_INLINE_VIDEO_BYTES) {
+      throw new GeminiVideoAnalysisError('video_too_large')
+    }
+    const endpoint = readPlayableAIEndpointConfig(this.environment)
+    let response: Response
+    try {
+      response = await this.request(
+        `${endpoint.geminiBaseURL}/models/${encodeURIComponent(endpoint.videoModel)}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': input.apiKey,
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: input.video.mimeType,
+                      data: Buffer.from(input.video.bytes).toString('base64'),
+                    },
+                    videoMetadata: { fps: 2 },
+                  },
+                  {
+                    text: `${QDAI_INSTRUCTIONS}\n\nUser request: ${input.prompt}\n\nProduce Gameplay Blueprint v1 as JSON. Use seconds from the source video for all evidence timestamps.`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              responseJsonSchema: outputJsonSchema(),
+            },
+          }),
+          signal: input.abortSignal,
+        },
+      )
+    } catch {
+      console.error('Gemini video analysis request failed')
+      throw new GeminiVideoAnalysisError('gemini_request_failed')
+    }
+    if (!response.ok) {
+      console.error('Gemini video analysis request failed')
+      throw new GeminiVideoAnalysisError('gemini_request_failed')
+    }
+
+    try {
+      const body = (await response.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }>
+      }
+      const text = body.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === 'string')?.text
+      if (typeof text !== 'string') throw new GeminiVideoAnalysisError('gemini_output_invalid')
+      return validateEvidenceOrder(JSON.parse(text))
+    } catch (error) {
+      if (error instanceof GeminiVideoAnalysisError) throw error
+      throw new GeminiVideoAnalysisError('gemini_output_invalid')
+    }
+  }
+}
+
+export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
+  constructor(private readonly preprocessor: VideoPreprocessor = new SandboxFfmpegVideoPreprocessor()) {}
+
+  async analyze(input: {
+    taskId: string
+    apiKey: string
+    prompt: string
+    video: VideoSource
+    abortSignal?: AbortSignal
+  }): Promise<GameplayBlueprint> {
+    const video = await this.preprocessor.preprocess({
+      taskId: input.taskId,
+      video: input.video.bytes,
+      mimeType: input.video.mimeType,
+      abortSignal: input.abortSignal,
+    })
     let result: Awaited<ReturnType<typeof generateText>>
     try {
-      const openai = createOpenAI({ apiKey: input.apiKey })
+      const openai = createPlayableOpenAI(input.apiKey)
+      const endpoint = readPlayableAIEndpointConfig()
       result = await generateText({
-        model: openai.responses(VIDEO_ANALYSIS_MODEL),
+        model: openai.responses(endpoint.model),
         instructions: QDAI_INSTRUCTIONS,
         messages: [
           {
             role: 'user',
             content: [
-              { type: 'text', text: analysisPrompt(input) },
-              ...input.video.frames.map((frame) => ({
+              { type: 'text', text: analysisPrompt({ ...input, video }) },
+              ...video.frames.map((frame) => ({
                 type: 'image' as const,
                 image: frame.bytes,
                 mediaType: frame.mimeType,
@@ -121,20 +257,29 @@ export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
       logExternalRequestError('OpenAI', error, [input.apiKey])
       throw error
     }
-    return validateEvidenceTimes(result.output, input.video.durationSeconds)
+    return validateEvidenceTimes(result.output, video.durationSeconds)
   }
 }
 
 export class CodexCliVideoGameplayAnalyst implements VideoGameplayAnalyst {
+  constructor(private readonly preprocessor: VideoPreprocessor = new LocalFfmpegVideoPreprocessor()) {}
+
   async analyze(input: {
+    taskId: string
     prompt: string
-    video: PreprocessedVideo
+    video: VideoSource
     abortSignal?: AbortSignal
   }): Promise<GameplayBlueprint> {
+    const video = await this.preprocessor.preprocess({
+      taskId: input.taskId,
+      video: input.video.bytes,
+      mimeType: input.video.mimeType,
+      abortSignal: input.abortSignal,
+    })
     const workspace = await mkdtemp(path.join(os.tmpdir(), 'qdai-analysis-'))
     try {
       const images: string[] = []
-      for (const [index, frame] of input.video.frames.entries()) {
+      for (const [index, frame] of video.frames.entries()) {
         const filename = `frame-${String(index + 1).padStart(3, '0')}-${frame.timestampSeconds.toFixed(2)}s.jpg`
         const imagePath = path.join(workspace, filename)
         await writeFile(imagePath, frame.bytes)
@@ -142,14 +287,14 @@ export class CodexCliVideoGameplayAnalyst implements VideoGameplayAnalyst {
       }
       const result = await invokeCodexCli({
         workspace,
-        prompt: `${QDAI_INSTRUCTIONS}\n\n${analysisPrompt(input)}`,
+        prompt: `${QDAI_INSTRUCTIONS}\n\n${analysisPrompt({ ...input, video })}`,
         schema: outputJsonSchema(),
         sandbox: 'read-only',
         reasoningEffort: 'medium',
         abortSignal: input.abortSignal,
         images,
       })
-      return validateEvidenceTimes(gameplayBlueprintSchema.parse(result), input.video.durationSeconds)
+      return validateEvidenceTimes(gameplayBlueprintSchema.parse(result), video.durationSeconds)
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }

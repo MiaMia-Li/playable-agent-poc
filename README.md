@@ -1,25 +1,24 @@
 # C6 Playable Agent POC
 
-A proof-of-concept web application for planning C6 Mahjong pair-match playable ads with the OpenAI Responses API, then building them with a GPT-5.6 Sol agent in an isolated Vercel Sandbox.
+A proof-of-concept web application for planning C6 Mahjong pair-match playable ads with the OpenAI Responses API, then building them with a Codex agent in an isolated Vercel Sandbox.
 
 ## Credential model
 
-Every visitor provides their own OpenAI API Key. The public POC uses one shared task identity, while each browser keeps a separate session-only key in an encrypted HttpOnly cookie. The key is used server-side for requirement planning, supplied to the task's Sandbox only after build confirmation, and removed when the key session ends.
+Playable Studio uses separate server-side credentials for the internal planning/media path and the public Sandbox build path. Configure both only in the server runtime or deployment secret manager; the browser never asks visitors for a key and never receives either credential.
 
-Do not configure a project-wide `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`. This project has no shared OpenAI credential or provider-key fallback. OpenAI and other provider keys must not be stored in the application database, user profile, browser storage, logs, generated HTML, or build artifacts.
+`PLAYABLE_AI_API_KEY` and `PLAYABLE_AI_BASE_URL` configure the company OpenAI-compatible gateway used for requirement planning, reference-image analysis, and media generation. Reference videos use its native Gemini endpoint as private inline data. `PLAYABLE_SANDBOX_CODEX_API_KEY`, `PLAYABLE_SANDBOX_CODEX_BASE_URL`, and `PLAYABLE_SANDBOX_CODEX_MODEL` independently configure Codex inside the public Vercel Sandbox. The Sandbox credential never falls back to the internal company key, and both paths intentionally ignore conventional `OPENAI_API_KEY` values.
 
-The application always requests the explicit model ID `gpt-5.6-sol`. A user key must have access to that model before requirement planning or a Sandbox build can start.
+Never store or expose the shared key in the database, user profile, browser storage, `NEXT_PUBLIC_*` variables, logs, generated HTML, or build artifacts. For a public deployment, configure gateway-side quota, model allowlists, and abuse controls for this credential.
 
 ## POC workflow
 
-1. Open the public studio and enter an OpenAI API Key for the current browser session.
-2. Ask questions or describe the game idea conversationally. The requirement Agent answers informational messages without
+1. Open the public studio and describe the game idea conversationally. The requirement Agent answers informational messages without
    changing the Brief; requirement messages use domain tools to maintain a persistent Brief,
    inspect safe asset metadata, read Plugin capabilities, and request only the missing input.
-3. Route the idea to an exact template match, an approximate template adaptation, or direct freeform generation.
-4. Upload or select assets and confirm the complete production configuration.
-5. Build and validate the playable in an isolated Sandbox.
-6. Preview or switch between passing versions and download the offline single-file HTML.
+2. Route the idea to an exact template match, an approximate template adaptation, or direct freeform generation.
+3. Upload or select assets and confirm the complete production configuration.
+4. Build and validate the playable in an isolated Sandbox.
+5. Preview or switch between passing versions and download the offline single-file HTML.
 
 Freeform generation uses the closest registered mode only as workspace scaffolding; it does not create a persistent
 custom Plugin. The POC does not use repository selection, GitHub Issue input, automatic branches, commits, or pull
@@ -59,24 +58,40 @@ SANDBOX_VERCEL_TOKEN=
 SANDBOX_VERCEL_TEAM_ID=
 SANDBOX_VERCEL_PROJECT_ID=
 MAX_SANDBOX_DURATION=300
+PLAYABLE_AI_API_KEY=
+PLAYABLE_AI_BASE_URL=https://ai.pocketcity.com/v1
+PLAYABLE_GEMINI_BASE_URL=https://ai.pocketcity.com/v1beta
 PLAYABLE_AGENT_MODEL=gpt-5.6-sol
+PLAYABLE_SANDBOX_CODEX_API_KEY=
+PLAYABLE_SANDBOX_CODEX_BASE_URL=https://api.openai.com/v1
+PLAYABLE_SANDBOX_CODEX_MODEL=gpt-5.5
+PLAYABLE_IMAGE_MODEL=gpt-image-2
+PLAYABLE_SPEECH_MODEL=gpt-4o-mini-tts
+PLAYABLE_VIDEO_MODEL=gemini-3.5-flash
 LOCAL_HARNESS_MODE=0
 LOCAL_CODEX_MODE=0
 ```
 
-No project-wide OpenAI credential belongs in `.env.local` or the deployment environment. Visitors enter their own key in the browser session. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
+Set both `PLAYABLE_AI_API_KEY` and `PLAYABLE_SANDBOX_CODEX_API_KEY` in `.env.local` for local server use and in the deployment secret manager for production. The latter must be accepted by the public endpoint configured in `PLAYABLE_SANDBOX_CODEX_BASE_URL`. Do not commit either value. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
+
+Reference video uploads are limited to 14 MiB so the Base64-encoded file, prompt, and JSON Schema remain below the native Gemini inline request limit. Larger private videos require a separately designed File API or short-lived public URL flow and are rejected before analysis.
+
+Before deploying, verify DNS/network egress and gateway compatibility from the same runtime environment:
+
+```bash
+pnpm check:playable-ai
+```
 
 ### Production-equivalent local agent
 
-To test the same BYOK, Responses API structured streaming, Codex Harness build, PostgreSQL, Blob, and Vercel Sandbox path used by the
+To test the same shared gateway, Responses API structured streaming, Codex Harness build, PostgreSQL, Blob, and Vercel Sandbox path used by the
 deployment while using the same public POC task identity, run:
 
 ```bash
 pnpm local:harness
 ```
 
-Enter the user OpenAI API Key in the session dialog. This mode uses the same Agent implementation and API billing path
-as production; only the shared identity is replaced with the fixed local development user. Requirement chat does not create
+This mode uses the same split server-side credentials, Agent implementation, and API billing paths as production; only the shared identity is replaced with the fixed local development user. Requirement chat does not create
 a Sandbox. A confirmed build requires all three `SANDBOX_VERCEL_*` values because the local process does not receive
 Vercel's deployment OIDC identity. For an end-to-end OAuth check, use `pnpm dev` instead.
 

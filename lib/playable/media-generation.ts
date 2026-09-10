@@ -1,17 +1,16 @@
 import { generateId as defaultGenerateId } from '@/lib/utils/id'
 import type { ConfirmedBuildInput, PlayableBuildAsset } from './playable-agent-adapter'
 import type { PlayableResourceAssetSlot } from './asset-policy'
+import { readPlayableAIEndpointConfig } from './ai-provider'
 import { createExternalErrorLoggingFetch } from './external-request-logging'
 import { MAX_ASSET_BYTES } from './task-assets'
-
-const IMAGE_MODEL = 'gpt-image-2'
-const SPEECH_MODEL = 'gpt-4o-mini-tts'
 
 type MediaGenerationInput = Pick<ConfirmedBuildInput, 'taskId' | 'apiKey' | 'confirmation'>
 
 interface MediaGenerationDependencies {
   fetch?: typeof fetch
   generateId?: () => string
+  environment?: Record<string, string | undefined>
 }
 
 const imageSettings: Partial<
@@ -34,13 +33,14 @@ async function generateImage(
   apiKey: string,
   prompt: string,
   settings: { size: string; background: 'transparent' | 'opaque' },
+  endpoint: { baseURL: string; imageModel: string },
   request: typeof fetch,
 ): Promise<Uint8Array> {
-  const response = await request('https://api.openai.com/v1/images/generations', {
+  const response = await request(`${endpoint.baseURL}/images/generations`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: IMAGE_MODEL,
+      model: endpoint.imageModel,
       prompt,
       size: settings.size,
       quality: 'low',
@@ -59,13 +59,14 @@ async function generateSpeech(
   title: string,
   cta: string,
   instructions: string,
+  endpoint: { baseURL: string; speechModel: string },
   request: typeof fetch,
 ): Promise<Uint8Array> {
-  const response = await request('https://api.openai.com/v1/audio/speech', {
+  const response = await request(`${endpoint.baseURL}/audio/speech`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: SPEECH_MODEL,
+      model: endpoint.speechModel,
       voice: 'coral',
       input: `${title}。${cta}`,
       instructions,
@@ -91,6 +92,7 @@ export async function generatePlayableMediaAssets(
   dependencies: MediaGenerationDependencies = {},
 ): Promise<PlayableBuildAsset[]> {
   const request = createExternalErrorLoggingFetch('OpenAI', [input.apiKey], dependencies.fetch ?? fetch)
+  const endpoint = readPlayableAIEndpointConfig(dependencies.environment)
   const nextId = dependencies.generateId ?? defaultGenerateId
   const generated: PlayableBuildAsset[] = []
 
@@ -104,6 +106,7 @@ export async function generatePlayableMediaAssets(
         input.confirmation.copy.title,
         input.confirmation.copy.cta,
         resource.treatment,
+        endpoint,
         request,
       )
       generated.push({ id, slot, filename: `${slot}-ai.mp3`, mimeType: 'audio/mpeg', size: bytes.byteLength, bytes })
@@ -111,7 +114,13 @@ export async function generatePlayableMediaAssets(
     }
     const settings = imageSettings[slot]
     if (!settings) throw new Error('Unsupported generated media slot')
-    const bytes = await generateImage(input.apiKey, imagePrompt(input, slot, resource.treatment), settings, request)
+    const bytes = await generateImage(
+      input.apiKey,
+      imagePrompt(input, slot, resource.treatment),
+      settings,
+      endpoint,
+      request,
+    )
     generated.push({ id, slot, filename: `${slot}-ai.png`, mimeType: 'image/png', size: bytes.byteLength, bytes })
   }
 

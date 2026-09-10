@@ -9,7 +9,8 @@ const infrastructure = vi.hoisted(() => {
     scheduled,
     after: vi.fn((work: () => Promise<void>) => scheduled.push(work)),
     authenticatePublicPlayable: vi.fn(),
-    readOpenAIKeyCookie: vi.fn(),
+    readSharedPlayableAIKey: vi.fn(),
+    readPlayableSandboxCodexKey: vi.fn(),
     generateId: vi.fn(),
     repository: {
       createTask: vi.fn(),
@@ -46,7 +47,18 @@ vi.mock('next/server', async (importOriginal) => ({
 vi.mock('@/lib/playable/public-access', () => ({
   authenticatePublicPlayable: infrastructure.authenticatePublicPlayable,
 }))
-vi.mock('@/lib/playable/byok-session', () => ({ readOpenAIKeyCookie: infrastructure.readOpenAIKeyCookie }))
+vi.mock('@/lib/playable/ai-provider', () => ({
+  readSharedPlayableAIKey: infrastructure.readSharedPlayableAIKey,
+  readPlayableSandboxCodexKey: infrastructure.readPlayableSandboxCodexKey,
+  readPlayableAIEndpointConfig: () => ({
+    baseURL: 'https://ai.pocketcity.com/v1',
+    geminiBaseURL: 'https://ai.pocketcity.com/v1beta',
+    model: 'gpt-5.6-sol',
+    imageModel: 'gpt-image-2',
+    speechModel: 'gpt-4o-mini-tts',
+    videoModel: 'gemini-3.5-flash',
+  }),
+}))
 vi.mock('@/lib/utils/id', () => ({ generateId: infrastructure.generateId }))
 vi.mock('@/lib/playable/task-repository', () => ({
   DatabasePlayableTaskRepository: class {
@@ -100,7 +112,8 @@ describe('real playable task route wiring', () => {
     vi.clearAllMocks()
     infrastructure.scheduled.length = 0
     infrastructure.authenticatePublicPlayable.mockResolvedValue('public-playable-poc-user')
-    infrastructure.readOpenAIKeyCookie.mockResolvedValue('sk-session-key')
+    infrastructure.readSharedPlayableAIKey.mockResolvedValue('shared-server-key')
+    infrastructure.readPlayableSandboxCodexKey.mockResolvedValue('personal-sandbox-key')
     infrastructure.generateId.mockReturnValue('generated-id')
     infrastructure.repository.appendEvent.mockResolvedValue(undefined)
     infrastructure.repository.compareAndSetPhase.mockResolvedValue(true)
@@ -140,7 +153,7 @@ describe('real playable task route wiring', () => {
     })
   })
 
-  it('wires confirmation through key, repository, after, agent, and private Blob boundaries', async () => {
+  it('builds without a browser key by using the dedicated public Sandbox credential', async () => {
     const task = {
       id: 'task-1',
       userId: 'public-playable-poc-user',
@@ -159,14 +172,14 @@ describe('real playable task route wiring', () => {
 
     const response = await confirm(request, { params: Promise.resolve({ taskId: 'task-1' }) })
     expect(response.status).toBe(202)
-    expect(infrastructure.readOpenAIKeyCookie).toHaveBeenCalledWith(request, 'public-playable-poc-user')
+    expect(infrastructure.readPlayableSandboxCodexKey).toHaveBeenCalledOnce()
     expect(infrastructure.after).toHaveBeenCalledOnce()
 
     await infrastructure.scheduled[0]()
 
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
       taskId: 'task-1',
-      apiKey: 'sk-session-key',
+      apiKey: 'personal-sandbox-key',
       confirmation,
       assets: [],
     })

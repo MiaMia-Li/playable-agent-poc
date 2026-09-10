@@ -121,6 +121,37 @@ export const routingDecisionSchema = z
     }
   })
 
+const deliverySnapshotShape = {
+  network: z.enum(['applovin', 'generic']),
+  logicalWidth: z.literal(360),
+  logicalHeight: z.literal(640),
+  output: z.literal('single-html'),
+  maxBytes: z.union([z.literal(APPLOVIN_MAX_BYTES), z.null()]),
+}
+
+function validateDeliveryProfile(
+  delivery: Parameters<typeof matchesDeliveryProfileSnapshot>[0],
+  context: z.RefinementCtx,
+): void {
+  if (!matchesDeliveryProfileSnapshot(delivery)) {
+    context.addIssue({ code: 'custom', message: 'Delivery fields must match the selected profile' })
+  }
+}
+
+const legacyDeliverySchema = z
+  .strictObject({
+    profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
+    ...deliverySnapshotShape,
+  })
+  .superRefine(validateDeliveryProfile)
+
+const generatedDeliverySchema = z
+  .strictObject({
+    profileId: z.enum(DELIVERY_PROFILE_IDS),
+    ...deliverySnapshotShape,
+  })
+  .superRefine(validateDeliveryProfile)
+
 const confirmationProposalShape = {
   mode: z.enum(playableModeIds),
   gameplay: z.string().trim().min(1),
@@ -140,20 +171,7 @@ const confirmationProposalShape = {
   // OpenAI Structured Outputs rejects JSON Schema's `format: "uri"`.
   // Keep URL validation at the Zod boundary without emitting that format.
   storeUrl: z.string().trim().max(2048).refine(isAbsoluteHttpsUrl, 'Store URL must use HTTPS'),
-  delivery: z
-    .strictObject({
-      profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
-      network: z.enum(['applovin', 'generic']),
-      logicalWidth: z.literal(360),
-      logicalHeight: z.literal(640),
-      output: z.literal('single-html'),
-      maxBytes: z.union([z.literal(APPLOVIN_MAX_BYTES), z.null()]),
-    })
-    .superRefine((delivery, context) => {
-      if (!matchesDeliveryProfileSnapshot(delivery)) {
-        context.addIssue({ code: 'custom', message: 'Delivery fields must match the selected profile' })
-      }
-    }),
+  delivery: legacyDeliverySchema,
 }
 
 function validateConfirmationPresentation(
@@ -200,6 +218,7 @@ export const generatedConfirmationProposalSchema = z
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,
     ...confirmationProposalShape,
+    delivery: generatedDeliverySchema,
   })
   .superRefine(validateConfirmationPresentation)
 

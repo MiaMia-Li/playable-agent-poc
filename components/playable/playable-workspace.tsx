@@ -18,7 +18,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiKeyDialog } from './api-key-dialog'
 import { ChatWorkspace } from './chat-workspace'
 import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
@@ -34,7 +33,6 @@ import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-ad
 
 interface PlayableWorkspaceProps {
   taskId: string
-  initialApiKeyConfigured?: boolean
   initialPrompt?: string
   initialPhase?: PlayableTaskPhase
   initialProposal?: ConfirmationProposal
@@ -69,7 +67,6 @@ const phaseRank: Record<PlayableTaskPhase, number> = {
 
 export function PlayableWorkspace({
   taskId,
-  initialApiKeyConfigured,
   initialPrompt,
   initialPhase = 'draft',
   initialProposal,
@@ -88,8 +85,6 @@ export function PlayableWorkspace({
   initialVideoAnalysisStatus,
   initialGameplayBlueprint,
 }: PlayableWorkspaceProps) {
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(initialApiKeyConfigured)
-  const [keyDialogOpen, setKeyDialogOpen] = useState(initialApiKeyConfigured === false)
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposalDraft, setProposalDraft] = useState(initialProposal)
   const [revisionDraft, setRevisionDraft] = useState(initialRevision)
@@ -104,27 +99,6 @@ export function PlayableWorkspace({
   const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
   const [assets, setAssets] = useState(initialAssets)
   const latestReferenceVideoId = useRef(initialAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id)
-
-  useEffect(() => {
-    if (initialApiKeyConfigured !== undefined) return
-    let active = true
-    void fetch('/api/session/openai-key/check', { cache: 'no-store' })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Unable to check API key')
-        return (await response.json()) as { configured: boolean }
-      })
-      .then(({ configured }) => {
-        if (!active) return
-        setApiKeyConfigured(configured)
-        setKeyDialogOpen(!configured)
-      })
-      .catch(() => {
-        if (active) setKeyDialogOpen(true)
-      })
-    return () => {
-      active = false
-    }
-  }, [initialApiKeyConfigured])
 
   useEffect(() => {
     if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
@@ -201,7 +175,6 @@ export function PlayableWorkspace({
     }
   }, [phase, taskId])
 
-  const requireApiKey = useCallback(() => setKeyDialogOpen(true), [])
   const handleAssetsChange = useCallback((nextAssets: SafePlayableAsset[]) => {
     const nextReferenceVideoId = nextAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id
     if (nextReferenceVideoId !== latestReferenceVideoId.current) {
@@ -257,23 +230,11 @@ export function PlayableWorkspace({
         {localDemo ? (
           <Badge variant="secondary">本地演示 · 数据不保存</Badge>
         ) : localCodex || localHarness ? (
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary">{localHarness ? '本地 Harness · 线上 Agent' : '本地 Codex · 实际数据'}</Badge>
-            <Button variant="outline" size="sm" onClick={requireApiKey}>
-              {localHarness ? 'API Key' : '媒体 API Key'}
-            </Button>
-          </div>
+          <Badge variant="secondary">{localHarness ? '本地 Harness · 线上 Agent' : '本地 Codex · 实际数据'}</Badge>
         ) : publicAccess ? (
-          <Button variant="secondary" size="sm" onClick={requireApiKey}>
-            公开体验 · 自备 API Key
-          </Button>
+          <Badge variant="secondary">公开体验</Badge>
         ) : (
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={requireApiKey}>
-              API Key
-            </Button>
-            <User />
-          </div>
+          <User />
         )}
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(22rem,0.78fr)_minmax(32rem,1.22fr)]">
@@ -289,8 +250,7 @@ export function PlayableWorkspace({
           onRevision={setRevisionDraft}
           onBrief={setBrief}
           onPhase={setPhase}
-          onRequireApiKey={requireApiKey}
-          autoSubmitInitialPrompt={apiKeyConfigured === true && initialConversation.length === 0}
+          autoSubmitInitialPrompt={initialConversation.length === 0}
           initialConversation={initialConversation}
           initialAssets={assets}
           videoAnalysisStatus={videoAnalysisStatus}
@@ -306,21 +266,10 @@ export function PlayableWorkspace({
           confirmation={proposalDraft}
           revision={revisionDraft}
           onPhase={setPhase}
-          onRequireApiKey={requireApiKey}
           failureMessage={buildFailureMessage}
           initialValidation={validation}
         />
       </div>
-      {!localDemo && (
-        <ApiKeyDialog
-          open={keyDialogOpen}
-          onOpenChange={setKeyDialogOpen}
-          onConfigured={() => {
-            setApiKeyConfigured(true)
-            setKeyDialogOpen(false)
-          }}
-        />
-      )}
     </main>
   )
 }
@@ -470,7 +419,7 @@ export function PlayableHome({
         continue
       }
       if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
-        setError(slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB')
+        setError(slot === 'referenceVideo' ? '单个参考视频不能超过 14 MiB' : '单个参考素材不能超过 4 MiB')
         continue
       }
       const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined
