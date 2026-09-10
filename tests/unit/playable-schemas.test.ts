@@ -28,6 +28,7 @@ const validProposal = {
   },
   storeUrl: 'https://play.google.com/store/apps/details?id=com.example.mahjong&referrer=utm_source%3Dplayable',
   delivery: {
+    profileId: 'applovin',
     network: 'applovin',
     logicalWidth: 360,
     logicalHeight: 640,
@@ -70,6 +71,15 @@ describe('confirmation proposal schema', () => {
       confidence: 1,
       differences: [],
     })
+  })
+
+  it('accepts persisted delivery snapshots created before profile IDs were added', () => {
+    const { profileId: _profileId, ...legacyDelivery } = validProposal.delivery
+    void _profileId
+
+    expect(confirmationProposalSchema.parse({ ...validProposal, delivery: legacyDelivery }).delivery).toEqual(
+      legacyDelivery,
+    )
   })
 
   it.each([

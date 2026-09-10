@@ -1064,6 +1064,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 throw new Error('Agent reply contains a credential')
               }
               const validatedReply = sanitizeAgentReply(parsedReply, [apiKey])
+              if (validatedReply.kind === 'research') {
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
+                enqueue({
+                  type: 'research',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  research: validatedReply.research,
+                })
+                return
+              }
               const fallbackBrief =
                 validatedReply.kind === 'informational'
                   ? (access.task.requirementBrief ?? createRequirementBrief())

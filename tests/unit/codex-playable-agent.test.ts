@@ -30,6 +30,7 @@ const validProposal = {
   },
   storeUrl: 'https://example.com/store',
   delivery: {
+    profileId: 'applovin',
     network: 'applovin',
     logicalWidth: 360,
     logicalHeight: 640,

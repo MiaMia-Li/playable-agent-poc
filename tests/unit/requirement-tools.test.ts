@@ -7,6 +7,7 @@ import {
   executeRequirementToolPlan,
   playableCapabilitiesForAgent,
   requirementAgentPlanSchema,
+  requirementAgentStepSchema,
 } from '@/lib/playable/requirement-tools'
 import {
   defaultConfirmationPresentation,
@@ -56,6 +57,7 @@ function confirmation(brief: RequirementBrief): ConfirmationProposal {
     copy: { title: '夏日挑战', cta: '立即试玩', disclaimer: '演示内容', locale: 'zh-CN' },
     storeUrl: 'https://example.com/app',
     delivery: {
+      profileId: 'applovin',
       network: 'applovin',
       logicalWidth: 360,
       logicalHeight: 640,
@@ -71,22 +73,26 @@ it('emits an OpenAI-compatible requirement schema without unsupported URI format
   expect(jsonSchema).not.toContain('"format":"uri"')
 })
 
-it('marks every requirement tool-call property as required for OpenAI structured outputs', async () => {
-  const responseFormat = await Output.object({ schema: requirementAgentPlanSchema }).responseFormat
-  if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
-  const jsonSchema = responseFormat.schema as {
-    properties?: {
-      calls?: {
-        items?: {
-          properties?: Record<string, unknown>
-          required?: string[]
-        }
-      }
-    }
+function findObjectsWithIncompleteRequired(value: unknown, path = '$'): string[] {
+  if (!value || typeof value !== 'object') return []
+  const schema = value as Record<string, unknown>
+  const failures: string[] = []
+  if (schema.type === 'object' && schema.properties && typeof schema.properties === 'object') {
+    const properties = Object.keys(schema.properties).sort()
+    const required = Array.isArray(schema.required) ? [...schema.required].sort() : []
+    if (JSON.stringify(required) !== JSON.stringify(properties)) failures.push(path)
   }
-  const callSchema = jsonSchema.properties?.calls?.items
+  for (const [key, child] of Object.entries(schema)) {
+    failures.push(...findObjectsWithIncompleteRequired(child, `${path}.${key}`))
+  }
+  return failures
+}
 
-  expect(callSchema?.required?.sort()).toEqual(Object.keys(callSchema?.properties ?? {}).sort())
+it('marks every nested object property as required for OpenAI structured outputs', async () => {
+  const responseFormat = await Output.object({ schema: requirementAgentStepSchema }).responseFormat
+  if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
+
+  expect(findObjectsWithIncompleteRequired(responseFormat.schema)).toEqual([])
 })
 
 describe('requirement domain tools', () => {
