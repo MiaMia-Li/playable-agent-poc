@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import {
+  marketResearchCandidateSchema,
   marketResearchReportSchema,
   referenceSelectionInputSchema,
   researchEvidenceSchema,
@@ -108,6 +110,12 @@ describe('playable market research schemas', () => {
         candidates: Array.from({ length: 6 }, (_, index) => ({ ...candidate, id: `candidate-${index}` })),
       }).success,
     ).toBe(false)
+  })
+
+  it('emits an OpenAI-compatible candidate schema without the unsupported uri format', () => {
+    const jsonSchema = z.toJSONSchema(marketResearchCandidateSchema)
+
+    expect(JSON.stringify(jsonSchema)).not.toContain('"format":"uri"')
   })
 
   it('accepts summary-only adoption without a primary candidate', () => {

@@ -4,9 +4,15 @@ const boundedText = (max: number) => z.string().trim().min(1).max(max)
 const boundedTextList = (maxItems: number, maxLength: number) => z.array(boundedText(maxLength)).max(maxItems)
 const httpsUrlSchema = z
   .string()
-  .url()
   .max(2048)
-  .refine((value) => value.startsWith('https://'), 'Research sources must use HTTPS')
+  .refine((value) => {
+    try {
+      return new URL(value).protocol === 'https:'
+    } catch {
+      return false
+    }
+  }, 'Research sources must use valid HTTPS URLs')
+  .describe('Absolute HTTPS source URL')
 
 export const researchRunStatuses = [
   'suggested',
