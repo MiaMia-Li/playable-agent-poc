@@ -1,42 +1,36 @@
 **Findings**
 
-- Runtime visual comparison was not performed because the user chose to run the production build and UI verification themselves. No P0/P1/P2 visual assessment is claimed.
+- No P0, P1, or P2 implementation issues found in the verified desktop flow.
+- The only browser console errors came from the installed Immersive Translate Chrome extension attempting to communicate with sandboxed preview iframes. No application-originated errors were observed.
 
-**Open Questions**
+**Verified Screens**
 
-- Confirm that the persistent confirmation bar remains visible immediately above the composer at the target desktop viewport.
-- Confirm that an existing v1 shows the compact revision plan instead of the original full confirmation table.
-- Confirm responsive behavior when the revision summary or preserved-item list wraps onto multiple lines.
+- `/`: ChatGPT-style sidebar, lowered composer, four live HTML template cards with taller 4:5 covers, short descriptions, and no recent-output block or card-level start buttons.
+- `/best-practices`: renamed to “玩法模板”, with four clickable cards and native 9:16 HTML covers.
+- Template preview dialog: opens from a cover and renders the selected 360 × 640 HTML as an interactive iframe.
+- `/versions`: renamed to “作品库”, with version thumbnails, current-version state, open, conversation, and download actions.
 
 **Implementation Checklist**
 
-- Run the generated database migration before exercising persisted revision plans.
-- Run `pnpm build` in the target environment.
-- Verify the first-build confirmation, v1-to-v2 patch, regenerate, failure fallback, and version-switching states in the browser.
-- Check the browser console during the primary flows.
+- [x] Homepage matches the selected shell direction while applying the user's latest removal of “最近生成”.
+- [x] Sidebar navigation, recent conversations, and active states render correctly.
+- [x] Template cards include a title and concise description; clicking anywhere on a card opens its preview.
+- [x] Four standalone HTML templates pass the repository's playable validator.
+- [x] Clicking a template cover opens a usable interactive preview.
+- [x] The works library loads generated versions and preserves conversation deep links.
+- [x] Browser console checked; no application-originated errors.
+- [x] Automated tests, type check, lint, formatting, and production build pass.
 
-**Follow-up Polish**
+Source visual truth path: `/Users/limengyao/.codex/generated_images/01a08a65-11bb-7bc1-987b-cf772200a07c/exec-f546d353-0aa2-4a99-aa34-364b19feae1e.png`
 
-- None identified without browser-rendered evidence.
+Implementation screenshots: captured from Chrome tab `1556386367` during QA; the browser controller does not expose a filesystem path for these captures.
 
-Source visual truth path: `/var/folders/ns/9yzncw8j31sbqcnfk3zsc76m0000gp/T/codex-clipboard-6D1stX.png`
+Viewport: 1920 × 900 browser capture.
 
-Implementation screenshot path: unavailable
+Source dimensions: 1487 × 1058 px. The implementation follows the selected left-sidebar, centered composer, and template-card hierarchy; the recent-output section was intentionally removed after the latest user feedback.
 
-Viewport: unavailable
+Primary interactions tested: opening a real HTML template preview, navigating between the homepage, template library, and works library, creating from a template through automated tests, uploading home attachments, and opening a requested build through a `?version=` deep link.
 
-Source dimensions: 1076 × 1404 px. Implementation dimensions, CSS size, device scale factor, and density normalization: unavailable.
+Comparison history: the initial implementation was followed by a live-template-preview pass, then a second browser-verified iteration that removed card-level template buttons, reduced preview letterboxing with taller ratios, and lowered the main content area.
 
-State: first-build confirmation and post-v1 revision confirmation
-
-Full-view comparison evidence: blocked; no browser-rendered implementation screenshot was captured.
-
-Focused region comparison evidence: blocked; the persistent action bar and compact revision plan were not captured.
-
-Primary interactions tested: covered by automated component and integration tests only; browser interaction testing was deferred.
-
-Console errors checked: no; browser verification was deferred.
-
-Comparison history: no visual comparison iteration was run.
-
-final result: blocked
+final result: passed
