@@ -143,7 +143,7 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
                     <Button asChild variant="outline" size="sm">
                       <a href={artifactUrl} target="_blank" rel="noopener noreferrer">
                         <Eye aria-hidden="true" />
-                        打开版本
+                        预览作品
                       </a>
                     </Button>
                     <Button asChild variant="outline" size="sm">
