@@ -555,6 +555,16 @@ describe('PlayableWorkspace', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ storeUrl: 'https://example.com/store' }))
   })
 
+  it('presents bundled resources as system assets without exposing the persisted status', () => {
+    render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
+
+    const backgroundRow = screen.getByRole('row', { name: /背景与棋盘/ })
+    expect(within(backgroundRow).getByText('系统素材')).toBeInTheDocument()
+    expect(within(backgroundRow).getByText('系统提供，无需上传，可直接构建')).toBeInTheDocument()
+    expect(within(backgroundRow).getByRole('button', { name: '使用系统素材背景与棋盘' })).toBeInTheDocument()
+    expect(within(backgroundRow).queryByText('内置默认')).not.toBeInTheDocument()
+  })
+
   it('keeps delivery and store navigation inside the proposal table', () => {
     render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
 
@@ -1270,7 +1280,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    expect(screen.getByText('AI 素材生成暂不支持，请改用内置默认或本地上传。')).toBeInTheDocument()
+    expect(screen.getByText('AI 素材生成暂不支持，请改用系统素材或本地上传。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '确认方案并开始构建' })).toBeDisabled()
   })
 
@@ -1438,6 +1448,47 @@ describe('PlayableWorkspace', () => {
       ),
     )
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('opens the version requested by a conversation deep link', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          builds: [
+            {
+              id: 'build-1',
+              status: 'succeeded',
+              version: 1,
+              current: false,
+              validation: null,
+              createdAt: new Date(1).toISOString(),
+              completedAt: new Date(2).toISOString(),
+            },
+            {
+              id: 'build-2',
+              status: 'succeeded',
+              version: 2,
+              current: true,
+              validation: null,
+              createdAt: new Date(3).toISOString(),
+              completedAt: new Date(4).toISOString(),
+            },
+          ],
+        }),
+      ),
+    )
+
+    render(
+      <PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-2" initialBuildId="build-1" />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+        'src',
+        '/api/playable-tasks/task-7/artifact?kind=playable&version=build-1',
+      ),
+    )
   })
 
   it('previews and downloads an oversized AppLovin build with a delivery warning', async () => {

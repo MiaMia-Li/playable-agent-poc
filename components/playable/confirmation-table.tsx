@@ -23,12 +23,14 @@ import {
 } from '@/lib/playable/delivery-standards'
 
 const defaultTreatments: Record<keyof ConfirmationProposal['resources'], string> = {
-  tileFaces: '使用内置默认牌面素材',
-  backgroundBoard: '使用内置默认背景与棋盘',
-  animationEffects: '使用内置默认动画与特效',
-  audio: '使用内置默认音频',
-  endCard: '使用内置默认结束卡',
+  tileFaces: '使用系统提供的牌面素材',
+  backgroundBoard: '使用系统提供的背景与棋盘',
+  animationEffects: '使用系统提供的动画与特效',
+  audio: '使用系统提供的音频',
+  endCard: '使用系统提供的结束卡',
 }
+
+const systemAssetDescription = '系统提供，无需上传，可直接构建'
 
 const generatedTreatments: Record<keyof ConfirmationProposal['resources'], string> = {
   tileFaces: '生成与当前主题一致的清晰牌面图集，透明背景',
@@ -226,9 +228,11 @@ export function ConfirmationTable({
                           resource.status === '待上传' || resource.status === '待生成' ? 'destructive' : 'secondary'
                         }
                       >
-                        {resource.status}
+                        {resource.status === '内置默认' ? '系统素材' : resource.status}
                       </Badge>
-                      <span className="text-muted-foreground">{resource.treatment}</span>
+                      <span className="text-muted-foreground">
+                        {resource.status === '内置默认' ? systemAssetDescription : resource.treatment}
+                      </span>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <Button
@@ -236,7 +240,7 @@ export function ConfirmationTable({
                         size="sm"
                         variant={resource.status === '内置默认' ? 'secondary' : 'outline'}
                         disabled={controlsDisabled}
-                        aria-label={`使用内置默认${label}`}
+                        aria-label={`使用系统素材${label}`}
                         onClick={() =>
                           updateResource(slot, {
                             status: '内置默认',
@@ -244,7 +248,7 @@ export function ConfirmationTable({
                           })
                         }
                       >
-                        内置默认
+                        使用系统素材
                       </Button>
                       <Button
                         type="button"
@@ -452,7 +456,7 @@ export function ConfirmationTable({
       </div>
       {hasPendingUpload && <p className="text-destructive text-sm">请先上传所有标记为“待上传”的素材。</p>}
       {hasUnsupportedAiGeneration && (
-        <p className="text-destructive text-sm">AI 素材生成暂不支持，请改用内置默认或本地上传。</p>
+        <p className="text-destructive text-sm">AI 素材生成暂不支持，请改用系统素材或本地上传。</p>
       )}
       {showConfirmAction && (
         <Button className="w-full" disabled={!canConfirm} onClick={onConfirm}>

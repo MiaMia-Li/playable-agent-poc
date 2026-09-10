@@ -34,7 +34,9 @@ describe('PlayableHome reference uploads', () => {
     expect(screen.getByText('公开体验 · 任务共享')).toBeInTheDocument()
     expect(screen.queryByText(/登录后/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('新试玩需求')).toBeEnabled()
-    await waitFor(() => expect(screen.getByText('还没有试玩，从上方输入一个创意开始。')).toBeInTheDocument())
+    expect(screen.queryByText('最近生成')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '玩法模板' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '作品库' })).toBeInTheDocument()
   })
 
   it('uploads selected image and video references before opening the new task', async () => {
@@ -70,6 +72,45 @@ describe('PlayableHome reference uploads', () => {
     expect((uploadCalls[1][1]?.body as FormData).get('slot')).toBe('referenceVideo')
     expect(fetchMock.mock.invocationCallOrder[1]).toBeLessThan(fetchMock.mock.invocationCallOrder[2])
     expect(fetchMock.mock.invocationCallOrder[2]).toBeLessThan(mocks.push.mock.invocationCallOrder[0])
+  })
+
+  it('starts a new conversation from a best-practice template', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+      return Response.json({ task: { id: 'template-task' } }, { status: 201 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '预览中心碰撞模板' }))
+    fireEvent.click(screen.getByRole('button', { name: '用此模板开始' }))
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/template-task'))
+    const createCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      prompt: expect.stringContaining('中心碰撞'),
+    })
+  })
+
+  it('opens the real HTML template in an interactive preview', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '预览中心碰撞模板' }))
+
+    const preview = screen.getByTitle('中心碰撞可交互预览')
+    expect(preview).toHaveAttribute('src', '/playable-templates/center_collision.html')
+    expect(preview).not.toHaveAttribute('tabindex', '-1')
+    expect(
+      screen.getByText('相同牌向中心碰撞、破碎并计分。可直接在下方试玩，确认后从这个模板继续创作。'),
+    ).toBeInTheDocument()
   })
 
   it('rejects unsupported and oversized references before creating a task', async () => {

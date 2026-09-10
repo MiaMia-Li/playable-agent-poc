@@ -102,7 +102,9 @@ function hasVisualTheme(prompt: string): boolean {
 function selectAssetStrategy(prompt: string): AssetStrategy | undefined {
   const normalized = prompt.toLowerCase()
   if (normalized.includes('上传') || normalized.includes('本地素材')) return 'uploaded'
-  if (normalized.includes('内置') || normalized.includes('默认素材')) return 'bundled'
+  if (normalized.includes('系统素材') || normalized.includes('内置') || normalized.includes('默认素材')) {
+    return 'bundled'
+  }
   return undefined
 }
 
@@ -168,10 +170,10 @@ function createProposal(
   const imageResource = () =>
     uploaded
       ? ({ status: '待上传', treatment: '等待用户上传对应图片素材' } as const)
-      : ({ status: '内置默认', treatment: '使用 Skill 内置图片素材' } as const)
+      : ({ status: '内置默认', treatment: '使用系统提供的图片素材' } as const)
   const audioResource = uploaded
     ? ({ status: '待上传', treatment: '等待用户上传音频素材' } as const)
-    : ({ status: '内置默认', treatment: '使用内置音频并默认静音' } as const)
+    : ({ status: '内置默认', treatment: '使用系统提供的音频并默认静音' } as const)
   return {
     routing,
     presentation:
@@ -505,17 +507,17 @@ class LocalDemoAgent implements PlayableAgentAdapter {
     brief.experience.visualTheme = input.prompt.slice(0, 300)
     const assetStrategy = selectAssetStrategy(context)
     if (!assetStrategy) {
-      brief.openQuestions = ['图片和音频使用内置素材还是用户上传？']
+      brief.openQuestions = ['图片和音频使用系统素材还是用户上传？']
       return {
         kind: 'clarification',
         message: '玩法已经明确。接下来请选择图片和音频素材的准备方式。',
-        reasoning: '当前版本暂不支持 AI 素材生成，请选择内置资源或本地上传。',
+        reasoning: '当前版本暂不支持 AI 素材生成，请选择系统素材或本地上传。',
         options: [
           {
             id: 'bundled',
-            label: '全部内置默认',
-            description: '使用模板自带图片、特效和音频',
-            value: '全部使用内置默认素材',
+            label: '使用系统素材',
+            description: '系统提供，无需上传，可直接构建',
+            value: '图片和音频使用系统素材',
           },
           {
             id: 'uploaded',
@@ -530,9 +532,9 @@ class LocalDemoAgent implements PlayableAgentAdapter {
           options: [
             {
               id: 'bundled',
-              label: '全部内置默认',
-              description: '使用模板自带图片、特效和音频',
-              value: '全部使用内置默认素材',
+              label: '使用系统素材',
+              description: '系统提供，无需上传，可直接构建',
+              value: '图片和音频使用系统素材',
             },
             {
               id: 'uploaded',

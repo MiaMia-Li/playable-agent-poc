@@ -63,6 +63,7 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     latestValidation: row.latestValidation,
     title: row.title,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   }
 }
 

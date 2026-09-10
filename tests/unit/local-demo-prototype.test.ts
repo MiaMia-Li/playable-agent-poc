@@ -67,7 +67,7 @@ describe('local demo prototype', () => {
 
     const launchReply = await localDemoRuntime.agent.proposeConfirmation({
       taskId: 'conversation-task',
-      prompt: '全部使用内置默认素材',
+      prompt: '图片和音频使用系统素材',
       apiKey: 'sk-test-local-demo',
       history: [
         { role: 'user', content: '制作一个麻将消消乐' },
@@ -94,7 +94,7 @@ describe('local demo prototype', () => {
         { role: 'assistant', content: themeReply.message },
         { role: 'user', content: '经典国风主题' },
         { role: 'assistant', content: assetReply.message },
-        { role: 'user', content: '全部使用内置默认素材' },
+        { role: 'user', content: '图片和音频使用系统素材' },
         { role: 'assistant', content: launchReply.message },
       ],
     })

@@ -12,10 +12,14 @@ interface TaskPageProps {
   params: Promise<{
     taskId: string
   }>
+  searchParams: Promise<{
+    version?: string
+  }>
 }
 
-export default async function TaskPage({ params }: TaskPageProps) {
+export default async function TaskPage({ params, searchParams }: TaskPageProps) {
   const { taskId } = await params
+  const { version } = await searchParams
   const localDemo = isLocalDemoMode()
   const localCodex = isLocalCodexMode()
   const localHarness = isLocalHarnessMode()
@@ -60,6 +64,7 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
+      initialBuildId={version}
       initialBuildFailureMessage={initialBuildFailureMessage}
       initialValidation={safeValidationSummary(task.latestValidation, task.confirmation?.delivery)}
       localDemo={localDemo}

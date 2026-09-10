@@ -14,6 +14,7 @@ interface PlayablePreviewProps {
   phase: PlayableTaskPhase
   hasArtifact?: boolean
   artifactVersion?: string | null
+  initialBuildId?: string
   confirmation?: ConfirmationProposal
   revision?: RevisionProposal
   onPhase?: (phase: PlayableTaskPhase) => void
@@ -39,6 +40,7 @@ export function PlayablePreview({
   phase,
   hasArtifact = phase === 'ready',
   artifactVersion = null,
+  initialBuildId,
   confirmation,
   revision,
   onPhase,
@@ -81,7 +83,10 @@ export function PlayablePreview({
         if (!active) return
         const nextBuilds = responseBuilds ?? []
         setBuilds(nextBuilds)
-        setSelectedBuildId(nextBuilds.find((build) => build.current)?.id)
+        const requestedBuild = initialBuildId
+          ? nextBuilds.find((build) => build.id === initialBuildId && build.status === 'succeeded')
+          : undefined
+        setSelectedBuildId(requestedBuild?.id ?? nextBuilds.find((build) => build.current)?.id)
       })
       .catch(() => {
         if (active) setActionError('无法加载版本记录')
@@ -89,7 +94,7 @@ export function PlayablePreview({
     return () => {
       active = false
     }
-  }, [artifactVersion, hasArtifact, taskId])
+  }, [artifactVersion, hasArtifact, initialBuildId, taskId])
 
   const postMute = (value: boolean) => {
     iframeRef.current?.contentWindow?.postMessage({ type: 'playable:set-muted', muted: value }, '*')
