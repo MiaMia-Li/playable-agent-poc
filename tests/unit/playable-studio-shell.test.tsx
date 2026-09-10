@@ -47,7 +47,9 @@ describe('PlayableStudioShell recent conversations', () => {
     }
 
     render(<StudioNavigationHarness />)
-    expect(await screen.findByRole('link', { name: /进行中.*制作夏日海岛试玩/ })).toBeInTheDocument()
+    const conversationLink = await screen.findByRole('link', { name: /进行中.*制作夏日海岛试玩/ })
+    expect(conversationLink).toHaveAttribute('target', '_blank')
+    expect(conversationLink).toHaveAttribute('rel', 'noopener noreferrer')
 
     fireEvent.click(screen.getByRole('button', { name: '切换页面' }))
 

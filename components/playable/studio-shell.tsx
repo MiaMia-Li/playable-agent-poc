@@ -241,6 +241,9 @@ function SidebarContent({
                     <div key={task.id} className="group relative">
                       <Link
                         href={`/tasks/${task.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        prefetch={false}
                         onClick={onNavigate}
                         title={taskLabel}
                         className="hover:bg-foreground/[0.05] flex items-center gap-2 rounded-lg px-3 py-2 pr-11 text-sm transition-colors"
