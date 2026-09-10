@@ -94,7 +94,12 @@ function SidebarLoader({ width }: { width: number }) {
 
 export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, initialIsMobile }: AppLayoutProps) {
   const pathname = usePathname()
-  const isPlayablePath = pathname === '/' || pathname === '/tasks' || pathname.startsWith('/tasks/')
+  const isPlayablePath =
+    pathname === '/' ||
+    pathname === '/best-practices' ||
+    pathname === '/versions' ||
+    pathname === '/tasks' ||
+    pathname.startsWith('/tasks/')
   const isPlayableTaskPath = pathname.startsWith('/tasks/')
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoading, setIsLoading] = useState(true)

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Loader2, Paperclip, Plus, Sparkles } from 'lucide-react'
+import { ArrowRight, Loader2, Paperclip, Sparkles } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
 import type {
   ConfirmationProposal,
@@ -30,6 +30,12 @@ import {
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
+import { PLAYABLE_MODES } from '@/lib/playable/template-registry'
+import type { PlayableModeId } from '@/lib/playable/types'
+import { PlayableStudioShell } from './studio-shell'
+import type { PlayableTaskSummary } from './studio-shell'
+import { TemplatePreview } from './template-preview'
+import { TemplatePreviewDialog } from './template-preview-dialog'
 
 interface PlayableWorkspaceProps {
   taskId: string
@@ -279,14 +285,6 @@ export function PlayableWorkspace({
   )
 }
 
-interface PlayableTaskSummary {
-  id: string
-  prompt: string
-  title?: string | null
-  phase?: PlayableTaskPhase
-  createdAt: string
-}
-
 interface HomeAttachment {
   id: string
   file: File
@@ -302,16 +300,11 @@ interface PlayableHomeProps {
   publicAccess?: boolean
 }
 
-const phaseNames: Partial<Record<PlayableTaskPhase, string>> = {
-  draft: '整理方案',
-  awaiting_confirmation: '方案待确认',
-  awaiting_revision_confirmation: '修改待确认',
-  building: '生成中',
-  validating: '检查中',
-  reviewing: '可试玩',
-  ready: '可试玩',
-  needs_plugin: '需要新增 Plugin',
-  failed: '本次生成失败',
+const templatePrompts: Record<PlayableModeId, string> = {
+  center_collision: '基于「中心碰撞」玩法模板开始迭代：保留相同牌向中心碰撞并消除计分的核心玩法。',
+  top_rack: '基于「上方牌架」玩法模板开始迭代：保留可见牌进入四槽牌架并配对清除的核心玩法。',
+  gravity_fill: '基于「下落补位」玩法模板开始迭代：保留网格配对消除、列下落和顶部补位的核心玩法。',
+  perspective_3d: '基于「3D 纵深」玩法模板开始迭代：保留移除顶层牌面并逐层揭示下方内容的核心玩法。',
 }
 
 export function PlayableHome({
@@ -332,8 +325,9 @@ export function PlayableHome({
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<HomeAttachment[]>([])
   const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
-  const [loading, setLoading] = useState(Boolean(user))
   const [creating, setCreating] = useState(false)
+  const [creatingTemplate, setCreatingTemplate] = useState<PlayableModeId>()
+  const [previewMode, setPreviewMode] = useState<PlayableModeId>()
   const [error, setError] = useState('')
 
   useEffect(
@@ -352,7 +346,6 @@ export function PlayableHome({
       })
       .then((body) => setTasks(body.tasks))
       .catch((cause) => setError(cause instanceof Error ? cause.message : '加载试玩列表失败'))
-      .finally(() => setLoading(false))
   }, [user])
 
   async function createPlayable() {
@@ -409,6 +402,28 @@ export function PlayableHome({
     }
   }
 
+  async function createFromTemplate(mode: PlayableModeId) {
+    if (creatingRef.current) return
+    creatingRef.current = true
+    setCreatingTemplate(mode)
+    setError('')
+    try {
+      const response = await fetch('/api/playable-tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: templatePrompts[mode] }),
+      })
+      if (!response.ok) throw new Error('无法从模板创建试玩')
+      const body = (await response.json()) as { task: { id: string } }
+      router.push(`/tasks/${body.task.id}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法从模板创建试玩')
+      setCreatingTemplate(undefined)
+    } finally {
+      creatingRef.current = false
+    }
+  }
+
   function addAttachments(files: FileList | null) {
     if (!files) return
     const accepted: HomeAttachment[] = []
@@ -450,46 +465,28 @@ export function PlayableHome({
     })
   }
 
+  const accountLabel = publicAccess
+    ? '公开体验 · 任务共享'
+    : user?.name || user?.username || (authProvider === 'github' ? 'GitHub 用户' : 'Playable Studio')
+
   return (
-    <main className="bg-muted/20 min-h-dvh">
-      <header className="bg-background flex h-16 items-center justify-between border-b px-5 sm:px-8">
-        <div className="flex items-center gap-2 font-semibold">
-          <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
-            <Sparkles className="size-4" />
-          </span>
-          Playable Studio
-        </div>
-        {localDemo || localCodex || localHarness ? (
-          <Badge variant="secondary">
-            {localHarness
-              ? '本地 Harness · 线上 Agent'
-              : localCodex
-                ? '本地 Codex · 实际数据'
-                : '本地演示 · 重启后清空'}
-          </Badge>
-        ) : publicAccess ? (
-          <Badge variant="secondary">公开体验 · 任务共享</Badge>
-        ) : (
-          <User user={user} authProvider={authProvider} />
-        )}
-      </header>
-      <div className="mx-auto max-w-5xl px-5 py-12 sm:px-8 sm:py-20">
-        <div className="mx-auto max-w-2xl text-center">
-          <Badge variant="secondary" className="mb-4">
-            AI 试玩创作工作台
-          </Badge>
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-5xl">把创意变成可玩的广告</h1>
-          <p className="text-muted-foreground mt-4 text-base sm:text-lg">
-            描述玩法与视觉方向，确认生成方案，即刻预览并下载安全的单 HTML 试玩。
+    <PlayableStudioShell activeSection="home" accountLabel={accountLabel} tasks={tasks}>
+      <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-24 lg:pb-16">
+        <section className="mx-auto max-w-4xl text-center" aria-labelledby="home-heading">
+          <h1 id="home-heading" className="text-3xl font-semibold tracking-tight sm:text-4xl">
+            想做一个什么样的试玩？
+          </h1>
+          <p className="text-muted-foreground mt-3 text-sm sm:text-base">
+            说说你的玩法想法，或上传参考素材，我们从这里开始。
           </p>
-          <div className="bg-background mt-8 rounded-2xl border p-3 text-left shadow-lg">
+          <div className="bg-background mt-6 rounded-2xl border p-2.5 text-left">
             <Textarea
               aria-label="新试玩需求"
-              placeholder="例如：制作一个竖屏麻将配对试玩，清爽夏日风格，结尾展示下载按钮…"
-              className="min-h-28 resize-none border-0 shadow-none focus-visible:ring-0"
+              placeholder="描述玩法、视觉方向，或上传参考素材…"
+              className="min-h-20 resize-none border-0 px-2.5 py-2 text-base shadow-none focus-visible:ring-0"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              disabled={!user || creating}
+              disabled={!user || creating || Boolean(creatingTemplate)}
             />
             {attachments.length > 0 && (
               <div className="mb-3 px-1">
@@ -510,13 +507,13 @@ export function PlayableHome({
             <div className="flex items-center justify-between gap-2">
               <Button
                 type="button"
-                size="sm"
+                size="icon"
                 variant="ghost"
                 disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
                 onClick={() => attachmentInput.current?.click()}
+                aria-label="添加参考图片或视频"
               >
                 <Paperclip aria-hidden="true" />
-                {/* 添加图片/视频 */}
               </Button>
               <input
                 ref={attachmentInput}
@@ -532,52 +529,62 @@ export function PlayableHome({
                 }}
               />
               <Button
+                size="icon"
+                className="rounded-full"
                 onClick={() => void createPlayable()}
                 disabled={!user || (!prompt.trim() && attachments.length === 0) || creating}
+                aria-label="新建试玩"
               >
-                {creating ? <Loader2 className="animate-spin" /> : <Plus />}
-                新建试玩
+                {creating ? <Loader2 className="animate-spin" /> : <ArrowRight />}
               </Button>
             </div>
           </div>
           {!user && !publicAccess && <p className="text-muted-foreground mt-3 text-sm">登录后即可创建并保存试玩。</p>}
           {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-        </div>
+        </section>
 
-        {user && (
-          <section aria-label="试玩任务列表" className="mt-16">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">最近试玩</h2>
-              <span className="text-muted-foreground text-sm">{tasks.length} 个项目</span>
-            </div>
-            {loading ? (
-              <p className="text-muted-foreground py-8 text-center">正在加载…</p>
-            ) : tasks.length === 0 ? (
-              <Card>
-                <CardContent className="text-muted-foreground text-center">
-                  还没有试玩，从上方输入一个创意开始。
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {tasks.map((task) => (
-                  <Link key={task.id} href={`/tasks/${task.id}`} className="group">
-                    <Card className="h-full py-4 transition-shadow hover:shadow-md">
-                      <CardContent className="flex items-center justify-between gap-4 px-4">
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{task.title || task.prompt}</p>
-                          <p className="text-muted-foreground mt-1 text-xs">{phaseNames[task.phase ?? 'draft']}</p>
-                        </div>
-                        <ArrowRight className="text-muted-foreground size-4 shrink-0 transition-transform group-hover:translate-x-1" />
-                      </CardContent>
-                    </Card>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-      </div>
-    </main>
+        <section className="mt-10" aria-labelledby="quick-start-heading">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <h2 id="quick-start-heading" className="font-semibold">
+              从玩法模板快速开始
+            </h2>
+            <Link href="/best-practices" className="text-muted-foreground hover:text-foreground text-sm">
+              浏览全部模板 →
+            </Link>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {PLAYABLE_MODES.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                className="group overflow-hidden rounded-xl border text-left transition-all hover:-translate-y-0.5 hover:bg-muted/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+                onClick={() => setPreviewMode(mode.id)}
+                aria-label={`预览${mode.label}模板`}
+              >
+                <div className="relative aspect-[4/5] w-full border-b">
+                  <TemplatePreview mode={mode.id} title={`${mode.label}模板封面`} className="absolute inset-0" />
+                  <span className="bg-background/90 absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap shadow-sm backdrop-blur-sm">
+                    点击试玩
+                  </span>
+                </div>
+                <div className="min-h-24 px-3 py-3">
+                  <h3 className="text-sm font-semibold">{mode.label}</h3>
+                  <p className="text-muted-foreground mt-1 text-xs leading-5">{mode.description}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+        <TemplatePreviewDialog
+          mode={PLAYABLE_MODES.find((mode) => mode.id === previewMode)}
+          creating={Boolean(previewMode && creatingTemplate === previewMode)}
+          canStart={Boolean(user)}
+          onOpenChange={(open) => {
+            if (!open) setPreviewMode(undefined)
+          }}
+          onStart={(mode) => void createFromTemplate(mode.id)}
+        />
+      </main>
+    </PlayableStudioShell>
   )
 }
