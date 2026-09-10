@@ -333,8 +333,18 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         tools: ['respond_to_user'],
       }
     }
-    brief.summary = context.slice(0, 600)
-    brief.gameplay.concept = context.slice(0, 500)
+    const adoptedResearch = input.referenceSelection
+      ? [
+          input.referenceSelection.primaryCandidate?.title,
+          ...input.referenceSelection.selectedHighlights.map(({ value }) => value),
+          input.referenceSelection.customRequirements,
+        ]
+          .filter(Boolean)
+          .join('；')
+      : ''
+    const requirementContext = adoptedResearch ? `${context}；已采用市场参考：${adoptedResearch}` : context
+    brief.summary = requirementContext.slice(0, 600)
+    brief.gameplay.concept = requirementContext.slice(0, 500)
     if (input.hasArtifact && input.confirmation) {
       const regenerate = /重新生成|重新制作|重新构建|重做|效果.{0,4}(?:差|不好)/.test(input.prompt)
       return {

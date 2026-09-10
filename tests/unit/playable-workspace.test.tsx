@@ -10,6 +10,7 @@ import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
+import { LocalDemoMarketResearchAgent } from '@/lib/playable/research/local-demo-market-research-agent'
 
 Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
 
@@ -220,6 +221,84 @@ describe('PlayableWorkspace', () => {
     expect(tools).toHaveTextContent('分析参考视频失败')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(1, 'started')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(2, 'failed')
+  })
+
+  it('renders research progress and adopts persisted candidate IDs through the existing message flow', async () => {
+    const report = await new LocalDemoMarketResearchAgent().search({
+      runId: 'research-run-1',
+      apiKey: 'test-key',
+      brief: {
+        version: 1,
+        trigger: 'explicit',
+        category: '消除',
+        subcategory: '麻将配对',
+        gameplayKeywords: ['点击配对'],
+        market: '全球',
+        locale: 'zh-CN',
+        adNetwork: 'AppLovin',
+        timeRange: '最近 90 天',
+        focusAreas: ['前三秒'],
+        requirementSummary: '搜索同类试玩',
+      },
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            JSON.stringify({ type: 'research_progress', stage: 'searching', message: '正在检索公开来源' }),
+            JSON.stringify({ type: 'research_progress', stage: 'analyzing', message: '正在分析玩法' }),
+            JSON.stringify({ type: 'research', message: '研究完成。', reasoning: '等待采用。', research: report }),
+          ].join('\n'),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          `${JSON.stringify({
+            type: 'clarification',
+            message: '已采用参考方向，请选择核心玩法。',
+            reasoning: '研究选择已进入需求上下文。',
+            options: [],
+          })}\n`,
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace
+        taskId="task-research"
+        phase="draft"
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '搜索麻将配对试玩广告' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+
+    const card = await screen.findByRole('region', { name: '市场参考分析' })
+    expect(card).toHaveTextContent('3 个可参考方向')
+    fireEvent.click(within(card).getAllByRole('radio')[0])
+    fireEvent.click(within(card).getByRole('button', { name: '采用此方向' }))
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/playable-tasks/task-research/messages',
+        expect.objectContaining({
+          body: JSON.stringify({
+            message: '采用此方向',
+            referenceSelection: {
+              runId: 'research-run-1',
+              primaryCandidateId: 'demo-candidate-1',
+              selectedHighlights: [],
+              customRequirements: '',
+              exclusions: [],
+            },
+          }),
+        }),
+      ),
+    )
+    expect(await screen.findByText('已采用参考方向，请选择核心玩法。')).toBeInTheDocument()
   })
 
   it('refreshes QDAI analysis immediately when the video tool completes', async () => {

@@ -23,14 +23,20 @@ export default async function TaskPage({ params }: TaskPageProps) {
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets, videoAnalysis, builds, events] = await Promise.all([
+  const [storedMessages, initialAssets, videoAnalysis, builds, events, referenceSelections] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
     repository.findLatestVideoAnalysis(task.id),
     repository.listBuilds(task.id),
     repository.listEvents(task.id),
+    repository.listReferenceSelections?.(task.id, session.user.id) ?? Promise.resolve([]),
   ])
-  const initialConversation = restorePlayableConversation(storedMessages, task.pendingRevision, builds)
+  const initialConversation = restorePlayableConversation(
+    storedMessages,
+    task.pendingRevision,
+    builds,
+    referenceSelections,
+  )
   const initialBuildFailureMessage =
     task.phase === 'failed' ? events.findLast((event) => event.type === 'build_failed')?.message : undefined
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { restorePlayableConversation } from '@/lib/playable/conversation'
 import type { ConfirmationProposal, RevisionProposal } from '@/lib/playable/schemas'
 import type { PlayableBuildRecord } from '@/lib/playable/task-api'
+import { LocalDemoMarketResearchAgent } from '@/lib/playable/research/local-demo-market-research-agent'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -131,5 +132,70 @@ describe('playable conversation restoration', () => {
       status: '用户上传',
       treatment: 'historical-tiles.png',
     })
+  })
+
+  it('restores a research report with its persisted adoption and ignores malformed history', async () => {
+    const report = await new LocalDemoMarketResearchAgent().search({
+      runId: 'research-run-1',
+      apiKey: 'test-key',
+      brief: {
+        version: 1,
+        trigger: 'explicit',
+        category: '消除',
+        subcategory: '麻将配对',
+        gameplayKeywords: ['点击配对'],
+        market: '全球',
+        locale: 'zh-CN',
+        adNetwork: 'AppLovin',
+        timeRange: '最近 90 天',
+        focusAreas: ['前三秒'],
+        requirementSummary: '搜索同类试玩',
+      },
+    })
+    const selection = {
+      runId: report.runId,
+      primaryCandidateId: report.candidates[0].id,
+      selectedHighlights: [],
+      customRequirements: '',
+      exclusions: [],
+    }
+    const restored = restorePlayableConversation(
+      [
+        {
+          id: 'research-message',
+          taskId: 'task-1',
+          role: 'agent',
+          content: JSON.stringify({
+            kind: 'research',
+            message: '研究完成。',
+            reasoning: '等待采用。',
+            research: report,
+          }),
+          createdAt: new Date(1),
+        },
+        {
+          id: 'malformed-message',
+          taskId: 'task-1',
+          role: 'agent',
+          content: '{"kind":"research","research":',
+          createdAt: new Date(2),
+        },
+      ],
+      null,
+      [],
+      [
+        {
+          id: 'selection-1',
+          taskId: 'task-1',
+          userId: 'user-1',
+          runId: report.runId,
+          selection,
+          createdAt: new Date(3),
+        },
+      ],
+    )
+
+    expect(restored).toHaveLength(1)
+    expect(restored[0]).toMatchObject({ content: '研究完成。', research: report, adoptedSelection: selection })
   })
 })

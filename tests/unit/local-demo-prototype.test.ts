@@ -305,6 +305,45 @@ describe('local demo prototype', () => {
     expect(reply.kind).toBe('research')
   })
 
+  it('adds an adopted research direction to the next local requirement brief', async () => {
+    const report = await localDemoRuntime.marketResearchAgent.search({
+      runId: 'local-adoption-run',
+      apiKey: 'sk-test-local-demo',
+      brief: {
+        version: 1,
+        trigger: 'explicit',
+        category: '消除',
+        subcategory: '麻将配对',
+        gameplayKeywords: ['点击配对'],
+        market: '全球',
+        locale: 'zh-CN',
+        adNetwork: 'AppLovin',
+        timeRange: '最近 90 天',
+        focusAreas: ['前三秒'],
+        requirementSummary: '搜索同类试玩',
+      },
+    })
+    const reply = await localDemoRuntime.agent.proposeConfirmation({
+      taskId: 'local-adoption-task',
+      prompt: '采用此方向',
+      apiKey: 'sk-test-local-demo',
+      referenceSelection: {
+        runId: report.runId,
+        industrySummary: report.industrySummary,
+        primaryCandidate: report.candidates[0],
+        selectedHighlights: [{ candidate: report.candidates[1], value: report.candidates[1].borrowableHighlights[0] }],
+        customRequirements: '保持节奏轻快',
+        exclusions: [],
+      },
+    })
+
+    expect(reply.kind).toBe('clarification')
+    if (reply.kind !== 'clarification') throw new Error('Expected a clarification reply')
+    if (!reply.brief) throw new Error('Expected an updated brief')
+    expect(reply.brief.summary).toContain(report.candidates[0].title)
+    expect(reply.brief.summary).toContain(report.candidates[1].borrowableHighlights[0])
+  })
+
   it('cannot bypass authentication in production', () => {
     vi.stubEnv('LOCAL_DEMO_MODE', '1')
     vi.stubEnv('NODE_ENV', 'production')

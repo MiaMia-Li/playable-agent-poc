@@ -6,7 +6,8 @@ import type {
   RevisionPlan,
   RevisionProposal,
 } from './schemas'
-import type { PlayableBuildRecord, PlayableTaskMessageRecord } from './task-api'
+import type { PlayableBuildRecord, PlayableReferenceSelectionRecord, PlayableTaskMessageRecord } from './task-api'
+import type { MarketResearchReport, ReferenceSelectionInput } from './research/schemas'
 
 export interface RestoredPlayableConversationMessage {
   id: string
@@ -18,12 +19,15 @@ export interface RestoredPlayableConversationMessage {
   request?: RequirementInputRequest
   confirmation?: ConfirmationProposal
   revision?: RevisionPlan | RevisionProposal
+  research?: MarketResearchReport
+  adoptedSelection?: ReferenceSelectionInput
 }
 
 export function restorePlayableConversation(
   storedMessages: PlayableTaskMessageRecord[],
   pendingRevision?: RevisionProposal | null,
   builds: PlayableBuildRecord[] = [],
+  selections: PlayableReferenceSelectionRecord[] = [],
 ): RestoredPlayableConversationMessage[] {
   const decoded = storedMessages.flatMap(
     (stored): Array<{ message: RestoredPlayableConversationMessage; createdAt: Date }> => {
@@ -50,6 +54,11 @@ export function restorePlayableConversation(
               request: reply.kind === 'clarification' ? reply.request : undefined,
               confirmation: reply.kind === 'confirmation' || reply.kind === 'revision' ? reply.confirmation : undefined,
               revision: reply.kind === 'revision' ? reply.revision : undefined,
+              research: reply.kind === 'research' ? reply.research : undefined,
+              adoptedSelection:
+                reply.kind === 'research'
+                  ? selections.find((selection) => selection.runId === reply.research.runId)?.selection
+                  : undefined,
               status: 'sent',
             },
             createdAt: stored.createdAt,
