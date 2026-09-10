@@ -7,6 +7,12 @@ import {
   revisionProposalSchema,
 } from '@/lib/playable/schemas'
 import { playableModeIds } from '@/lib/playable/types'
+import type {
+  MarketResearchCandidate,
+  MarketResearchIndustrySummary,
+  ReferenceSelectionInput,
+  SearchBrief,
+} from '@/lib/playable/research/schemas'
 
 // Log entry types
 export const logEntrySchema = z.object({
@@ -509,6 +515,83 @@ export const playableVideoAnalyses = pgTable(
       table.pipelineVersion,
       table.model,
     ),
+  }),
+)
+
+export const playableResearchRuns = pgTable(
+  'playable_research_runs',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status', {
+      enum: ['suggested', 'confirmed', 'searching', 'analyzing', 'completed', 'failed', 'cancelled'],
+    }).notNull(),
+    trigger: text('trigger', { enum: ['explicit', 'suggested_confirmed'] }).notNull(),
+    searchBrief: jsonb('search_brief').$type<SearchBrief>().notNull(),
+    cacheKey: text('cache_key').notNull(),
+    strategyVersion: text('strategy_version').notNull(),
+    sourceIds: jsonb('source_ids').$type<string[]>().notNull(),
+    industrySummary: jsonb('industry_summary').$type<MarketResearchIndustrySummary>(),
+    warnings: jsonb('warnings').$type<string[]>(),
+    cachedFromRunId: text('cached_from_run_id'),
+    errorCode: text('error_code'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    completedAt: timestamp('completed_at'),
+  },
+  (table) => ({
+    taskCreatedIndex: index('playable_research_runs_task_created_idx').on(table.taskId, table.createdAt),
+    cacheIndex: index('playable_research_runs_cache_idx').on(
+      table.userId,
+      table.cacheKey,
+      table.strategyVersion,
+      table.completedAt,
+    ),
+  }),
+)
+
+export const playableResearchCandidates = pgTable(
+  'playable_research_candidates',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => playableResearchRuns.id, { onDelete: 'cascade' }),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    candidate: jsonb('candidate').$type<MarketResearchCandidate>().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    runPositionUnique: uniqueIndex('playable_research_candidates_run_position_idx').on(table.runId, table.position),
+  }),
+)
+
+export const playableReferenceSelections = pgTable(
+  'playable_reference_selections',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => playableResearchRuns.id, { onDelete: 'cascade' }),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    selection: jsonb('selection').$type<ReferenceSelectionInput>().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    runUnique: uniqueIndex('playable_reference_selections_run_idx').on(table.runId),
+    taskCreatedIndex: index('playable_reference_selections_task_created_idx').on(table.taskId, table.createdAt),
   }),
 )
 

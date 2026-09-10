@@ -36,7 +36,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
 
     // Reconnect to the sandbox
     const sandbox = await Sandbox.get({
-      sandboxId: task.sandboxId,
+      name: task.sandboxId,
       teamId: process.env.SANDBOX_VERCEL_TEAM_ID!,
       projectId: process.env.SANDBOX_VERCEL_PROJECT_ID!,
       token: process.env.SANDBOX_VERCEL_TOKEN!,

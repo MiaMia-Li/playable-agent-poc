@@ -7,6 +7,7 @@ import type { Session } from '@/lib/session/types'
 import type { ArtifactStore } from './artifact-store'
 import type {
   AgentInput,
+  AgentReplyOptions,
   BuildResult,
   ConfirmedBuildInput,
   PlayableAgentAdapter,
@@ -26,6 +27,8 @@ import { createAssetSourceManifest, createValidationReport } from './production-
 import type {
   PlayableBuildRecord,
   PlayableEventRecord,
+  PlayableReferenceSelectionRecord,
+  PlayableResearchRunRecord,
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
@@ -33,6 +36,17 @@ import type {
 } from './task-api'
 import type { PlayableModeId } from './types'
 import { createRequirementBrief } from './requirement-tools'
+import type { MarketResearchAgent } from './research/market-research-agent'
+import { LocalDemoMarketResearchAgent } from './research/local-demo-market-research-agent'
+import {
+  marketResearchReportSchema,
+  referenceSelectionInputSchema,
+  resolvedReferenceSelectionSchema,
+  type MarketResearchReport,
+  type ReferenceSelectionInput,
+  type ResearchRunStatus,
+  type SearchBrief,
+} from './research/schemas'
 
 const execFileAsync = promisify(execFile)
 const localDemoUserId = 'local-demo-user'
@@ -248,11 +262,62 @@ function createLocalFreeformPlayable(storeUrl: string): string {
 }
 
 class LocalDemoAgent implements PlayableAgentAdapter {
-  async proposeConfirmation(input: AgentInput): Promise<PlayableAgentReply> {
+  async proposeConfirmation(input: AgentInput, options?: AgentReplyOptions): Promise<PlayableAgentReply> {
     const context = conversationText(input)
     const brief: RequirementBrief = input.brief
       ? structuredClone(input.brief)
       : createRequirementBrief(input.history?.find((turn) => turn.role === 'user')?.content ?? input.prompt)
+    if (
+      /(?:搜索|查找|调研|分析).{0,20}(?:同类|竞品|市场|试玩|广告)|(?:同类|竞品).{0,20}(?:搜索|查找|调研|分析)/.test(
+        input.prompt,
+      )
+    ) {
+      if (!options?.executeTool) {
+        return {
+          kind: 'clarification',
+          message: '当前无法执行市场搜索。你可以稍后重试，或直接继续整理试玩需求。',
+          reasoning: '市场研究工具当前不可用。',
+          options: [],
+          brief,
+        }
+      }
+      const searchBrief: SearchBrief = {
+        version: 1,
+        trigger: 'explicit',
+        category: /麻将/.test(context) ? '消除' : '休闲游戏',
+        subcategory: /麻将/.test(context) ? '麻将配对' : '',
+        gameplayKeywords: [/麻将/.test(context) ? '点击配对' : '核心交互'],
+        market: '全球',
+        locale: 'zh-CN',
+        adNetwork: 'AppLovin',
+        timeRange: '最近 90 天',
+        focusAreas: ['前三秒', '核心循环', '反馈与 CTA'],
+        requirementSummary: input.prompt.slice(0, 600),
+      }
+      const result = marketResearchReportSchema.safeParse(
+        await options.executeTool({
+          name: 'search_market_references',
+          assetIds: [],
+          assetId: null,
+          searchBrief,
+        }),
+      )
+      if (!result.success) {
+        return {
+          kind: 'clarification',
+          message: '暂时无法完成市场搜索。你想重试，还是直接继续整理试玩需求？',
+          reasoning: '市场研究没有返回可用结果。',
+          options: [],
+          brief,
+        }
+      }
+      return {
+        kind: 'research',
+        message: '已找到 3 个同类公开案例，并整理了可借鉴的玩法方向。',
+        reasoning: '研究结果仅作为公开趋势参考，采用前不会修改当前需求。',
+        research: result.data,
+      }
+    }
     const informationalAfterBuild =
       input.hasArtifact &&
       input.confirmation &&
@@ -268,8 +333,18 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         tools: ['respond_to_user'],
       }
     }
-    brief.summary = context.slice(0, 600)
-    brief.gameplay.concept = context.slice(0, 500)
+    const adoptedResearch = input.referenceSelection
+      ? [
+          input.referenceSelection.primaryCandidate?.title,
+          ...input.referenceSelection.selectedHighlights.map(({ value }) => value),
+          input.referenceSelection.customRequirements,
+        ]
+          .filter(Boolean)
+          .join('；')
+      : ''
+    const requirementContext = adoptedResearch ? `${context}；已采用市场参考：${adoptedResearch}` : context
+    brief.summary = requirementContext.slice(0, 600)
+    brief.gameplay.concept = requirementContext.slice(0, 500)
     if (input.hasArtifact && input.confirmation) {
       const regenerate = /重新生成|重新制作|重新构建|重做|效果.{0,4}(?:差|不好)/.test(input.prompt)
       return {
@@ -633,6 +708,9 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
   private readonly messages = new Map<string, PlayableTaskMessageRecord[]>()
   private readonly builds = new Map<string, PlayableBuildRecord[]>()
   private readonly videoAnalyses = new Map<string, PlayableVideoAnalysisRecord[]>()
+  private readonly researchRuns = new Map<string, PlayableResearchRunRecord>()
+  private readonly researchReports = new Map<string, MarketResearchReport>()
+  private readonly referenceSelections = new Map<string, PlayableReferenceSelectionRecord>()
 
   async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
@@ -899,12 +977,144 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     analysis.errorCode = errorCode
     analysis.completedAt = new Date()
   }
+
+  async createResearchRun(input: {
+    id: string
+    taskId: string
+    userId: string
+    brief: SearchBrief
+    cacheKey: string
+    strategyVersion: string
+    sourceIds: string[]
+  }): Promise<PlayableResearchRunRecord> {
+    const run: PlayableResearchRunRecord = {
+      id: input.id,
+      taskId: input.taskId,
+      userId: input.userId,
+      status: 'confirmed',
+      trigger: input.brief.trigger,
+      searchBrief: structuredClone(input.brief),
+      cacheKey: input.cacheKey,
+      strategyVersion: input.strategyVersion,
+      sourceIds: [...input.sourceIds],
+      industrySummary: null,
+      warnings: [],
+      cachedFromRunId: null,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: null,
+    }
+    this.researchRuns.set(run.id, run)
+    return run
+  }
+
+  async updateResearchRunStatus(id: string, taskId: string, status: ResearchRunStatus): Promise<boolean> {
+    const run = this.researchRuns.get(id)
+    if (!run || run.taskId !== taskId) return false
+    run.status = status
+    return true
+  }
+
+  async completeResearchRun(
+    id: string,
+    taskId: string,
+    value: MarketResearchReport,
+    cachedFromRunId: string | null = null,
+  ): Promise<MarketResearchReport> {
+    const run = this.researchRuns.get(id)
+    if (!run || run.taskId !== taskId) throw new Error('Research run transition failed')
+    const report = marketResearchReportSchema.parse({ ...value, runId: id })
+    run.status = 'completed'
+    run.sourceIds = [...report.sourceCoverage.sourceIds]
+    run.industrySummary = structuredClone(report.industrySummary)
+    run.warnings = [...report.warnings]
+    run.cachedFromRunId = cachedFromRunId
+    run.errorCode = null
+    run.completedAt = new Date(report.generatedAt)
+    this.researchReports.set(id, structuredClone(report))
+    return report
+  }
+
+  async failResearchRun(id: string, taskId: string, status: 'failed' | 'cancelled', errorCode: string): Promise<void> {
+    const run = this.researchRuns.get(id)
+    if (!run || run.taskId !== taskId) return
+    run.status = status
+    run.errorCode = errorCode
+    run.completedAt = new Date()
+  }
+
+  async findReusableResearchReport(
+    userId: string,
+    cacheKey: string,
+    strategyVersion: string,
+    notBefore: Date,
+  ): Promise<MarketResearchReport | undefined> {
+    const run = [...this.researchRuns.values()].find(
+      (candidate) =>
+        candidate.userId === userId &&
+        candidate.cacheKey === cacheKey &&
+        candidate.strategyVersion === strategyVersion &&
+        candidate.status === 'completed' &&
+        Boolean(candidate.completedAt && candidate.completedAt >= notBefore),
+    )
+    return run ? structuredClone(this.researchReports.get(run.id)) : undefined
+  }
+
+  async findResearchReport(taskId: string, userId: string, runId: string): Promise<MarketResearchReport | undefined> {
+    const run = this.researchRuns.get(runId)
+    if (!run || run.taskId !== taskId || run.userId !== userId || run.status !== 'completed') return
+    return structuredClone(this.researchReports.get(runId))
+  }
+
+  async saveReferenceSelection(input: {
+    id: string
+    taskId: string
+    userId: string
+    selection: ReferenceSelectionInput
+  }) {
+    const selection = referenceSelectionInputSchema.parse(input.selection)
+    if (this.referenceSelections.has(selection.runId)) return
+    const report = await this.findResearchReport(input.taskId, input.userId, selection.runId)
+    if (!report) return
+    const candidates = new Map(report.candidates.map((candidate) => [candidate.id, candidate]))
+    const primaryCandidate = selection.primaryCandidateId ? candidates.get(selection.primaryCandidateId) : null
+    if (selection.primaryCandidateId && !primaryCandidate) return
+    const selectedHighlights = selection.selectedHighlights.flatMap((highlight) => {
+      const candidate = candidates.get(highlight.candidateId)
+      if (!candidate || !candidate.borrowableHighlights.includes(highlight.value)) return []
+      return [{ candidate, value: highlight.value }]
+    })
+    if (selectedHighlights.length !== selection.selectedHighlights.length) return
+    this.referenceSelections.set(selection.runId, {
+      id: input.id,
+      runId: selection.runId,
+      taskId: input.taskId,
+      userId: input.userId,
+      selection,
+      createdAt: new Date(),
+    })
+    return resolvedReferenceSelectionSchema.parse({
+      runId: selection.runId,
+      industrySummary: report.industrySummary,
+      primaryCandidate,
+      selectedHighlights,
+      customRequirements: selection.customRequirements,
+      exclusions: selection.exclusions,
+    })
+  }
+
+  async listReferenceSelections(taskId: string, userId: string): Promise<PlayableReferenceSelectionRecord[]> {
+    return [...this.referenceSelections.values()].filter(
+      (selection) => selection.taskId === taskId && selection.userId === userId,
+    )
+  }
 }
 
 interface LocalDemoRuntime {
   repository: PlayableTaskRepository
   artifactStore: ArtifactStore
   agent: PlayableAgentAdapter
+  marketResearchAgent: MarketResearchAgent
   mediaGenerator: (input: {
     taskId: string
     apiKey: string
@@ -946,6 +1156,7 @@ export const localDemoRuntime =
     repository: new LocalDemoTaskRepository(),
     artifactStore: new LocalDemoArtifactStore(),
     agent: new LocalDemoAgent(),
+    marketResearchAgent: new LocalDemoMarketResearchAgent(),
     mediaGenerator: generateLocalDemoMedia,
   })
 

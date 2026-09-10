@@ -42,6 +42,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable, isConfirmationReady } from './confirmation-table'
+import { ResearchResultCard } from './research-result-card'
+import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 
 const stages = [
   ['plan', '方案'],
@@ -71,6 +73,8 @@ const requirementToolLabels: Record<string, string> = {
   submit_revision: '提交修改计划',
   inspect_reference_images: '分析参考图片',
   analyze_reference_video: '分析参考视频',
+  offer_market_research: '建议市场搜索',
+  search_market_references: '搜索市场参考',
 }
 const defaultResourceTreatments: Record<string, string> = {
   tileFaces: '使用内置默认牌面素材',
@@ -128,6 +132,8 @@ export interface ConversationMessage {
   attachments?: ConversationAttachment[]
   confirmation?: ConfirmationProposal
   revision?: RevisionPlan | RevisionProposal
+  research?: MarketResearchReport
+  adoptedSelection?: ReferenceSelectionInput
 }
 
 function DynamicRequestActions({
@@ -323,7 +329,12 @@ export function ChatWorkspace({
   )
 
   const sendMessage = useCallback(
-    async (contentOverride?: string, appendToConversation = true, existingAttachmentIds: string[] = []) => {
+    async (
+      contentOverride?: string,
+      appendToConversation = true,
+      existingAttachmentIds: string[] = [],
+      referenceSelection?: ReferenceSelectionInput,
+    ) => {
       const attachmentSnapshot = appendToConversation
         ? composerAttachments.map((attachment) => ({ ...attachment }))
         : []
@@ -333,7 +344,7 @@ export function ChatWorkspace({
         (attachmentSnapshot.length > 0
           ? `请参考已上传素材：${attachmentSnapshot.map((attachment) => attachment.filename).join('、')}`
           : '')
-      if (!content || sending || !canCompose) return
+      if (!content || sending || !canCompose) return false
       const id = Date.now()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
@@ -392,7 +403,7 @@ export function ChatWorkspace({
             )
           }
         }
-        if (uploadFailed) return
+        if (uploadFailed) return false
 
         const attachments = resolvedAttachments.flatMap((attachment): ConversationAttachment[] =>
           attachment.asset
@@ -417,6 +428,7 @@ export function ChatWorkspace({
           body: JSON.stringify({
             message: content,
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+            ...(referenceSelection ? { referenceSelection } : {}),
           }),
           signal: controller.signal,
         })
@@ -447,6 +459,8 @@ export function ChatWorkspace({
                   reasoning: next.reasoning,
                   options: next.options,
                   request: next.request,
+                  research: next.research,
+                  adoptedSelection: next.adoptedSelection,
                 },
               ]
             }
@@ -466,6 +480,8 @@ export function ChatWorkspace({
             brief?: RequirementBrief
             tools?: string[]
             tool?: string
+            stage?: string
+            research?: MarketResearchReport
           }
           try {
             event = JSON.parse(line)
@@ -478,6 +494,8 @@ export function ChatWorkspace({
               ...(event.reasoning !== undefined ? { reasoning: event.reasoning } : {}),
               status: 'streaming',
             })
+          } else if (event.type === 'research_progress' && event.message) {
+            updateAssistant({ content: event.message, status: 'streaming' })
           } else if (['tool_started', 'tool_completed', 'tool_failed'].includes(event.type) && event.tool) {
             const status = event.type.slice('tool_'.length) as 'started' | 'completed' | 'failed'
             setToolStatuses((items) => ({ ...items, [event.tool!]: status }))
@@ -485,6 +503,14 @@ export function ChatWorkspace({
               setCompletedTools((items) => (items.includes(event.tool!) ? items : [...items, event.tool!]))
             }
             if (event.tool === 'analyze_reference_video') onVideoAnalysisToolStatus?.(status)
+          } else if (event.type === 'research' && event.message && event.research) {
+            terminalEventReceived = true
+            updateAssistant({
+              content: event.message,
+              reasoning: event.reasoning,
+              research: event.research,
+              status: 'sent',
+            })
           } else if (event.type === 'informational' && event.message) {
             terminalEventReceived = true
             if (event.brief) onBrief?.(event.brief)
@@ -551,6 +577,7 @@ export function ChatWorkspace({
         }
         setMessage('')
         setComposerAttachments([])
+        return terminalEventReceived
       } catch (cause) {
         if (terminalEventReceived) {
           setMessage('')
@@ -562,6 +589,7 @@ export function ChatWorkspace({
             items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item)),
           )
         }
+        return false
       } finally {
         if (streamController.current === controller) streamController.current = undefined
         setSending(false)
@@ -964,6 +992,24 @@ export function ChatWorkspace({
                   disabled={sending || !canCompose}
                   onSubmit={(value) => void sendMessage(value)}
                 />
+                {item.research && (
+                  <ResearchResultCard
+                    report={item.research}
+                    adoptedSelection={item.adoptedSelection}
+                    disabled={sending || !canCompose}
+                    onAdopt={async (selection) => {
+                      const adopted = await sendMessage('采用此方向', true, [], selection)
+                      if (!adopted) return
+                      setConversation((items) =>
+                        items.map((candidate) =>
+                          candidate.id === item.id ? { ...candidate, adoptedSelection: selection } : candidate,
+                        ),
+                      )
+                    }}
+                    onSearchAgain={() => void sendMessage('重新搜索并分析同类试玩广告')}
+                    onSkip={() => void sendMessage('跳过市场搜索，继续整理试玩需求')}
+                  />
+                )}
                 {item.revision && (
                   <RevisionSummary revision={index === latestProposalIndex && revision ? revision : item.revision} />
                 )}

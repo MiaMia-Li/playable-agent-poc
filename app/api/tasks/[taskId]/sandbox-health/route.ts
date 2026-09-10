@@ -41,7 +41,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         teamId: process.env.SANDBOX_VERCEL_TEAM_ID!,
         projectId: process.env.SANDBOX_VERCEL_PROJECT_ID!,
         token: process.env.SANDBOX_VERCEL_TOKEN!,
-        sandboxId: taskData.sandboxId,
+        name: taskData.sandboxId,
       })
 
       if (!sandbox) {

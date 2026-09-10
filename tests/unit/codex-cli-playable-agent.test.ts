@@ -25,6 +25,7 @@ const proposal = {
   },
   storeUrl: 'https://example.com/store',
   delivery: {
+    profileId: 'applovin',
     network: 'applovin',
     logicalWidth: 360,
     logicalHeight: 640,
@@ -118,6 +119,7 @@ describe('CodexCliPlayableAgent', () => {
       name: 'analyze_reference_video' as const,
       assetIds: [],
       assetId: 'video-1',
+      searchBrief: null,
     }
     const invokeCodex = vi
       .fn()
@@ -163,7 +165,7 @@ describe('CodexCliPlayableAgent', () => {
       kind: 'tool_calls',
       message: null,
       reasoning: '继续分析。',
-      toolCalls: [{ name: 'inspect_reference_images', assetIds: ['image-1'], assetId: null }],
+      toolCalls: [{ name: 'inspect_reference_images', assetIds: ['image-1'], assetId: null, searchBrief: null }],
       plan: null,
     }))
     const executeTool = vi.fn(async () => ({ observations: [] }))

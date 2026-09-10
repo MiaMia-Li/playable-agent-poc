@@ -6,6 +6,7 @@ import type {
   RevisionProposal,
 } from './schemas'
 import type { PlayableResourceAssetSlot } from './asset-policy'
+import type { ResolvedReferenceSelection, SearchBrief } from './research/schemas'
 import type { SafePlayableAsset } from './task-assets'
 
 export interface AgentConversationTurn {
@@ -82,6 +83,7 @@ export interface AgentInput {
   gameplayBlueprint?: GameplayBlueprint
   hasArtifact?: boolean
   pendingRevision?: RevisionProposal | null
+  referenceSelection?: ResolvedReferenceSelection
 }
 
 export interface AgentReplyProgress {
@@ -89,29 +91,37 @@ export interface AgentReplyProgress {
   reasoning?: string
 }
 
-export type ReferenceAnalysisToolCall =
+export type RequirementAnalysisToolCall =
   | {
       name: 'inspect_reference_images'
       assetIds: string[]
       assetId: null
+      searchBrief?: null
     }
   | {
       name: 'analyze_reference_video'
       assetIds: []
       assetId: string
+      searchBrief?: null
+    }
+  | {
+      name: 'search_market_references'
+      assetIds: []
+      assetId: null
+      searchBrief: SearchBrief
     }
 
 export type AgentToolProgress = AgentReplyProgress &
   (
-    | { type: 'tool_started'; toolCall: ReferenceAnalysisToolCall }
-    | { type: 'tool_completed'; toolCall: ReferenceAnalysisToolCall }
-    | { type: 'tool_failed'; toolCall: ReferenceAnalysisToolCall }
+    | { type: 'tool_started'; toolCall: RequirementAnalysisToolCall }
+    | { type: 'tool_completed'; toolCall: RequirementAnalysisToolCall }
+    | { type: 'tool_failed'; toolCall: RequirementAnalysisToolCall }
   )
 
 export interface AgentReplyOptions {
   onProgress?: (progress: AgentReplyProgress | AgentToolProgress) => void
   abortSignal?: AbortSignal
-  executeTool?: (toolCall: ReferenceAnalysisToolCall, options?: { abortSignal?: AbortSignal }) => Promise<unknown>
+  executeTool?: (toolCall: RequirementAnalysisToolCall, options?: { abortSignal?: AbortSignal }) => Promise<unknown>
 }
 
 export type PlayableAgentErrorCode =

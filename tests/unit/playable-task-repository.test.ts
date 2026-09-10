@@ -2,7 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SQL } from 'drizzle-orm'
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
-import { playableTaskAssets, playableTaskBuilds, playableTaskEvents, playableVideoAnalyses } from '@/lib/db/schema'
+import {
+  playableReferenceSelections,
+  playableResearchCandidates,
+  playableResearchRuns,
+  playableTaskAssets,
+  playableTaskBuilds,
+  playableTaskEvents,
+  playableVideoAnalyses,
+} from '@/lib/db/schema'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -162,6 +170,28 @@ describe('playable video analysis storage', () => {
     expect(
       config.indexes.find((index) => index.config.name === 'playable_video_analyses_asset_pipeline_model_unique')
         ?.config.unique,
+    ).toBe(true)
+  })
+})
+
+describe('playable market research storage', () => {
+  it('stores task-owned runs, candidates, and one immutable selection per run', () => {
+    const runs = getTableConfig(playableResearchRuns)
+    const candidates = getTableConfig(playableResearchCandidates)
+    const selections = getTableConfig(playableReferenceSelections)
+
+    expect(runs.foreignKeys).toHaveLength(2)
+    expect(runs.indexes.map((index) => index.config.name)).toEqual(
+      expect.arrayContaining(['playable_research_runs_task_created_idx', 'playable_research_runs_cache_idx']),
+    )
+    expect(candidates.foreignKeys).toHaveLength(2)
+    expect(
+      candidates.indexes.find((index) => index.config.name === 'playable_research_candidates_run_position_idx')?.config
+        .unique,
+    ).toBe(true)
+    expect(selections.foreignKeys).toHaveLength(3)
+    expect(
+      selections.indexes.find((index) => index.config.name === 'playable_reference_selections_run_idx')?.config.unique,
     ).toBe(true)
   })
 })

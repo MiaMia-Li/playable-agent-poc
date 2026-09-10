@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { APPLOVIN_MAX_BYTES, DELIVERY_PROFILE_IDS, matchesDeliveryProfileSnapshot } from './delivery-standards'
+import { marketResearchReportSchema } from './research/schemas'
 import { playableModeIds } from './types'
 
 export const videoAnalysisStatuses = ['pending', 'preprocessing', 'analyzing', 'succeeded', 'failed'] as const
@@ -121,6 +122,37 @@ export const routingDecisionSchema = z
     }
   })
 
+const deliverySnapshotShape = {
+  network: z.enum(['applovin', 'generic']),
+  logicalWidth: z.literal(360),
+  logicalHeight: z.literal(640),
+  output: z.literal('single-html'),
+  maxBytes: z.union([z.literal(APPLOVIN_MAX_BYTES), z.null()]),
+}
+
+function validateDeliveryProfileSnapshot(
+  delivery: Parameters<typeof matchesDeliveryProfileSnapshot>[0],
+  context: z.RefinementCtx,
+) {
+  if (!matchesDeliveryProfileSnapshot(delivery)) {
+    context.addIssue({ code: 'custom', message: 'Delivery fields must match the selected profile' })
+  }
+}
+
+const persistedDeliverySchema = z
+  .strictObject({
+    profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
+    ...deliverySnapshotShape,
+  })
+  .superRefine(validateDeliveryProfileSnapshot)
+
+const generatedDeliverySchema = z
+  .strictObject({
+    profileId: z.enum(DELIVERY_PROFILE_IDS),
+    ...deliverySnapshotShape,
+  })
+  .superRefine(validateDeliveryProfileSnapshot)
+
 const confirmationProposalShape = {
   mode: z.enum(playableModeIds),
   gameplay: z.string().trim().min(1),
@@ -140,20 +172,7 @@ const confirmationProposalShape = {
   // OpenAI Structured Outputs rejects JSON Schema's `format: "uri"`.
   // Keep URL validation at the Zod boundary without emitting that format.
   storeUrl: z.string().trim().max(2048).refine(isAbsoluteHttpsUrl, 'Store URL must use HTTPS'),
-  delivery: z
-    .strictObject({
-      profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
-      network: z.enum(['applovin', 'generic']),
-      logicalWidth: z.literal(360),
-      logicalHeight: z.literal(640),
-      output: z.literal('single-html'),
-      maxBytes: z.union([z.literal(APPLOVIN_MAX_BYTES), z.null()]),
-    })
-    .superRefine((delivery, context) => {
-      if (!matchesDeliveryProfileSnapshot(delivery)) {
-        context.addIssue({ code: 'custom', message: 'Delivery fields must match the selected profile' })
-      }
-    }),
+  delivery: persistedDeliverySchema,
 }
 
 function validateConfirmationPresentation(
@@ -200,6 +219,7 @@ export const generatedConfirmationProposalSchema = z
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,
     ...confirmationProposalShape,
+    delivery: generatedDeliverySchema,
   })
   .superRefine(validateConfirmationPresentation)
 
@@ -301,6 +321,12 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     confirmation: confirmationProposalSchema,
     brief: requirementBriefSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('research'),
+    message: z.string().trim().min(1),
+    reasoning: z.string().trim().min(1),
+    research: marketResearchReportSchema,
   }),
 ])
 

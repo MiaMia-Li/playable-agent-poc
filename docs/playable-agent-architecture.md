@@ -4,9 +4,10 @@
 
 ## 整体职责
 
-系统包含两个主要 Agent：
+系统包含三个协作 Agent：
 
 - **需求 Agent**：理解用户对话和参考素材，维护结构化需求，并产出待用户确认的首次构建方案或 Revision 方案。
+- **市场研究 Agent**：仅在显式搜索意图或用户确认建议后，检索受控公开来源并返回结构化候选方向。
 - **构建 Agent**：根据用户确认的方案，在 Sandbox 中生成、修改并验证最终 Playable HTML。
 
 二者共享 `lib/playable/playable-agent-adapter.ts` 中的 `PlayableAgentAdapter` 接口：
@@ -52,6 +53,7 @@
 - 已上传素材
 - 最新视频分析
 - 历史构建版本
+- 历史市场研究选择
 
 页面随后渲染：
 
@@ -70,6 +72,8 @@ POST /api/playable-tasks/:taskId/messages
 - `tool_started`
 - `tool_completed`
 - `tool_failed`
+- `research_progress`
+- `research`
 - `informational`
 - `clarification`
 - `confirmation`
@@ -107,6 +111,7 @@ POST /api/playable-tasks/:taskId/messages
 - 当前消息附件 ID
 - 是否已有成功产物
 - 与最新参考视频匹配的 Gameplay Blueprint
+- 本轮已采用并由服务端解析的市场参考方向
 
 ### Agent 工具
 
@@ -114,6 +119,7 @@ POST /api/playable-tasks/:taskId/messages
 
 - `inspect_reference_images`：理解本轮参考图片。
 - `analyze_reference_video`：运行 QDAI 视频玩法分析。
+- `search_market_references`：按结构化 Search Brief 检索并分析公开市场参考。
 - `inspect_uploaded_assets`：检查素材元数据。
 - `update_requirement_brief`：更新结构化需求。
 - `list_playable_capabilities`：读取可用 Playable 能力。
@@ -127,12 +133,17 @@ POST /api/playable-tasks/:taskId/messages
 
 每轮限制最多执行一次图片分析批次和一次视频分析，且只能分析当前消息明确附带的素材。相同调用会复用本轮缓存，视频分析还通过数据库原子 claim 防止重复执行。
 
+市场搜索同样不是每轮自动运行：用户明确要求搜索时立即执行；仅判断“可能有帮助”时先返回一键审批；需求已经明确、有强参考素材、正在修改已有版本或普通闲聊时跳过。搜索只允许 TikTok Creative Center、Google Ads Transparency、Meta、AppLovin 和 Liftoff 的受控公开域名，24 小时内相同 Search Brief 可复用缓存。
+
+研究结果作为 `research` 消息保存在当前对话中，包含 3–5 个带来源、证据强度、局限和可借鉴亮点的候选。公开趋势不能声称 CTR、CVR、IPM 或 ROAS。研究本身不修改 Requirement Brief；只有用户提交“采用此方向”后，服务端才会根据持久化候选 ID 校验选择，并把解析后的方向交给下一轮需求 Agent。
+
 ### 需求 Agent 输出
 
-最终结果有四类：
+最终结果有五类：
 
 - `informational`：普通回答，不改变需求阶段。
 - `clarification`：向用户追问。
+- `research`：返回市场参考分析，不改变 Requirement Brief 或任务阶段。
 - `confirmation`：提交首次构建方案。
 - `revision`：提交已有 Playable 的修改方案。
 

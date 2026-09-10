@@ -3,10 +3,12 @@ import { Output } from 'ai7'
 import { z } from 'zod'
 import {
   createRequirementBrief,
-  executeReferenceAnalysisTools,
+  executeRequirementAnalysisTools,
   executeRequirementToolPlan,
+  parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   requirementAgentPlanSchema,
+  requirementAgentStepSchema,
 } from '@/lib/playable/requirement-tools'
 import {
   defaultConfirmationPresentation,
@@ -56,6 +58,7 @@ function confirmation(brief: RequirementBrief): ConfirmationProposal {
     copy: { title: '夏日挑战', cta: '立即试玩', disclaimer: '演示内容', locale: 'zh-CN' },
     storeUrl: 'https://example.com/app',
     delivery: {
+      profileId: 'applovin',
       network: 'applovin',
       logicalWidth: 360,
       logicalHeight: 640,
@@ -71,22 +74,26 @@ it('emits an OpenAI-compatible requirement schema without unsupported URI format
   expect(jsonSchema).not.toContain('"format":"uri"')
 })
 
-it('marks every requirement tool-call property as required for OpenAI structured outputs', async () => {
-  const responseFormat = await Output.object({ schema: requirementAgentPlanSchema }).responseFormat
-  if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
-  const jsonSchema = responseFormat.schema as {
-    properties?: {
-      calls?: {
-        items?: {
-          properties?: Record<string, unknown>
-          required?: string[]
-        }
-      }
-    }
+function findObjectsWithIncompleteRequired(value: unknown, path = '$'): string[] {
+  if (!value || typeof value !== 'object') return []
+  const schema = value as Record<string, unknown>
+  const failures: string[] = []
+  if (schema.type === 'object' && schema.properties && typeof schema.properties === 'object') {
+    const properties = Object.keys(schema.properties).sort()
+    const required = Array.isArray(schema.required) ? [...schema.required].sort() : []
+    if (JSON.stringify(required) !== JSON.stringify(properties)) failures.push(path)
   }
-  const callSchema = jsonSchema.properties?.calls?.items
+  for (const [key, child] of Object.entries(schema)) {
+    failures.push(...findObjectsWithIncompleteRequired(child, `${path}.${key}`))
+  }
+  return failures
+}
 
-  expect(callSchema?.required?.sort()).toEqual(Object.keys(callSchema?.properties ?? {}).sort())
+it('marks every nested object property as required for OpenAI structured outputs', async () => {
+  const responseFormat = await Output.object({ schema: requirementAgentStepSchema }).responseFormat
+  if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
+
+  expect(findObjectsWithIncompleteRequired(responseFormat.schema)).toEqual([])
 })
 
 describe('requirement domain tools', () => {
@@ -95,23 +102,25 @@ describe('requirement domain tools', () => {
     const abortController = new AbortController()
     const cache = new Map()
 
-    const first = await executeReferenceAnalysisTools({
+    const first = await executeRequirementAnalysisTools({
       calls: [
         {
           name: 'inspect_reference_images',
           assetIds: ['image-b', 'image-a', 'image-a'],
           assetId: null,
+          searchBrief: null,
         },
       ],
       options: { executeTool, abortSignal: abortController.signal },
       cache,
     })
-    const second = await executeReferenceAnalysisTools({
+    const second = await executeRequirementAnalysisTools({
       calls: [
         {
           name: 'inspect_reference_images',
           assetIds: ['image-a', 'image-b'],
           assetId: null,
+          searchBrief: null,
         },
       ],
       options: { executeTool, abortSignal: abortController.signal },
@@ -120,7 +129,7 @@ describe('requirement domain tools', () => {
 
     expect(executeTool).toHaveBeenCalledOnce()
     expect(executeTool).toHaveBeenCalledWith(
-      { name: 'inspect_reference_images', assetIds: ['image-a', 'image-b'], assetId: null },
+      { name: 'inspect_reference_images', assetIds: ['image-a', 'image-b'], assetId: null, searchBrief: null },
       { abortSignal: abortController.signal },
     )
     expect(second).toEqual(first)
@@ -130,8 +139,8 @@ describe('requirement domain tools', () => {
     'treats a structured %s tool result as failed without discarding its static reason',
     async (status) => {
       const onProgress = vi.fn()
-      const [result] = await executeReferenceAnalysisTools({
-        calls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1' }],
+      const [result] = await executeRequirementAnalysisTools({
+        calls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null }],
         options: {
           executeTool: async () => ({ status, reason: status === 'pending' ? 'analysis_pending' : status }),
           onProgress,
@@ -145,10 +154,85 @@ describe('requirement domain tools', () => {
       })
       expect(onProgress).toHaveBeenLastCalledWith({
         type: 'tool_failed',
-        toolCall: { name: 'analyze_reference_video', assetIds: [], assetId: 'video-1' },
+        toolCall: { name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null },
       })
     },
   )
+
+  it('parses a structured market research call', () => {
+    const searchBrief = {
+      version: 1 as const,
+      trigger: 'explicit' as const,
+      category: '消除',
+      subcategory: '麻将配对',
+      gameplayKeywords: ['点击配对'],
+      market: '全球',
+      locale: 'zh-CN',
+      adNetwork: 'AppLovin',
+      timeRange: '最近 90 天',
+      focusAreas: ['前三秒钩子'],
+      requirementSummary: '寻找同类试玩',
+    }
+
+    expect(
+      parseRequirementAgentStep({
+        kind: 'tool_calls',
+        message: null,
+        reasoning: '用户明确要求搜索同类试玩。',
+        toolCalls: [
+          {
+            name: 'search_market_references',
+            assetIds: [],
+            assetId: null,
+            searchBrief,
+          },
+        ],
+        plan: null,
+      }),
+    ).toEqual({
+      kind: 'tool_calls',
+      toolCalls: [
+        {
+          name: 'search_market_references',
+          assetIds: [],
+          assetId: null,
+          searchBrief,
+        },
+      ],
+    })
+  })
+
+  it('offers market research without changing the current brief', () => {
+    const currentBrief = createRequirementBrief('做一个流行的消除试玩')
+    const result = executeRequirementToolPlan({
+      prompt: '我想做一个现在流行的消除试玩',
+      currentBrief,
+      plan: {
+        message: '可以先研究同类热门创意，预计需要 30–60 秒。是否开始？',
+        reasoning: '方向较宽泛，市场研究可以帮助确定核心玩法。',
+        calls: [
+          {
+            name: 'offer_market_research',
+            brief: null,
+            request: {
+              type: 'approval',
+              question: '是否开始搜索？',
+              options: [
+                { id: 'search', label: '开始搜索', description: '研究公开案例', value: '开始搜索同类试玩' },
+                { id: 'skip', label: '跳过搜索', description: '直接整理需求', value: '跳过搜索' },
+              ],
+              allowCustom: false,
+            },
+            confirmation: null,
+            revision: null,
+          },
+        ],
+      },
+    })
+
+    expect(result.reply).toMatchObject({ kind: 'clarification', tools: ['offer_market_research'] })
+    expect(result.brief).toEqual(currentBrief)
+  })
 
   it('answers informational conversation without changing or routing the brief', () => {
     const currentBrief = createRequirementBrief()

@@ -245,7 +245,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
               if (sandboxToken && teamId && projectId) {
                 sandbox = await Sandbox.get({
-                  sandboxId: task.sandboxId,
+                  name: task.sandboxId,
                   teamId,
                   projectId,
                   token: sandboxToken,
@@ -300,7 +300,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
               if (sandboxToken && teamId && projectId) {
                 sandbox = await Sandbox.get({
-                  sandboxId: task.sandboxId,
+                  name: task.sandboxId,
                   teamId,
                   projectId,
                   token: sandboxToken,
@@ -350,7 +350,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
               if (sandboxToken && teamId && projectId) {
                 sandbox = await Sandbox.get({
-                  sandboxId: task.sandboxId,
+                  name: task.sandboxId,
                   teamId,
                   projectId,
                   token: sandboxToken,
