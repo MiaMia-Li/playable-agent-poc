@@ -47,11 +47,11 @@ describe('PlayableStudioShell recent conversations', () => {
     }
 
     render(<StudioNavigationHarness />)
-    expect(await screen.findByRole('link', { name: '制作夏日海岛试玩' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: /进行中.*制作夏日海岛试玩/ })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '切换页面' }))
 
-    await waitFor(() => expect(screen.getByRole('link', { name: '制作夏日海岛试玩' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('link', { name: /进行中.*制作夏日海岛试玩/ })).toBeInTheDocument())
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 

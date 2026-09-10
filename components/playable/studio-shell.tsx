@@ -243,8 +243,15 @@ function SidebarContent({
                         href={`/tasks/${task.id}`}
                         onClick={onNavigate}
                         title={taskLabel}
-                        className="hover:bg-foreground/[0.05] flex items-center rounded-lg px-3 py-2 pr-11 text-sm transition-colors"
+                        className="hover:bg-foreground/[0.05] flex items-center gap-2 rounded-lg px-3 py-2 pr-11 text-sm transition-colors"
                       >
+                        <span
+                          className={cn(
+                            'size-1.5 shrink-0 rounded-full',
+                            task.hasArtifact ? 'bg-emerald-500' : 'bg-muted-foreground/30',
+                          )}
+                          aria-label={task.hasArtifact ? '可试玩' : '进行中'}
+                        />
                         <span className="min-w-0 flex-1 truncate">{taskLabel}</span>
                       </Link>
                       <DropdownMenu>
