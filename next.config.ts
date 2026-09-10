@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['ws'],
+  serverExternalPackages: ['ws', '@ai-sdk/harness-codex'],
   images: {
     remotePatterns: [
       {
