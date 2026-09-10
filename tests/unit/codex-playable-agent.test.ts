@@ -5,7 +5,7 @@ import type {
   ConfirmedBuildInput,
   PlayableAgentAdapter,
 } from '@/lib/playable/playable-agent-adapter'
-import { CodexPlayableAgent } from '@/lib/playable/codex-playable-agent'
+import { CodexPlayableAgent, createCodexBuildAgent, createCodexBuildPrompt } from '@/lib/playable/codex-playable-agent'
 import { createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
@@ -154,7 +154,7 @@ const harnessMocks = vi.hoisted(() => {
 })
 
 const responseMocks = vi.hoisted(() => {
-  const model = { provider: 'openai.responses', modelId: 'gpt-5.6-sol' }
+  const model = { provider: 'openai.responses', modelId: 'openai/gpt-5.6-sol' }
   const responses = vi.fn(() => model)
   const createOpenAI = vi.fn(() => ({ responses }))
   const streamText = vi.fn()
@@ -234,6 +234,57 @@ describe('CodexPlayableAgent', () => {
     } as never)
   })
 
+  it('configures Codex Harness to use OpenRouter Responses', () => {
+    createCodexBuildAgent({
+      apiKey: 'sk-or-test',
+      skill: {
+        name: 'test-skill',
+        description: 'Test skill.',
+        content: 'Build.',
+        files: [],
+      },
+    })
+
+    expect(harnessMocks.createCodex).toHaveBeenCalledWith({
+      auth: {
+        CODEX_API_KEY: 'sk-or-test',
+        OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+      },
+      reasoningEffort: 'high',
+      webSearch: false,
+    })
+    expect(harnessMocks.constructors[0]).toEqual(
+      expect.objectContaining({
+        model: 'openai/gpt-5.6-sol',
+      }),
+    )
+  })
+
+  it('tells patch revisions to preserve the final artifact and use adapted validation', () => {
+    const prompt = createCodexBuildPrompt('approximate', {
+      id: 'revision-1',
+      baseBuildId: 'build-1',
+      baseVersion: 1,
+      targetVersion: 2,
+      strategy: 'patch',
+      summary: 'Replace tile faces.',
+      changes: ['Use fruit tiles'],
+      preserved: ['Keep gameplay'],
+    })
+
+    expect(prompt).toContain('current-playable.html')
+    expect(prompt).toContain('Do not run the registered template build command')
+    expect(prompt).toContain('test-freeform-playable.mjs')
+  })
+
+  it('tells approximate builds to modify the prebuilt baseline without rebuilding it', () => {
+    const prompt = createCodexBuildPrompt('approximate')
+
+    expect(prompt).toContain('prebuilt output.html baseline')
+    expect(prompt).toContain('Do not run the registered template build command')
+    expect(prompt).toContain('test-freeform-playable.mjs')
+  })
+
   afterEach(() => {
     vi.unstubAllEnvs()
   })
@@ -311,8 +362,11 @@ describe('CodexPlayableAgent', () => {
 
     await expect(agent.proposeConfirmation(input, { onProgress })).resolves.toMatchObject(confirmationReply)
 
-    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({ apiKey })
-    expect(responseMocks.responses).toHaveBeenCalledWith('gpt-5.6-sol')
+    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({
+      apiKey,
+      baseURL: 'https://openrouter.ai/api/v1',
+    })
+    expect(responseMocks.responses).toHaveBeenCalledWith('openai/gpt-5.6-sol')
     const settings = responseMocks.streamText.mock.calls[0][0] as {
       model: unknown
       instructions: string
@@ -327,6 +381,7 @@ describe('CodexPlayableAgent', () => {
     expect(settings.instructions).toContain('freeform')
     expect(settings.instructions).toContain('AI media generation is unavailable')
     expect(settings.providerOptions.openai).toEqual({
+      forceReasoning: true,
       reasoningEffort: 'low',
       reasoningSummary: 'auto',
       store: false,

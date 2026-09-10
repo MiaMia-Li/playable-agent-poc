@@ -578,7 +578,7 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
 }
 
 const DEFAULT_BUILD_FAILURE_MESSAGE = '试玩构建失败，请重试。'
-const QUOTA_BUILD_FAILURE_MESSAGE = 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。'
+const QUOTA_BUILD_FAILURE_MESSAGE = 'AI 服务额度暂时不可用，请联系管理员后重试。'
 const SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE = 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。'
 
 function externalResponseStatus(error: unknown): number | undefined {
@@ -1120,7 +1120,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return jsonError(409, 'Task phase conflict')
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       const message = body.message.trim()
       let referenceSelection: ResolvedReferenceSelection | undefined
       if (body.referenceSelection !== undefined) {
@@ -1435,7 +1435,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         )
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       const claim = await claimVideoAnalysis(access.task.id, video.id)
       const analysis = claim.analysis
       if (!claim.claimed) {
@@ -1483,7 +1483,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const parsed = confirmationProposalSchema.safeParse(body?.confirmation)
       if (!parsed.success) return jsonError(400, 'Invalid confirmation')
       const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(428, 'OpenAI key required')
+      if (!apiKey) return jsonError(503, 'AI service unavailable')
       if (containsExactSecret(JSON.stringify(parsed.data), apiKey)) {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -1504,7 +1504,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ? await (dependencies.readMediaApiKey ?? dependencies.readApiKey)(request, access.userId)
         : undefined
       if (needsGeneratedMedia && !mediaApiKey) {
-        return jsonError(428, 'OpenAI key required for AI media generation')
+        return jsonError(503, 'AI media service unavailable')
       }
       const [assets, videoAnalysis] = await Promise.all([
         dependencies.repository.listAssets(access.task.id, access.userId),

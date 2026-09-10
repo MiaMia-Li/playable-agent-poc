@@ -3,7 +3,6 @@ import { getSessionFromReq } from '@/lib/session/server'
 import { isRelativeUrl } from '@/lib/utils/is-relative-url'
 import { saveSession } from '@/lib/session/create'
 import { getOAuthToken } from '@/lib/session/get-oauth-token'
-import { clearOpenAIKeyCookie } from '@/lib/playable/byok-session'
 
 export async function GET(req: NextRequest) {
   const session = await getSessionFromReq(req)
@@ -51,6 +50,5 @@ export async function GET(req: NextRequest) {
   })
 
   await saveSession(response, undefined)
-  clearOpenAIKeyCookie(response)
   return response
 }

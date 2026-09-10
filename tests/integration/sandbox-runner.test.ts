@@ -228,8 +228,11 @@ describe('runPlayableBuild', () => {
       const result = await runPlayableBuild(buildInput(mode, apiKey), {
         createSandbox: async () => sandbox,
         executeAgent: async ({ authEnvironment, workspace, sandbox: agentSandbox, abortSignal }) => {
-          expect(authEnvironment).toEqual({ CODEX_API_KEY: apiKey })
-          expect(Object.keys(authEnvironment)).toEqual(['CODEX_API_KEY'])
+          expect(authEnvironment).toEqual({
+            CODEX_API_KEY: apiKey,
+            OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+          })
+          expect(Object.keys(authEnvironment)).toEqual(['CODEX_API_KEY', 'OPENAI_BASE_URL'])
           expect(workspace).toBe(path.join(sandbox.defaultWorkingDirectory, 'work'))
           await agentSandbox.writeTextFile({
             path: path.join(workspace, 'agent-secret-bearing-output.txt'),
@@ -381,6 +384,81 @@ describe('runPlayableBuild', () => {
 
     expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
     expect(result.html.match(/VU5JUVVFX1RJTEVfTUFSS0VS/g)).toHaveLength(1)
+  }, 30_000)
+
+  it('builds the registered baseline before the Agent and preserves the Agent final artifact', async () => {
+    const sandbox = await createLocalSandbox()
+    const marker = '<!-- agent-final-artifact -->'
+
+    const result = await runPlayableBuild(buildInput('gravity_fill', 'sk-agent-final-test'), {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ sandbox: agentSandbox, workspace, abortSignal }) => {
+        const baseline = await agentSandbox.readTextFile({
+          path: path.join(workspace, 'output.html'),
+          abortSignal,
+        })
+        expect(baseline).toContain('window.__PLAYABLE__')
+        await agentSandbox.writeTextFile({
+          path: path.join(workspace, 'output.html'),
+          content: `${baseline}${marker}`,
+          abortSignal,
+        })
+      },
+    })
+
+    expect(result.html).toContain(marker)
+    const buildIndex = sandbox.commands.findIndex(({ command }) => command.includes('build-playable.mjs'))
+    const validationIndex = sandbox.commands.findIndex(({ command }) => command.includes('test-playable.mjs'))
+    expect(buildIndex).toBeGreaterThanOrEqual(0)
+    expect(validationIndex).toBeGreaterThan(buildIndex)
+  }, 30_000)
+
+  it('preserves a patch revision artifact without rebuilding the registered template over it', async () => {
+    const sandbox = await createLocalSandbox()
+    const basePath = path.join(sandbox.defaultWorkingDirectory, 'base.html')
+    await execAsync(
+      `node assets/starter/build-playable.mjs gravity_fill ${JSON.stringify(basePath)} https://example.com/store`,
+      { cwd: path.join(process.cwd(), 'skills/mahjong-pair-match-playable') },
+    )
+    const baseHtml = await readFile(basePath, 'utf8')
+    const input = buildInput('gravity_fill', 'sk-patch-final-test')
+    input.confirmation = {
+      ...input.confirmation,
+      routing: { match: 'approximate', confidence: 0.8, differences: ['牌面改为三同类消除'] },
+    }
+    input.baseHtml = baseHtml
+    input.revision = {
+      id: 'revision-1',
+      baseBuildId: 'build-1',
+      baseVersion: 1,
+      targetVersion: 2,
+      strategy: 'patch',
+      summary: '修改牌面玩法',
+      changes: ['应用三同类消除'],
+      preserved: ['保留布局'],
+    }
+    const marker = '<!-- patched-agent-final -->'
+
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ sandbox: agentSandbox, workspace, abortSignal }) => {
+        expect(
+          await agentSandbox.readTextFile({
+            path: path.join(workspace, 'current-playable.html'),
+            abortSignal,
+          }),
+        ).toBe(baseHtml)
+        await agentSandbox.writeTextFile({
+          path: path.join(workspace, 'output.html'),
+          content: `${baseHtml}${marker}`,
+          abortSignal,
+        })
+      },
+    })
+
+    expect(result.html).toContain(marker)
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+    expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(true)
   }, 30_000)
 
   it('validates and returns the exact artifact prepared by an external agent', async () => {

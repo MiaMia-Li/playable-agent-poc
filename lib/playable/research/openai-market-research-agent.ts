@@ -1,4 +1,4 @@
-import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
+import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
 import { generateText, Output } from 'ai7'
 import { z } from 'zod'
 import { logExternalRequestError } from '../external-request-logging'
@@ -24,8 +24,9 @@ import {
   MARKET_RESEARCH_STRATEGY_VERSION,
   researchSourceIdForUrl,
 } from './source-registry'
+import { createPlayableAIProvider, readPlayableAgentModel } from '../shared-ai-key'
 
-const RESEARCH_MODEL = 'gpt-5.6-sol'
+const RESEARCH_MODEL = readPlayableAgentModel()
 const DISCOVERY_TIMEOUT_MS = 90_000
 const ANALYSIS_TIMEOUT_MS = 45_000
 
@@ -93,7 +94,7 @@ function serializedResearchPrompt(brief: SearchBrief): string {
 }
 
 async function defaultDiscover(input: DiscoveryInput): Promise<MarketDiscoveryResult> {
-  const openai = createOpenAI({ apiKey: input.apiKey })
+  const openai = createPlayableAIProvider(input.apiKey)
   try {
     const result = await generateText({
       model: openai.responses(RESEARCH_MODEL),
@@ -110,6 +111,7 @@ async function defaultDiscover(input: DiscoveryInput): Promise<MarketDiscoveryRe
       abortSignal: input.abortSignal,
       providerOptions: {
         openai: {
+          forceReasoning: true,
           reasoningEffort: 'low',
           store: false,
           strictJsonSchema: true,
@@ -126,13 +128,13 @@ async function defaultDiscover(input: DiscoveryInput): Promise<MarketDiscoveryRe
       failedSourceIds: [],
     }
   } catch (error) {
-    logExternalRequestError('OpenAI', error, [input.apiKey])
+    logExternalRequestError('OpenRouter', error, [input.apiKey])
     throw error
   }
 }
 
 async function defaultAnalyze(input: AnalysisInput): Promise<MarketAnalysisResult> {
-  const openai = createOpenAI({ apiKey: input.apiKey })
+  const openai = createPlayableAIProvider(input.apiKey)
   try {
     const result = await generateText({
       model: openai.responses(RESEARCH_MODEL),
@@ -146,6 +148,7 @@ async function defaultAnalyze(input: AnalysisInput): Promise<MarketAnalysisResul
       abortSignal: input.abortSignal,
       providerOptions: {
         openai: {
+          forceReasoning: true,
           reasoningEffort: 'low',
           store: false,
           strictJsonSchema: true,
@@ -154,7 +157,7 @@ async function defaultAnalyze(input: AnalysisInput): Promise<MarketAnalysisResul
     })
     return marketAnalysisOutputSchema.parse(result.output)
   } catch (error) {
-    logExternalRequestError('OpenAI', error, [input.apiKey])
+    logExternalRequestError('OpenRouter', error, [input.apiKey])
     throw error
   }
 }

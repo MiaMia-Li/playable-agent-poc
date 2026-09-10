@@ -73,36 +73,12 @@ afterEach(() => {
 })
 
 describe('PlayableWorkspace', () => {
-  it('opens the API key dialog when BYOK is missing', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} />)
+  it('does not expose shared AI credential controls to public users', () => {
+    render(<PlayableWorkspace taskId="task-7" publicAccess />)
 
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-    expect(screen.getByLabelText('OpenAI API Key')).toHaveAttribute('type', 'password')
-    fireEvent.click(screen.getByRole('button', { name: '暂不配置' }))
+    expect(screen.getByText('公开体验')).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
-  })
-
-  it('lets local Codex users configure a media API key without blocking chat', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured localCodex />)
-
-    expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '媒体 API Key' }))
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-  })
-
-  it('uses the production API key flow in local Harness mode', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured={false} localHarness />)
-
-    expect(screen.getByText('本地 Harness · 线上 Agent')).toBeInTheDocument()
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
-  })
-
-  it('lets public users reopen the API key dialog from the header', () => {
-    render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured publicAccess />)
-
-    fireEvent.click(screen.getByRole('button', { name: '公开体验 · 自备 API Key' }))
-
-    expect(screen.getByRole('dialog', { name: '配置 OpenAI API Key' })).toBeInTheDocument()
+    expect(screen.queryByText(/自备 API Key/)).not.toBeInTheDocument()
   })
 
   it('starts the first conversation automatically after the API key is available', async () => {

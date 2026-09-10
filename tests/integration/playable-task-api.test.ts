@@ -1569,7 +1569,7 @@ describe('playable task API', () => {
     }
   })
 
-  it('returns 428 from message and confirmation when the session has no API key', async () => {
+  it('returns 503 from message and confirmation when the shared AI key is unavailable', async () => {
     harness.setApiKey(undefined)
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
@@ -1583,8 +1583,10 @@ describe('playable task API', () => {
       context,
     )
 
-    expect(messageResponse.status).toBe(428)
-    expect(confirmResponse.status).toBe(428)
+    expect(messageResponse.status).toBe(503)
+    expect(confirmResponse.status).toBe(503)
+    await expect(messageResponse.json()).resolves.toEqual({ error: 'AI service unavailable' })
+    await expect(confirmResponse.json()).resolves.toEqual({ error: 'AI service unavailable' })
     expect(harness.scheduled).toHaveLength(0)
   })
 
@@ -2099,7 +2101,7 @@ describe('playable task API', () => {
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: 'OpenAI API 额度已用尽，请充值或更换 API Key 后重试。',
+      message: 'AI 服务额度暂时不可用，请联系管理员后重试。',
     })
     expect(JSON.stringify(harness.repository.events)).not.toContain('platform.openai.com')
   })

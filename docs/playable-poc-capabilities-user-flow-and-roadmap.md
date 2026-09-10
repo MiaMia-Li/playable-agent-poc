@@ -28,10 +28,9 @@
 ### 2.1 用户、会话和凭证
 
 - Playable Studio 当前采用免登录公开 POC 身份，所有访客共享任务、素材和产物空间。
-- 采用 BYOK 模式，每位访客在自己的浏览器中提供 OpenAI API Key；Key Cookie 不在访客之间共享。
-- API Key 会先验证是否能够访问固定模型 `gpt-5.6-sol`，并区分无效 Key、模型无权限、额度不足、限流和网络失败。
-- API Key 使用 JWE 加密后保存在服务端管理的 Cookie 中，有效期 2 小时。
-- Cookie 使用 `HttpOnly`、`SameSite=Strict`，生产环境增加 `Secure`。
+- 采用服务端共享凭证模式，通过 `OPENROUTER_API_KEY` 配置 OpenRouter API Key。
+- 浏览器不收集、保存或接收共享 API Key。
+- 服务端在需求规划、分析、媒体生成和确认构建时按需读取共享 Key。
 - API Key 不写入数据库、浏览器持久存储、用户可见日志或最终产物。
 - 构建前后会扫描确认配置和 HTML，阻止凭证进入产物。
 
@@ -384,7 +383,7 @@ ConfirmationProposal
 
 - Agent 输出解析以及精确、近似、自由生成路由结果。
 - 四模式模板注册和 Plugin 元数据。
-- BYOK Cookie、Key 验证和路由隔离。
+- 服务端共享 Key 读取、缺失配置处理和路由注入。
 - 素材上传、大小、类型、归属和安全元数据。
 - 真实构建脚本、上传素材内联和确认文案内联。
 - Sandbox 主副本防篡改、凭证泄露、包体、离线资源和响应式门禁。
@@ -535,7 +534,7 @@ ConfirmationProposal
 | 任务编排和 API 领域逻辑      | `lib/playable/task-api.ts`                                                 |
 | PostgreSQL Repository        | `lib/playable/task-repository.ts`                                          |
 | 私有产物存储                 | `lib/playable/artifact-store.ts`                                           |
-| BYOK 会话                    | `lib/playable/byok-session.ts`                                             |
+| 服务端共享 AI Key           | `lib/playable/shared-ai-key.ts`                                            |
 | 对话 UI                      | `components/playable/chat-workspace.tsx`                                   |
 | 配置确认 UI                  | `components/playable/confirmation-table.tsx`                               |
 | Preview、版本切换和下载 UI   | `components/playable/playable-preview.tsx`                                 |

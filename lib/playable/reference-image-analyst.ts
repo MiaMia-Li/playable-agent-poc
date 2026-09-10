@@ -1,13 +1,14 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
+import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
 import { generateText, Output } from 'ai7'
 import { toJSONSchema, z } from 'zod'
 import { invokeCodexCli, type CodexInvocation } from './codex-cli-playable-agent'
 import { logExternalRequestError } from './external-request-logging'
+import { createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 
-export const REFERENCE_IMAGE_ANALYSIS_MODEL = 'gpt-5.6-sol'
+export const REFERENCE_IMAGE_ANALYSIS_MODEL = readPlayableAgentModel()
 
 const referenceImageObservationSchema = z.strictObject({
   assetId: z.string().trim().min(1),
@@ -99,7 +100,7 @@ export class OpenAIReferenceImageAnalyst implements ReferenceImageAnalyst {
     this.generate =
       dependencies.generate ??
       (async (input) => {
-        const openai = createOpenAI({ apiKey: input.apiKey })
+        const openai = createPlayableAIProvider(input.apiKey)
         return generateText({
           model: openai.responses(REFERENCE_IMAGE_ANALYSIS_MODEL),
           instructions: REFERENCE_IMAGE_INSTRUCTIONS,
@@ -120,6 +121,7 @@ export class OpenAIReferenceImageAnalyst implements ReferenceImageAnalyst {
           abortSignal: input.abortSignal,
           providerOptions: {
             openai: {
+              forceReasoning: true,
               reasoningEffort: 'medium',
               store: false,
               strictJsonSchema: true,
@@ -134,7 +136,7 @@ export class OpenAIReferenceImageAnalyst implements ReferenceImageAnalyst {
     try {
       result = await this.generate(input)
     } catch (error) {
-      logExternalRequestError('OpenAI', error, [input.apiKey])
+      logExternalRequestError('OpenRouter', error, [input.apiKey])
       throw error
     }
     return validateAnalysis(result.output, input.images)

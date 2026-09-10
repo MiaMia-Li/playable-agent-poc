@@ -6,6 +6,7 @@ import { createExternalErrorLoggingFetch, logExternalRequestError } from './exte
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
 import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
+import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 
 const DEFAULT_SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
@@ -38,7 +39,7 @@ interface BuildLogger {
 }
 
 export interface ExecuteAgentInput {
-  authEnvironment: Readonly<Record<'CODEX_API_KEY', string>>
+  authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
   sandbox: PlayableSandbox
   workspace: string
   taskId: string
@@ -277,18 +278,6 @@ export async function runPlayableBuild(
       abortSignal: dependencies.abortSignal,
     })
 
-    await dependencies.logger?.info('Running playable agent')
-    stage = 'agent'
-    await dependencies.executeAgent({
-      authEnvironment: { CODEX_API_KEY: input.apiKey },
-      sandbox,
-      workspace,
-      taskId: input.taskId,
-      abortSignal: dependencies.abortSignal,
-    })
-    stage = 'integrity'
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
-
     if (dependencies.preparedArtifact) {
       stage = 'artifact_build'
       await dependencies.logger?.info('Loading prepared playable artifact')
@@ -297,9 +286,9 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (!freeform) {
+    } else if (!freeform && input.revision?.strategy !== 'patch') {
       stage = 'artifact_build'
-      await dependencies.logger?.info('Building playable artifact')
+      await dependencies.logger?.info('Building playable baseline')
       await requireSuccessfulCommand(
         sandbox,
         {
@@ -311,18 +300,34 @@ export async function runPlayableBuild(
           },
           abortSignal: dependencies.abortSignal,
         },
-        'Playable build failed',
+        'Playable baseline build failed',
       )
     }
+
+    await dependencies.logger?.info('Running playable agent')
+    stage = 'agent'
+    await dependencies.executeAgent({
+      authEnvironment: {
+        CODEX_API_KEY: input.apiKey,
+        OPENAI_BASE_URL: OPENROUTER_BASE_URL,
+      },
+      sandbox,
+      workspace,
+      taskId: input.taskId,
+      abortSignal: dependencies.abortSignal,
+    })
+    stage = 'integrity'
+    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(
       sandbox,
       {
-        command: freeform
-          ? MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform
-          : MAHJONG_PLAYABLE_PLUGIN.commands.validate,
+        command:
+          confirmation.routing.match === 'exact'
+            ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
+            : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform,
         workingDirectory: workspace,
         abortSignal: dependencies.abortSignal,
       },
