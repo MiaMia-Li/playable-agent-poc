@@ -30,8 +30,6 @@ const RESEARCH_TIMEOUT_MS = 55_000
 
 const marketDiscoveryOutputSchema = z.strictObject({
   candidates: z.array(marketResearchCandidateSchema).min(1).max(8),
-  sourceIds: z.array(z.string().trim().min(1).max(100)).max(20),
-  failedSourceIds: z.array(z.string().trim().min(1).max(100)).max(20),
   warnings: z.array(z.string().trim().min(1).max(300)).max(12),
 })
 
@@ -44,7 +42,6 @@ const marketAnalysisOutputSchema = z.strictObject({
 export interface MarketDiscoveryResult {
   candidates: MarketResearchCandidate[]
   providerSourceUrls: string[]
-  sourceIds: string[]
   failedSourceIds: string[]
   warnings: string[]
 }
@@ -120,6 +117,7 @@ async function defaultDiscover(input: DiscoveryInput): Promise<MarketDiscoveryRe
     return {
       ...output,
       providerSourceUrls: result.sources.flatMap((source) => (source.sourceType === 'url' ? [source.url] : [])),
+      failedSourceIds: [],
     }
   } catch (error) {
     logExternalRequestError('OpenAI', error, [input.apiKey])

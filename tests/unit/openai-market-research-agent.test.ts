@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { generateText } from 'ai7'
 import { MarketResearchError, type MarketResearchProgressStage } from '@/lib/playable/research/market-research-agent'
 import {
   OpenAIMarketResearchAgent,
@@ -10,6 +11,11 @@ import type {
   MarketResearchIndustrySummary,
   SearchBrief,
 } from '@/lib/playable/research/schemas'
+
+vi.mock('ai7', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai7')>()),
+  generateText: vi.fn(),
+}))
 
 const brief: SearchBrief = {
   version: 1,
@@ -71,7 +77,6 @@ function discovery(overrides: Partial<MarketDiscoveryResult> = {}): MarketDiscov
   return {
     candidates: [candidate],
     providerSourceUrls: [candidate.sourceUrl],
-    sourceIds: ['tiktok-creative-center'],
     failedSourceIds: [],
     warnings: [],
     ...overrides,
@@ -87,7 +92,32 @@ function analysis(overrides: Partial<MarketAnalysisResult> = {}): MarketAnalysis
   }
 }
 
+afterEach(() => {
+  vi.mocked(generateText).mockReset()
+})
+
 describe('OpenAIMarketResearchAgent', () => {
+  it('accepts grounded discovery output without trusting model-generated source IDs', async () => {
+    vi.mocked(generateText)
+      .mockResolvedValueOnce({
+        output: {
+          candidates: [candidate],
+          warnings: [],
+        },
+        sources: [{ sourceType: 'url', url: candidate.sourceUrl }],
+      } as never)
+      .mockResolvedValueOnce({ output: analysis(), sources: [] } as never)
+
+    const report = await new OpenAIMarketResearchAgent().search({
+      runId: 'run-1',
+      apiKey: 'test-key',
+      brief,
+    })
+
+    expect(report.candidates).toHaveLength(1)
+    expect(report.sourceCoverage.sourceIds).toEqual(['tiktok-creative-center'])
+  })
+
   it('restricts discovery to registered domains', async () => {
     const discover = vi.fn(async () => discovery())
     const agent = new OpenAIMarketResearchAgent({ discover, analyze: async () => analysis() })
