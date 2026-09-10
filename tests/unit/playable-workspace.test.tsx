@@ -1440,6 +1440,47 @@ describe('PlayableWorkspace', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('opens the version requested by a conversation deep link', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          builds: [
+            {
+              id: 'build-1',
+              status: 'succeeded',
+              version: 1,
+              current: false,
+              validation: null,
+              createdAt: new Date(1).toISOString(),
+              completedAt: new Date(2).toISOString(),
+            },
+            {
+              id: 'build-2',
+              status: 'succeeded',
+              version: 2,
+              current: true,
+              validation: null,
+              createdAt: new Date(3).toISOString(),
+              completedAt: new Date(4).toISOString(),
+            },
+          ],
+        }),
+      ),
+    )
+
+    render(
+      <PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-2" initialBuildId="build-1" />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+        'src',
+        '/api/playable-tasks/task-7/artifact?kind=playable&version=build-1',
+      ),
+    )
+  })
+
   it('previews and downloads an oversized AppLovin build with a delivery warning', async () => {
     vi.stubGlobal(
       'fetch',

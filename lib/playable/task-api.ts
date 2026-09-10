@@ -77,6 +77,7 @@ export interface PlayableTaskRecord {
   latestValidation?: unknown
   title?: string | null
   createdAt?: Date
+  updatedAt?: Date
 }
 
 export interface PlayableEventRecord {
@@ -1071,7 +1072,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           title: task.title ?? null,
           prompt: safeString(task.prompt),
           ...safeTaskState(task),
+          mode: task.confirmation?.mode ?? null,
           createdAt: task.createdAt?.toISOString() ?? null,
+          updatedAt: task.updatedAt?.toISOString() ?? null,
         })),
       })
     },

@@ -42,6 +42,7 @@ interface PlayableWorkspaceProps {
   initialBrief?: RequirementBrief
   initialHasArtifact?: boolean
   initialArtifactVersion?: string | null
+  initialBuildId?: string
   initialBuildFailureMessage?: string
   initialValidation?: PlayableValidationSummary | null
   localDemo?: boolean
@@ -76,6 +77,7 @@ export function PlayableWorkspace({
   initialBrief,
   initialHasArtifact = false,
   initialArtifactVersion = null,
+  initialBuildId,
   initialBuildFailureMessage,
   initialValidation = null,
   localDemo = false,
@@ -265,6 +267,7 @@ export function PlayableWorkspace({
           phase={phase}
           hasArtifact={hasArtifact}
           artifactVersion={artifactVersion}
+          initialBuildId={initialBuildId}
           confirmation={proposalDraft}
           revision={revisionDraft}
           onPhase={setPhase}
