@@ -72,6 +72,70 @@ const confirmationOutput = {
   ],
 } as const
 
+const researchReport = {
+  version: 1 as const,
+  runId: 'research-run-1',
+  brief: {
+    version: 1 as const,
+    trigger: 'explicit' as const,
+    category: '消除',
+    subcategory: '麻将配对',
+    gameplayKeywords: ['点击配对'],
+    market: '全球',
+    locale: 'zh-CN',
+    adNetwork: 'AppLovin',
+    timeRange: '最近 90 天',
+    focusAreas: ['前三秒钩子'],
+    requirementSummary: '搜索同类试玩',
+  },
+  strategyVersion: 'public-web-v1',
+  generatedAt: '2026-09-10T01:00:00.000Z',
+  industrySummary: {
+    coreLoops: ['点击配对'],
+    openingHooks: ['接近失败的局面'],
+    interactionPatterns: ['单指点击'],
+    feedbackPatterns: ['即时消除'],
+    ctaPatterns: ['完成后展示 CTA'],
+    trends: [],
+    saturationRisks: [],
+    opportunities: [],
+  },
+  candidates: [
+    {
+      id: 'candidate-1',
+      title: '牌架配对案例',
+      sourceUrl: 'https://ads.tiktok.com/business/creativecenter/example',
+      sourceTitle: 'TikTok Creative Center',
+      capturedAt: '2026-09-10T01:00:00.000Z',
+      categoryTags: ['消除'],
+      markets: ['全球'],
+      coreLoop: '点击相同目标并消除。',
+      controls: '点击',
+      openingHook: '接近失败。',
+      stateChanges: ['目标消除'],
+      feedback: '即时反馈。',
+      cta: '完成后展示。',
+      borrowableHighlights: ['失败开场'],
+      excludedElements: ['品牌素材'],
+      evidence: [
+        {
+          type: 'public_trend' as const,
+          label: '公开素材库出现',
+          value: null,
+          sourceUrl: 'https://ads.tiktok.com/business/creativecenter/example',
+          sourceTitle: 'TikTok Creative Center',
+          observedAt: '2026-09-10T01:00:00.000Z',
+          strength: 'moderate' as const,
+        },
+      ],
+      confidence: 0.8,
+      limitations: ['无内部指标'],
+    },
+  ],
+  sourceCoverage: { sourceIds: ['tiktok-creative-center'], failedSourceIds: [] },
+  warnings: ['公开趋势不能证明转化表现'],
+}
+
 const harnessMocks = vi.hoisted(() => {
   const createCodex = vi.fn(() => ({ harnessId: 'codex' }))
   const createVercelSandbox = vi.fn(() => ({ providerId: 'vercel-sandbox' }))
@@ -280,6 +344,7 @@ describe('CodexPlayableAgent', () => {
       name: 'inspect_reference_images' as const,
       assetIds: ['image-1', 'image-2'],
       assetId: null,
+      searchBrief: null,
     }
     responseMocks.streamText
       .mockReturnValueOnce({
@@ -326,6 +391,38 @@ describe('CodexPlayableAgent', () => {
     expect(onProgress).toHaveBeenCalledWith({ type: 'tool_completed', toolCall })
   })
 
+  it('returns a trusted research report without asking the model to rewrite it', async () => {
+    const searchBrief = researchReport.brief
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve({
+        kind: 'tool_calls',
+        message: null,
+        reasoning: '用户明确要求搜索。',
+        toolCalls: [
+          {
+            name: 'search_market_references',
+            assetIds: [],
+            assetId: null,
+            searchBrief,
+          },
+        ],
+        plan: null,
+      }),
+    } as never)
+    const executeTool = vi.fn(async () => researchReport)
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'task-research', prompt: '搜索同类试玩', apiKey: 'sk-unit-test-only' },
+        { executeTool },
+      ),
+    ).resolves.toMatchObject({ kind: 'research', research: researchReport })
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(responseMocks.streamText).toHaveBeenCalledOnce()
+  })
+
   it('fails analysis requests safely when no tool executor is available', async () => {
     responseMocks.streamText.mockReturnValueOnce({
       fullStream: (async function* () {})(),
@@ -334,7 +431,7 @@ describe('CodexPlayableAgent', () => {
         kind: 'tool_calls',
         message: null,
         reasoning: '需要先分析视频。',
-        toolCalls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1' }],
+        toolCalls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null }],
         plan: null,
       }),
     } as never)

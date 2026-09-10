@@ -45,7 +45,7 @@ import {
   type ReferenceImageAnalyst,
   type ReferenceImageAnalysis,
 } from './reference-image-analyst'
-import type { ReferenceAnalysisToolCall } from './playable-agent-adapter'
+import type { RequirementAnalysisToolCall } from './playable-agent-adapter'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -313,11 +313,16 @@ const TOOL_PROGRESS_COPY = {
     tool_completed: '参考视频分析完成',
     tool_failed: '参考视频分析暂不可用',
   },
+  search_market_references: {
+    tool_started: '正在搜索同类试玩参考',
+    tool_completed: '同类试玩参考搜索完成',
+    tool_failed: '同类试玩参考搜索暂不可用',
+  },
 } as const
 
 function toolProgressEvent(
   type: 'tool_started' | 'tool_completed' | 'tool_failed',
-  tool: ReferenceAnalysisToolCall['name'],
+  tool: RequirementAnalysisToolCall['name'],
 ) {
   return { type, tool, message: TOOL_PROGRESS_COPY[tool][type] }
 }
@@ -782,8 +787,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     }
   }
 
-  const executeReferenceTool = async (input: {
-    call: ReferenceAnalysisToolCall
+  const executeRequirementAnalysisTool = async (input: {
+    call: RequirementAnalysisToolCall
     task: PlayableTaskRecord
     userId: string
     apiKey: string
@@ -792,6 +797,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     budget: { imagesExecuted: boolean; videoExecuted: boolean }
     abortSignal?: AbortSignal
   }): Promise<ReferenceImageAnalysis | { status: string; blueprint?: GameplayBlueprint; reason?: string }> => {
+    if (input.call.name === 'search_market_references') {
+      return { status: 'unavailable', reason: 'research_unavailable' }
+    }
     if (input.call.name === 'inspect_reference_images') {
       const assetIds = [...new Set(input.call.assetIds)].sort()
       const cacheKey = JSON.stringify({ name: input.call.name, assetIds })
@@ -1045,7 +1053,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     enqueue({ type: 'assistant_progress', message, reasoning })
                   },
                   executeTool: (call, toolOptions) =>
-                    executeReferenceTool({
+                    executeRequirementAnalysisTool({
                       call,
                       task: access.task,
                       userId: access.userId,

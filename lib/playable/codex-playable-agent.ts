@@ -17,15 +17,16 @@ import { logExternalRequestError } from './external-request-logging'
 import { confirmationProposalSchema, type PlayableAgentReply } from './schemas'
 import { runPlayableBuild, type PlayableSandbox } from './sandbox-runner'
 import {
-  executeReferenceAnalysisTools,
+  executeRequirementAnalysisTools,
   executeRequirementToolPlan,
   MAX_REQUIREMENT_AGENT_STEPS,
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
   requirementAgentStepSchema,
-  type ReferenceAnalysisToolResult,
+  type RequirementAnalysisToolResult,
 } from './requirement-tools'
+import { marketResearchReportSchema } from './research/schemas'
 
 const CODEX_MODEL = 'gpt-5.6-sol'
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
@@ -114,9 +115,10 @@ async function createProposal(
     },
     capabilities: playableCapabilitiesForAgent(),
     latestUserMessage: input.prompt,
+    referenceSelection: input.referenceSelection ?? null,
   }
-  const toolResults: ReferenceAnalysisToolResult[] = []
-  const toolCache = new Map<string, ReferenceAnalysisToolResult>()
+  const toolResults: RequirementAnalysisToolResult[] = []
+  const toolCache = new Map<string, RequirementAnalysisToolResult>()
 
   for (let stepNumber = 0; stepNumber < MAX_REQUIREMENT_AGENT_STEPS; stepNumber += 1) {
     let serializedContext: string
@@ -179,13 +181,23 @@ async function createProposal(
     try {
       const step = parseRequirementAgentStep(await result.output)
       if (step.kind === 'tool_calls') {
-        toolResults.push(
-          ...(await executeReferenceAnalysisTools({
-            calls: step.toolCalls,
-            options: { ...options, abortSignal },
-            cache: toolCache,
-          })),
+        const executed = await executeRequirementAnalysisTools({
+          calls: step.toolCalls,
+          options: { ...options, abortSignal },
+          cache: toolCache,
+        })
+        toolResults.push(...executed)
+        const research = executed.find(
+          (entry) => entry.tool === 'search_market_references' && entry.status === 'completed',
         )
+        if (research) {
+          return {
+            kind: 'research',
+            message: '已整理同类试玩广告的公开趋势和候选方向，请选择一个主参考并按需添加其他亮点。',
+            reasoning: '研究结果仅作为候选参考，采用后才会进入需求方案。',
+            research: marketResearchReportSchema.parse(research.result),
+          }
+        }
         continue
       }
       return executeRequirementToolPlan({
