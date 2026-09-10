@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
-import { readOpenAIKeyCookie } from './byok-session'
+import { readSharedPlayableAIKey } from './shared-ai-key'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
@@ -60,8 +60,8 @@ const authenticate = localDemo
 
 export const playableTaskHandlers = createPlayableTaskHandlers({
   authenticate,
-  readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : readOpenAIKeyCookie,
-  readMediaApiKey: localCodex ? readOpenAIKeyCookie : undefined,
+  readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : () => readSharedPlayableAIKey(),
+  readMediaApiKey: localCodex ? () => readSharedPlayableAIKey() : undefined,
   repository: playableTaskRepository,
   agent: playableAgent,
   artifactStore: playableArtifactStore,

@@ -62,7 +62,6 @@ export default async function TaskPage({ params }: TaskPageProps) {
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialBuildFailureMessage={initialBuildFailureMessage}
       initialValidation={safeValidationSummary(task.latestValidation, task.confirmation?.delivery)}
-      initialApiKeyConfigured={localDemo || localCodex ? true : undefined}
       localDemo={localDemo}
       localCodex={localCodex}
       localHarness={localHarness}

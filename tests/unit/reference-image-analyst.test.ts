@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   CodexCliReferenceImageAnalyst,
   OpenAIReferenceImageAnalyst,
+  REFERENCE_IMAGE_ANALYSIS_MODEL,
   referenceImageAnalysisSchema,
   type ReferenceImageAnalysis,
 } from '@/lib/playable/reference-image-analyst'
@@ -27,6 +28,10 @@ const analysis: ReferenceImageAnalysis = {
 }
 
 describe('ReferenceImageAnalyst', () => {
+  it('uses the qualified OpenRouter model identifier', () => {
+    expect(REFERENCE_IMAGE_ANALYSIS_MODEL).toBe('openai/gpt-5.6-sol')
+  })
+
   it('strictly rejects unknown fields in the deep output', () => {
     expect(
       referenceImageAnalysisSchema.safeParse({

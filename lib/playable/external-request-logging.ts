@@ -1,6 +1,12 @@
 import { redactSecrets } from './redact'
 
-export type ExternalRequestSource = 'Codex agent' | 'Codex CLI' | 'OpenAI' | 'Vercel Blob' | 'Vercel Sandbox'
+export type ExternalRequestSource =
+  | 'Codex agent'
+  | 'Codex CLI'
+  | 'OpenAI'
+  | 'OpenRouter'
+  | 'Vercel Blob'
+  | 'Vercel Sandbox'
 
 const loggedResponses = new WeakSet<Response>()
 

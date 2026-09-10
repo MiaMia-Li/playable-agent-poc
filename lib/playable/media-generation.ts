@@ -2,10 +2,11 @@ import { generateId as defaultGenerateId } from '@/lib/utils/id'
 import type { ConfirmedBuildInput, PlayableBuildAsset } from './playable-agent-adapter'
 import type { PlayableResourceAssetSlot } from './asset-policy'
 import { createExternalErrorLoggingFetch } from './external-request-logging'
+import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAX_ASSET_BYTES } from './task-assets'
 
-const IMAGE_MODEL = 'gpt-image-2'
-const SPEECH_MODEL = 'gpt-4o-mini-tts'
+const IMAGE_MODEL = 'openai/gpt-image-2'
+const SPEECH_MODEL = 'openai/gpt-4o-mini-tts'
 
 type MediaGenerationInput = Pick<ConfirmedBuildInput, 'taskId' | 'apiKey' | 'confirmation'>
 
@@ -36,7 +37,7 @@ async function generateImage(
   settings: { size: string; background: 'transparent' | 'opaque' },
   request: typeof fetch,
 ): Promise<Uint8Array> {
-  const response = await request('https://api.openai.com/v1/images/generations', {
+  const response = await request(`${OPENROUTER_BASE_URL}/images/generations`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -61,7 +62,7 @@ async function generateSpeech(
   instructions: string,
   request: typeof fetch,
 ): Promise<Uint8Array> {
-  const response = await request('https://api.openai.com/v1/audio/speech', {
+  const response = await request(`${OPENROUTER_BASE_URL}/audio/speech`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -90,7 +91,7 @@ export async function generatePlayableMediaAssets(
   input: MediaGenerationInput,
   dependencies: MediaGenerationDependencies = {},
 ): Promise<PlayableBuildAsset[]> {
-  const request = createExternalErrorLoggingFetch('OpenAI', [input.apiKey], dependencies.fetch ?? fetch)
+  const request = createExternalErrorLoggingFetch('OpenRouter', [input.apiKey], dependencies.fetch ?? fetch)
   const nextId = dependencies.generateId ?? defaultGenerateId
   const generated: PlayableBuildAsset[] = []
 

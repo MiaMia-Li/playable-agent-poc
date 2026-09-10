@@ -1,16 +1,17 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createOpenAI, type OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
+import type { OpenAIResponsesProviderOptions } from '@ai-sdk/openai'
 import { generateText, Output } from 'ai7'
 import { toJSONSchema } from 'zod'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
 import { invokeCodexCli } from './codex-cli-playable-agent'
 import { logExternalRequestError } from './external-request-logging'
+import { createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 import type { PreprocessedVideo } from './video-preprocessor'
 
 export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'qdai-video-v1'
-export const VIDEO_ANALYSIS_MODEL = 'gpt-5.6-sol'
+export const VIDEO_ANALYSIS_MODEL = readPlayableAgentModel()
 
 export interface VideoGameplayAnalyst {
   analyze(input: {
@@ -90,7 +91,7 @@ export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
   }): Promise<GameplayBlueprint> {
     let result: Awaited<ReturnType<typeof generateText>>
     try {
-      const openai = createOpenAI({ apiKey: input.apiKey })
+      const openai = createPlayableAIProvider(input.apiKey)
       result = await generateText({
         model: openai.responses(VIDEO_ANALYSIS_MODEL),
         instructions: QDAI_INSTRUCTIONS,
@@ -111,6 +112,7 @@ export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
         abortSignal: input.abortSignal,
         providerOptions: {
           openai: {
+            forceReasoning: true,
             reasoningEffort: 'medium',
             store: false,
             strictJsonSchema: true,
@@ -118,7 +120,7 @@ export class OpenAIVideoGameplayAnalyst implements VideoGameplayAnalyst {
         },
       })
     } catch (error) {
-      logExternalRequestError('OpenAI', error, [input.apiKey])
+      logExternalRequestError('OpenRouter', error, [input.apiKey])
       throw error
     }
     return validateEvidenceTimes(result.output, input.video.durationSeconds)

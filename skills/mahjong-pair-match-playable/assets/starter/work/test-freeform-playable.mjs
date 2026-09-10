@@ -13,7 +13,7 @@ if (!/<script\b[^>]*>([\s\S]*?)<\/script>/i.test(html)) throw new Error("embedde
 if (!/window\.__PLAYABLE__/i.test(html)) throw new Error("playable contract is missing");
 if (!/playable:set-muted/i.test(html)) throw new Error("mute message protocol is missing");
 if (!/(?:pointerdown|click|touchstart)/i.test(html)) throw new Error("gameplay interaction is missing");
-if (!/muted\s*:\s*true/i.test(html)) throw new Error("initial mute state is missing");
+if (!/muted\s*(?::|=)\s*true/i.test(html)) throw new Error("initial mute state is missing");
 if (!/(?:mraid\.open|window\.open)/i.test(html)) throw new Error("store navigation is missing");
 
 console.log("PASS");
