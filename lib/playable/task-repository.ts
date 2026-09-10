@@ -1,9 +1,12 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
 import {
   playableTaskAssets,
   playableTaskBuilds,
   playableTaskEvents,
+  playableReferenceSelections,
+  playableResearchCandidates,
+  playableResearchRuns,
   playableVideoAnalyses,
   taskMessages,
   tasks,
@@ -27,10 +30,25 @@ import type {
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
+  PlayableResearchRunRecord,
+  PlayableReferenceSelectionRecord,
   PlayableVideoAnalysisRecord,
 } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import { createRequirementBrief } from './requirement-tools'
+import {
+  marketResearchCandidateSchema,
+  marketResearchIndustrySummarySchema,
+  marketResearchReportSchema,
+  referenceSelectionInputSchema,
+  researchRunStatusSchema,
+  resolvedReferenceSelectionSchema,
+  searchBriefSchema,
+  type MarketResearchReport,
+  type ReferenceSelectionInput,
+  type ResearchRunStatus,
+  type SearchBrief,
+} from './research/schemas'
 
 function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
   return {
@@ -74,6 +92,37 @@ function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): Playab
     errorCode: row.errorCode,
     createdAt: row.createdAt,
     completedAt: row.completedAt,
+  }
+}
+
+function toResearchRun(row: typeof playableResearchRuns.$inferSelect): PlayableResearchRunRecord {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    userId: row.userId,
+    status: researchRunStatusSchema.parse(row.status),
+    trigger: row.trigger,
+    searchBrief: searchBriefSchema.parse(row.searchBrief),
+    cacheKey: row.cacheKey,
+    strategyVersion: row.strategyVersion,
+    sourceIds: row.sourceIds,
+    industrySummary: row.industrySummary ? marketResearchIndustrySummarySchema.parse(row.industrySummary) : null,
+    warnings: row.warnings ?? [],
+    cachedFromRunId: row.cachedFromRunId,
+    errorCode: row.errorCode,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
+  }
+}
+
+function toReferenceSelection(row: typeof playableReferenceSelections.$inferSelect): PlayableReferenceSelectionRecord {
+  return {
+    id: row.id,
+    runId: row.runId,
+    taskId: row.taskId,
+    userId: row.userId,
+    selection: referenceSelectionInputSchema.parse(row.selection),
+    createdAt: row.createdAt,
   }
 }
 
@@ -508,5 +557,192 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .update(playableVideoAnalyses)
       .set({ status: 'failed', errorCode, completedAt: new Date() })
       .where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async createResearchRun(input: {
+    id: string
+    taskId: string
+    userId: string
+    brief: SearchBrief
+    cacheKey: string
+    strategyVersion: string
+    sourceIds: string[]
+  }): Promise<PlayableResearchRunRecord> {
+    const brief = searchBriefSchema.parse(input.brief)
+    const [row] = await db
+      .insert(playableResearchRuns)
+      .values({
+        id: input.id,
+        taskId: input.taskId,
+        userId: input.userId,
+        status: 'confirmed',
+        trigger: brief.trigger,
+        searchBrief: brief,
+        cacheKey: input.cacheKey,
+        strategyVersion: input.strategyVersion,
+        sourceIds: input.sourceIds,
+      })
+      .returning()
+    return toResearchRun(row)
+  }
+
+  async updateResearchRunStatus(id: string, taskId: string, status: ResearchRunStatus): Promise<boolean> {
+    const updated = await db
+      .update(playableResearchRuns)
+      .set({ status: researchRunStatusSchema.parse(status) })
+      .where(and(eq(playableResearchRuns.id, id), eq(playableResearchRuns.taskId, taskId)))
+      .returning({ id: playableResearchRuns.id })
+    return updated.length === 1
+  }
+
+  async completeResearchRun(id: string, taskId: string, value: MarketResearchReport): Promise<MarketResearchReport> {
+    const report = marketResearchReportSchema.parse(value)
+    return db.transaction(async (transaction) => {
+      const completedAt = new Date()
+      const candidates = report.candidates.map((candidate, position) => {
+        const candidateWithId = marketResearchCandidateSchema.parse({ ...candidate, id: generateId() })
+        return {
+          row: {
+            id: candidateWithId.id,
+            runId: id,
+            taskId,
+            position,
+            candidate: candidateWithId,
+          },
+          candidate: candidateWithId,
+        }
+      })
+      const updated = await transaction
+        .update(playableResearchRuns)
+        .set({
+          status: 'completed',
+          sourceIds: report.sourceCoverage.sourceIds,
+          industrySummary: report.industrySummary,
+          warnings: report.warnings,
+          errorCode: null,
+          completedAt,
+        })
+        .where(and(eq(playableResearchRuns.id, id), eq(playableResearchRuns.taskId, taskId)))
+        .returning({ id: playableResearchRuns.id })
+      if (updated.length !== 1) throw new Error('Research run transition failed')
+      await transaction.insert(playableResearchCandidates).values(candidates.map(({ row }) => row))
+      return marketResearchReportSchema.parse({
+        ...report,
+        runId: id,
+        generatedAt: completedAt.toISOString(),
+        candidates: candidates.map(({ candidate }) => candidate),
+      })
+    })
+  }
+
+  async failResearchRun(id: string, taskId: string, status: 'failed' | 'cancelled', errorCode: string): Promise<void> {
+    await db
+      .update(playableResearchRuns)
+      .set({ status, errorCode, completedAt: new Date() })
+      .where(and(eq(playableResearchRuns.id, id), eq(playableResearchRuns.taskId, taskId)))
+  }
+
+  async findResearchReport(taskId: string, userId: string, runId: string): Promise<MarketResearchReport | undefined> {
+    const [row] = await db
+      .select()
+      .from(playableResearchRuns)
+      .where(
+        and(
+          eq(playableResearchRuns.id, runId),
+          eq(playableResearchRuns.taskId, taskId),
+          eq(playableResearchRuns.userId, userId),
+          eq(playableResearchRuns.status, 'completed'),
+        ),
+      )
+      .limit(1)
+    if (!row || !row.industrySummary || !row.completedAt) return undefined
+    const candidates = await db
+      .select()
+      .from(playableResearchCandidates)
+      .where(and(eq(playableResearchCandidates.runId, runId), eq(playableResearchCandidates.taskId, taskId)))
+      .orderBy(asc(playableResearchCandidates.position))
+    return marketResearchReportSchema.parse({
+      version: 1,
+      runId: row.id,
+      brief: row.searchBrief,
+      strategyVersion: row.strategyVersion,
+      generatedAt: row.completedAt.toISOString(),
+      industrySummary: row.industrySummary,
+      candidates: candidates.map(({ candidate }) => candidate),
+      sourceCoverage: { sourceIds: row.sourceIds, failedSourceIds: [] },
+      warnings: row.warnings ?? [],
+    })
+  }
+
+  async findReusableResearchReport(
+    userId: string,
+    cacheKey: string,
+    strategyVersion: string,
+    notBefore: Date,
+  ): Promise<MarketResearchReport | undefined> {
+    const [row] = await db
+      .select()
+      .from(playableResearchRuns)
+      .where(
+        and(
+          eq(playableResearchRuns.userId, userId),
+          eq(playableResearchRuns.cacheKey, cacheKey),
+          eq(playableResearchRuns.strategyVersion, strategyVersion),
+          eq(playableResearchRuns.status, 'completed'),
+          gte(playableResearchRuns.completedAt, notBefore),
+        ),
+      )
+      .orderBy(desc(playableResearchRuns.completedAt))
+      .limit(1)
+    return row ? this.findResearchReport(row.taskId, userId, row.id) : undefined
+  }
+
+  async saveReferenceSelection(input: {
+    id: string
+    taskId: string
+    userId: string
+    selection: ReferenceSelectionInput
+  }) {
+    const selection = referenceSelectionInputSchema.parse(input.selection)
+    const report = await this.findResearchReport(input.taskId, input.userId, selection.runId)
+    if (!report) return undefined
+    const candidates = new Map(report.candidates.map((candidate) => [candidate.id, candidate]))
+    const primaryCandidate = selection.primaryCandidateId ? candidates.get(selection.primaryCandidateId) : null
+    if (selection.primaryCandidateId && !primaryCandidate) return undefined
+    const selectedHighlights = selection.selectedHighlights.flatMap((highlight) => {
+      const candidate = candidates.get(highlight.candidateId)
+      if (!candidate || !candidate.borrowableHighlights.includes(highlight.value)) return []
+      return [{ candidate, value: highlight.value }]
+    })
+    if (selectedHighlights.length !== selection.selectedHighlights.length) return undefined
+    const [saved] = await db
+      .insert(playableReferenceSelections)
+      .values({
+        id: input.id,
+        runId: selection.runId,
+        taskId: input.taskId,
+        userId: input.userId,
+        selection,
+      })
+      .onConflictDoNothing({ target: playableReferenceSelections.runId })
+      .returning()
+    if (!saved) return undefined
+    return resolvedReferenceSelectionSchema.parse({
+      runId: selection.runId,
+      industrySummary: report.industrySummary,
+      primaryCandidate,
+      selectedHighlights,
+      customRequirements: selection.customRequirements,
+      exclusions: selection.exclusions,
+    })
+  }
+
+  async listReferenceSelections(taskId: string, userId: string): Promise<PlayableReferenceSelectionRecord[]> {
+    const rows = await db
+      .select()
+      .from(playableReferenceSelections)
+      .where(and(eq(playableReferenceSelections.taskId, taskId), eq(playableReferenceSelections.userId, userId)))
+      .orderBy(asc(playableReferenceSelections.createdAt))
+    return rows.map(toReferenceSelection)
   }
 }

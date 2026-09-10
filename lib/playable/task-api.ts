@@ -46,6 +46,14 @@ import {
   type ReferenceImageAnalysis,
 } from './reference-image-analyst'
 import type { RequirementAnalysisToolCall } from './playable-agent-adapter'
+import type {
+  MarketResearchIndustrySummary,
+  MarketResearchReport,
+  ReferenceSelectionInput,
+  ResearchRunStatus,
+  ResolvedReferenceSelection,
+  SearchBrief,
+} from './research/schemas'
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
@@ -91,6 +99,33 @@ export interface PlayableVideoAnalysisRecord {
   errorCode: string | null
   createdAt: Date
   completedAt: Date | null
+}
+
+export interface PlayableResearchRunRecord {
+  id: string
+  taskId: string
+  userId: string
+  status: ResearchRunStatus
+  trigger: SearchBrief['trigger']
+  searchBrief: SearchBrief
+  cacheKey: string
+  strategyVersion: string
+  sourceIds: string[]
+  industrySummary: MarketResearchIndustrySummary | null
+  warnings: string[]
+  cachedFromRunId: string | null
+  errorCode: string | null
+  createdAt: Date
+  completedAt: Date | null
+}
+
+export interface PlayableReferenceSelectionRecord {
+  id: string
+  runId: string
+  taskId: string
+  userId: string
+  selection: ReferenceSelectionInput
+  createdAt: Date
 }
 
 export type PlayableBuildStatus = 'building' | 'failed' | 'succeeded'
@@ -167,6 +202,32 @@ export interface PlayableTaskRepository {
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
   completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void>
   failVideoAnalysis(id: string, errorCode: string): Promise<void>
+  createResearchRun?(input: {
+    id: string
+    taskId: string
+    userId: string
+    brief: SearchBrief
+    cacheKey: string
+    strategyVersion: string
+    sourceIds: string[]
+  }): Promise<PlayableResearchRunRecord>
+  updateResearchRunStatus?(id: string, taskId: string, status: ResearchRunStatus): Promise<boolean>
+  completeResearchRun?(id: string, taskId: string, report: MarketResearchReport): Promise<MarketResearchReport>
+  failResearchRun?(id: string, taskId: string, status: 'failed' | 'cancelled', errorCode: string): Promise<void>
+  findReusableResearchReport?(
+    userId: string,
+    cacheKey: string,
+    strategyVersion: string,
+    notBefore: Date,
+  ): Promise<MarketResearchReport | undefined>
+  findResearchReport?(taskId: string, userId: string, runId: string): Promise<MarketResearchReport | undefined>
+  saveReferenceSelection?(input: {
+    id: string
+    taskId: string
+    userId: string
+    selection: ReferenceSelectionInput
+  }): Promise<ResolvedReferenceSelection | undefined>
+  listReferenceSelections?(taskId: string, userId: string): Promise<PlayableReferenceSelectionRecord[]>
 }
 
 export type BackgroundScheduler = (work: () => Promise<void>) => void
