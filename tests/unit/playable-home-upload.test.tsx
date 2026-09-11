@@ -102,7 +102,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     expect(document.querySelectorAll('iframe')).toHaveLength(0)
-    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(8)
     fireEvent.click(screen.getByRole('button', { name: '预览中心碰撞模板' }))
 
     const preview = screen.getByTitle('中心碰撞可交互预览')
@@ -122,12 +122,38 @@ describe('PlayableHome reference uploads', () => {
     render(<BestPracticesPage />)
 
     expect(document.querySelectorAll('iframe')).toHaveLength(0)
-    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /模板封面/ })).toHaveLength(8)
 
     fireEvent.click(screen.getByRole('button', { name: '预览上方牌架模板' }))
 
     expect(document.querySelectorAll('iframe')).toHaveLength(1)
     expect(screen.getByTitle('上方牌架可交互预览')).toHaveAttribute('src', '/playable-templates/top_rack.html')
+  })
+
+  it.each([
+    ['彩球转盘消除', 'balloon_master'],
+    ['宙斯 Scatter 转轴', 'zeus_scatter'],
+    ['金龙麻将转轴', 'dragon_slots'],
+    ['金龙转盘集奖', 'dragon_reward_wheel'],
+  ])('previews and starts the imported %s template', async (label, id) => {
+    const fetchMock = vi.fn(async () => Response.json({ task: { id: 'imported-task' }, tasks: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BestPracticesPage />)
+    fireEvent.click(screen.getByRole('button', { name: `预览${label}模板` }))
+    expect(screen.getByTitle(`${label}可交互预览`)).toHaveAttribute('src', `/playable-templates/${id}.html`)
+    expect(screen.getByTitle(`${label}可交互预览`)).toHaveAttribute('sandbox', 'allow-scripts')
+    fireEvent.click(screen.getByRole('button', { name: '用此模板开始' }))
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/imported-task'))
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks',
+      expect.objectContaining({ body: expect.stringContaining(JSON.stringify({ sourceTemplateId: id }).slice(1, -1)) }),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks',
+      expect.objectContaining({
+        body: expect.stringContaining(`assets/templates/${id}/source.html`),
+      }),
+    )
   })
 
   it('rejects unsupported and oversized references before creating a task', async () => {

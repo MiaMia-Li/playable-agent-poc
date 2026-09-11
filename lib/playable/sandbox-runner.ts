@@ -286,6 +286,13 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
+    } else if (confirmation.sourceTemplateId && input.revision?.strategy !== 'patch') {
+      if (!input.baseHtml) throw new Error('Template source is missing')
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'output.html'),
+        content: input.baseHtml,
+        abortSignal: dependencies.abortSignal,
+      })
     } else if (!freeform && input.revision?.strategy !== 'patch') {
       stage = 'artifact_build'
       await dependencies.logger?.info('Building playable baseline')
