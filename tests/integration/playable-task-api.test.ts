@@ -2198,6 +2198,76 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.events)).not.toContain('platform.openai.com')
   })
 
+  it('reports an exhausted Codex overload retry as a specific safe build error', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError(
+        'agent',
+        'Reconnecting... 1/5 (stream disconnected before completion: Our servers are currently overloaded. Please try again later.)',
+      ),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'overload-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: 'Codex 服务当前繁忙，自动重试后仍未完成，请稍后再试。',
+    })
+    expect(JSON.stringify(harness.repository.events)).not.toContain('Reconnecting')
+    expect(JSON.stringify(harness.repository.events)).not.toContain('servers are currently overloaded')
+  })
+
+  it.each([
+    {
+      name: 'authentication failure',
+      failure: new PlayableBuildExecutionError(
+        'agent',
+        Object.assign(new Error('private authentication details'), { statusCode: 401 }),
+      ),
+      message: 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。',
+    },
+    {
+      name: 'rate limit',
+      failure: new PlayableBuildExecutionError(
+        'agent',
+        Object.assign(new Error('private rate-limit details'), { statusCode: 429 }),
+      ),
+      message: 'Codex 请求频率已达到限制，请稍后再试。',
+    },
+    {
+      name: 'connection interruption',
+      failure: new PlayableBuildExecutionError('agent', new Error('stream disconnected before completion')),
+      message: 'Codex 连接中断，自动重试后仍未完成，请稍后再试。',
+    },
+  ])('reports a specific safe Codex error for $name', async ({ failure, message }) => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(failure)
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'classified-codex-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({ type: 'build_failed', phase: 'failed', message })
+    expect(JSON.stringify(harness.repository.events)).not.toContain('private')
+  })
+
   it('reports a Vercel Sandbox payment limit with a specific static diagnostic', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'

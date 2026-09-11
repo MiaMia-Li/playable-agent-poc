@@ -4,18 +4,18 @@ Use this mode for a deep extruded Mahjong wall with an open center and selectabl
 
 ## Template behavior
 
-- Seven-by-seven top plane with a three-by-three center opening.
-- Repeated front and side faces create an 18-layer stack without WebGL; Canvas 2D keeps the package small and avoids context-loss handling.
-- Only visible faces are selectable. A matching pair creates a recessed cavity and reveals a smaller, lowered face from the next layer at those positions.
+- Eight-by-eight top plane with a four-by-four center opening, matching the supplied `MahjongMatch_3D_Playable.html` gameplay reference.
+- A mode-specific single-file Three.js/WebGL template renders the supplied Mahjong GLB geometry and its eight-layer stack.
+- Only visible faces are selectable. A matching pair lifts, arcs toward the center, collides, breaks into fragments, and reveals the next face lower in the same stack position.
 - Tile faces preserve the supplied source art without tint overlays. Recess walls, dark vignette, glowing score, and square fragments provide the depth and impact language.
-- Default completion: four matches, 408 points each, 1632 total, then the shared end card.
+- Default completion: four matches, 500 points each, 2000 total, then the shared end card.
 
 ## Mode assets and config
 
 - Config: `assets/templates/perspective_3d/config.json`
-- Shared runtime: `assets/starter/src/playable.template.html`
-- Reference visual traits: black background, original tile art, warm side edges, deep vertical extrusion, hollow center, top-down perspective.
+- Mode-specific runtime: `assets/templates/perspective_3d/playable.template.html`
+- Reference visual traits: black background, original tile art, warm side edges, deep vertical extrusion, hollow center, top-down perspective, and center-collision fragments.
 
 ## Acceptance focus
 
-Verify the top plane reads separately from the side stack, removed positions are visibly excavated, the next-layer source image has no tint/gray overlay, and hit testing is limited to visible faces.
+Verify the 8 × 8 outer ring and 4 × 4 opening, center-collision motion, 500-point increment, visible excavation, untinted next-layer face, and hit testing limited to visible faces.

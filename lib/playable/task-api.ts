@@ -609,6 +609,35 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
 const DEFAULT_BUILD_FAILURE_MESSAGE = '试玩构建失败，请重试。'
 const QUOTA_BUILD_FAILURE_MESSAGE = 'AI 服务额度暂时不可用，请联系管理员后重试。'
 const SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE = 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。'
+const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，自动重试后仍未完成，请稍后再试。'
+const CODEX_AUTH_BUILD_FAILURE_MESSAGE = 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。'
+const CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE = 'Codex 请求频率已达到限制，请稍后再试。'
+const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，自动重试后仍未完成，请稍后再试。'
+const CODEX_BUILD_FAILURE_MESSAGE = 'Codex 生成试玩时发生错误，请稍后重试；如持续失败，请检查 API Key 和模型访问权限。'
+
+function externalErrorText(error: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current)
+    if (typeof current === 'string') {
+      parts.push(current)
+      break
+    }
+    if (typeof current !== 'object') break
+    const candidate = current as {
+      cause?: unknown
+      lastError?: unknown
+      message?: unknown
+      responseBody?: unknown
+    }
+    if (typeof candidate.message === 'string') parts.push(candidate.message)
+    if (typeof candidate.responseBody === 'string') parts.push(candidate.responseBody)
+    current = candidate.lastError ?? candidate.cause
+  }
+  return parts.join('\n').toLowerCase()
+}
 
 function externalResponseStatus(error: unknown): number | undefined {
   const seen = new Set<unknown>()
@@ -631,7 +660,7 @@ function externalResponseStatus(error: unknown): number | undefined {
 
 function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string {
   if (stage !== 'agent' || !(cause instanceof Error)) return DEFAULT_BUILD_FAILURE_MESSAGE
-  const message = cause.message.toLowerCase()
+  const message = externalErrorText(cause)
   if (
     message.includes('no credits remaining') ||
     message.includes('insufficient_quota') ||
@@ -644,7 +673,33 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
       return SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE
     }
     if (cause.stage === 'workspace') return '无法准备试玩构建环境，请重试。'
-    if (cause.stage === 'agent') return 'Codex 生成试玩失败，请检查模型权限或稍后重试。'
+    if (cause.stage === 'agent') {
+      const status = externalResponseStatus(cause)
+      if (message.includes('servers are currently overloaded') || message.includes('server is overloaded')) {
+        return CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE
+      }
+      if (
+        status === 401 ||
+        status === 403 ||
+        message.includes('invalid_api_key') ||
+        message.includes('incorrect api key') ||
+        message.includes('model access')
+      ) {
+        return CODEX_AUTH_BUILD_FAILURE_MESSAGE
+      }
+      if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
+        return CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE
+      }
+      if (
+        message.includes('stream disconnected before completion') ||
+        message.includes('connection reset') ||
+        message.includes('network error') ||
+        message.includes('timed out')
+      ) {
+        return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
+      }
+      return CODEX_BUILD_FAILURE_MESSAGE
+    }
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
     if (cause.stage === 'artifact_build') return '试玩产物构建失败，请调整修改要求后重试。'
     if (cause.stage === 'validation') return '试玩行为校验失败，请调整修改要求后重试。'

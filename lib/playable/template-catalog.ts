@@ -31,7 +31,8 @@ export const templatePrompts: Record<PlayableTemplateId, string> = {
   center_collision: '基于「中心碰撞」玩法模板开始迭代：保留相同牌向中心碰撞并消除计分的核心玩法。',
   top_rack: '基于「上方牌架」玩法模板开始迭代：保留可见牌进入四槽牌架并配对清除的核心玩法。',
   gravity_fill: '基于「下落补位」玩法模板开始迭代：保留网格配对消除、列下落和顶部补位的核心玩法。',
-  perspective_3d: '基于「3D 纵深」玩法模板开始迭代：保留移除顶层牌面并逐层揭示下方内容的核心玩法。',
+  perspective_3d:
+    '基于「3D 纵深」玩法模板开始迭代：使用 8×8 外环与 4×4 中空的八层牌墙，同牌抬起后在中心碰撞碎裂并揭示下一层。',
   dragon_slots:
     '基于「金龙麻将转轴」HTML 模板开始迭代，保留原始转轴玩法、金龙主题与倍数奖励。基于已选模板修改，源文件已随构建工作区提供：assets/templates/dragon_slots/source.html。先读取并复用原始 HTML，按确认需求修改，不要替换成麻将配对玩法。',
   dragon_reward_wheel:

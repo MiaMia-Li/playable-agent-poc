@@ -2,10 +2,13 @@
   "mode": "perspective_3d",
   "label": "3D纵深",
   "successTarget": 4,
-  "scorePerMatch": 408,
+  "scorePerMatch": 500,
   "pairKeys": ["眼睛", "蛇", "月亮", "火"],
-  "columns": 7,
-  "rows": 7,
-  "stackDepth": 18,
+  "columns": 8,
+  "rows": 8,
+  "holeStart": 2,
+  "holeEnd": 5,
+  "stackDepth": 8,
+  "matchDuration": 720,
   "guideKey": "眼睛"
 }

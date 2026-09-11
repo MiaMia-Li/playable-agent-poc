@@ -68,7 +68,7 @@ For a `freeform` route, the output must still be one offline responsive Canvas H
 ## Shared technical contract
 
 - Fixed logical canvas: 360 × 640, responsively contained in portrait and landscape.
-- Canvas 2D + native JavaScript by default. The `perspective_3d` template is deliberately 2.5D Canvas, not WebGL.
+- Canvas 2D + native JavaScript is the default for the other three modes. The `perspective_3d` mode uses its own bundled Three.js/WebGL single-file template at `assets/templates/perspective_3d/playable.template.html`.
 - Game state, rendering, audio, input, navigation, end card, and packaging remain separable.
 - Mode behavior lives in `assets/templates/<mode>/config.json` and the shared runtime's named mode branch.
 - Random replacement uses a deterministic seed so QA is reproducible.

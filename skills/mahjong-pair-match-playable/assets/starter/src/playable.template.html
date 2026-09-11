@@ -41,7 +41,7 @@
         this.canvas=canvas;this.ctx=canvas.getContext("2d");this.images=images;this.audio=audio;this.mode=CONFIG.mode;
         this.tiles=[];this.selected=null;this.rack=[];this.cavities=[];this.particles=[];this.score=0;this.matches=0;this.interactions=0;
         this.locked=false;this.endAt=0;this.ended=false;this.resolveAt=0;this.pending=null;this.last=performance.now();this.nextId=1;
-        this.errorPulse=0;this.startedAt=performance.now();this.handTarget=null;this.build();this.bind();requestAnimationFrame(t=>this.frame(t));
+        this.errorPulse=0;this.scorePopAt=0;this.impactAt=0;this.startedAt=performance.now();this.handTarget=null;this.build();this.bind();requestAnimationFrame(t=>this.frame(t));
       }
       add(key,x,y,w,h,extra={}){const tile={id:this.nextId++,key,x,y,w,h,state:"board",selectable:true,errorUntil:0,selected:false,...extra};this.tiles.push(tile);return tile}
       build(){
@@ -73,15 +73,14 @@
         this.handTarget=this.at(pos[0][0][0],pos[0][0][1]);
       }
       buildPerspective(){
-        const keys=CONFIG.tileKeys;this.perspective={left:29,top:130,cw:43,ch:45,depth:CONFIG.stackDepth};
-        const cells=[];for(let r=0;r<7;r++)for(let c=0;c<7;c++)if(!(r>=2&&r<=4&&c>=2&&c<=4))cells.push([c,r]);
-        cells.forEach(([c,r],i)=>{const x=this.px(c,r),y=this.py(c,r);this.add(keys[(i*4+r)%keys.length],x,y,40,43,{col:c,row:r,baseX:x,baseY:y,layer:0,depth:CONFIG.stackDepth,gold:true,z:r*7+c})});
-        const pos=[[[0,0],[6,6]],[[6,0],[0,6]],[[2,0],[4,6]],[[0,3],[6,3]]];
-        CONFIG.pairKeys.forEach((key,i)=>pos[i].forEach(([c,r])=>this.at(c,r).key=key));
-        this.handTarget=this.at(pos[0][0][0],pos[0][0][1]);
+        const keys=CONFIG.tileKeys,cols=CONFIG.columns,rows=CONFIG.rows,start=CONFIG.holeStart,end=CONFIG.holeEnd,depth=CONFIG.stackDepth;this.perspective={left:17,top:126,cw:41,ch:48,depth,cols,rows,start,end,step:6};
+        const cells=[];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)if(!(r>=start&&r<=end&&c>=start&&c<=end))cells.push([c,r]);
+        const makeLayer=()=>{const layer=[];for(let i=0;i<cells.length/2;i++){const key=keys[i%keys.length];layer.push(key,key)}for(let i=layer.length-1;i>0;i--){const j=Math.floor(seeded()*(i+1));[layer[i],layer[j]]=[layer[j],layer[i]]}return layer},layers=Array.from({length:depth},makeLayer);
+        cells.forEach(([c,r],i)=>{const x=this.px(c,r),y=this.py(c,r),stack=layers.map(layer=>layer[i]);this.add(stack[0],x,y,39,43,{col:c,row:r,baseX:x,baseY:y,layer:0,depth,stack,gold:true,z:r*cols+c})});
+        const guidePair=this.tiles.filter(t=>t.key===CONFIG.guideKey).slice(0,2);if(guidePair.length<2){guidePair.push(...this.tiles.slice(0,2-guidePair.length));guidePair.forEach(t=>t.key=CONFIG.guideKey)}this.handTarget=guidePair[0];
       }
       gx(c){return this.grid.left+c*this.grid.cw+this.grid.cw/2}gy(r){return this.grid.top+r*this.grid.ch+this.grid.ch/2}
-      px(c,r){const k=(r-3)*1.3;return this.perspective.left+c*this.perspective.cw+this.perspective.cw/2+k}
+      px(c,r){const k=(r-(this.perspective.rows-1)/2)*.9;return this.perspective.left+c*this.perspective.cw+this.perspective.cw/2+k}
       py(c,r){return this.perspective.top+r*this.perspective.ch+this.perspective.ch/2}
       rackSlotX(i){return 116+i*43}
       at(c,r){return this.tiles.find(t=>t.state==="board"&&t.col===c&&t.row===r)}
@@ -97,7 +96,7 @@
         this.startMatch(a,b);
       }
       startMatch(a,b){
-        this.locked=true;const now=performance.now();a.state=b.state="matching";this.pending={a,b,start:now,duration:this.mode==="center_collision"?440:300};this.resolveAt=now+this.pending.duration;
+        this.locked=true;const now=performance.now(),duration=this.mode==="center_collision"?440:this.mode==="perspective_3d"?CONFIG.matchDuration:300;a.state=b.state="matching";this.pending={a,b,start:now,duration};this.resolveAt=now+duration;
       }
       pickForRack(tile){
         if(this.rack.length>=CONFIG.rackSlots)return;this.locked=true;const now=performance.now(),slot=this.rack.length;
@@ -111,7 +110,7 @@
         const p=this.pending;if(!p)return;this.pending=null;this.resolveAt=0;
         if(p.kind==="rackReset"){const returning=[...this.rack];this.rack=[];returning.forEach(t=>{t.state="board";t.errorUntil=now+450;t.x=t.homeX;t.y=t.homeY});this.audio.play("error",.8);this.locked=false;return}
         p.a.state=p.b.state="removed";if(p.kind==="rack"){this.rack=this.rack.filter(t=>t!==p.a&&t!==p.b);this.rack.forEach((t,i)=>{t.rackIndex=i;t.rackX=this.rackSlotX(i);t.rackY=111})}
-        const burstX=p.kind==="rack"?180:(p.a.x+p.b.x)/2,burstY=p.kind==="rack"?111:(p.a.y+p.b.y)/2;this.spawnBurst(burstX,burstY,p.a.key);this.audio.play("match",.78);this.matches++;this.score+=CONFIG.scorePerMatch;
+        const burstX=p.kind==="rack"||this.mode==="perspective_3d"?180:(p.a.x+p.b.x)/2,burstY=p.kind==="rack"?111:this.mode==="perspective_3d"?326:(p.a.y+p.b.y)/2;this.spawnBurst(burstX,burstY,p.a.key);this.audio.play("match",.78);this.matches++;this.score+=CONFIG.scorePerMatch;if(this.mode==="perspective_3d")this.scorePopAt=this.impactAt=now;
         if(this.mode==="gravity_fill")this.collapseGravity(now);
         else if(this.mode==="perspective_3d")this.revealDepth(p.a,p.b,now);
         if(this.matches>=CONFIG.successTarget){this.endAt=now+900;this.locked=true}else this.locked=false;
@@ -125,9 +124,9 @@
         }
       }
       revealDepth(a,b,now){
-        const keys=CONFIG.tileKeys;[a,b].forEach(old=>{if(old.depth<=1)return;const layer=(old.layer||0)+1,baseX=old.baseX??old.x,baseY=old.baseY??old.y,inset=Math.min(layer*3,11),drop=Math.min(layer*5,16);this.cavities.push({col:old.col,row:old.row,x:baseX,y:baseY,layer,w:old.layer?40:old.w,h:old.layer?43:old.h});this.add(keys[Math.floor(seeded()*keys.length)],baseX,baseY+drop,Math.max(27,40-inset),Math.max(31,43-inset),{col:old.col,row:old.row,baseX,baseY,layer,depth:old.depth-1,gold:true,z:(old.z||0)+layer*.01,revealAt:now+100})});
+        [a,b].forEach(tile=>{const layer=(tile.layer||0)+1,baseX=tile.baseX??tile.x,baseY=tile.baseY??tile.y;this.cavities.push({col:tile.col,row:tile.row,x:baseX,y:baseY,layer,w:tile.w,h:tile.h});if(layer>=tile.depth)return;tile.layer=layer;tile.key=tile.stack[layer];tile.x=baseX;tile.y=baseY+Math.min(layer*this.perspective.step,18);tile.state="board";tile.selected=false;tile.revealAt=now;tile.z=(tile.z||0)+.01})
       }
-      spawnBurst(x,y,key){for(let i=0;i<24;i++){const a=Math.PI*2*i/24+(seeded()-.5)*.35,s=70+seeded()*180;this.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-45,life:.75+seeded()*.4,size:2+seeded()*6,color:i%3===0?"#ffd55c":i%3===1?"#fff7d0":"#28a368"})}}
+      spawnBurst(x,y,key){const count=this.mode==="perspective_3d"?36:24;for(let i=0;i<count;i++){const a=Math.PI*2*i/count+(seeded()-.5)*.35,s=70+seeded()*180;this.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-45,life:.75+seeded()*.4,size:2+seeded()*6,color:i%3===0?"#ffd55c":i%3===1?"#fff7d0":"#28a368"})}}
       update(now,dt){
         if(this.resolveAt&&now>=this.resolveAt)this.resolveMatch(now);
         this.tiles.forEach(t=>{if(t.fallStart&&now>=t.fallStart){const q=clamp((now-t.fallStart)/t.fallDuration,0,1);t.y=lerp(t.fromY,t.targetY,ease(q));if(q===1)t.fallStart=0}});
@@ -149,28 +148,28 @@
       }
       drawHud(c,now){
         c.save();c.textAlign="center";c.textBaseline="middle";
-        if(this.mode==="perspective_3d"){c.shadowColor="#ffad25";c.shadowBlur=16;c.fillStyle="#ffe176";c.font="900 30px Arial";c.fillText(String(this.score),180,67)}
+        if(this.mode==="perspective_3d"){c.translate(180,51);c.fillStyle="#052c2b";c.strokeStyle="#276e61";c.lineWidth=2;c.beginPath();c.moveTo(-83,-20);c.lineTo(83,-20);c.lineTo(94,0);c.lineTo(83,20);c.lineTo(-83,20);c.lineTo(-94,0);c.closePath();c.fill();c.stroke();c.shadowColor="#ffad25";c.shadowBlur=12;c.fillStyle="#ffe176";c.font="900 25px Arial";c.fillText(String(this.score),0,1);c.translate(-180,-51);const scoreAge=now-this.scorePopAt;if(this.scorePopAt&&scoreAge<700){c.globalAlpha=1-scoreAge/700;c.fillStyle="#fff4a5";c.font="900 23px Arial";c.fillText(`+${CONFIG.scorePerMatch}`,180,115-scoreAge/22)}const impactAge=now-this.impactAt;if(this.impactAt&&impactAge<260){c.globalAlpha=1-impactAge/260;c.strokeStyle="#fff7c5";c.lineWidth=7*(1-impactAge/260)+1;c.beginPath();c.arc(180,326,14+impactAge/260*58,0,Math.PI*2);c.stroke()}}
         else if(this.mode==="gravity_fill"){c.fillStyle="#083c31";c.font="900 23px Arial";c.fillText(`${CONFIG.label}  ${this.matches}/${CONFIG.successTarget}`,180,36)}
         else{c.fillStyle="#fff1a1";c.font="900 18px Arial";c.fillText("MAHJONG",95,42);c.font="900 22px Arial";c.fillText(String(this.score),190,42)}
-        c.fillStyle=this.audio.muted?"#ffd364":"#fff4b0";c.font="18px Arial";c.fillText(this.audio.muted?"×":"♪",338,43);c.restore();
+        c.globalAlpha=1;c.shadowBlur=0;c.fillStyle=this.audio.muted?"#ffd364":"#fff4b0";c.font="18px Arial";c.fillText(this.audio.muted?"×":"♪",338,43);c.restore();
       }
       drawRack(c,now){
         c.save();c.translate(180,111);c.fillStyle="#482318";c.strokeStyle="#9c542c";c.lineWidth=5;c.beginPath();c.roundRect(-85,-32,170,64,9);c.fill();c.stroke();for(let i=1;i<4;i++){c.strokeStyle="#6d3825";c.lineWidth=2;c.beginPath();c.moveTo(-85+i*42.5,-29);c.lineTo(-85+i*42.5,29);c.stroke()}c.restore();
       }
       drawPerspectiveBody(c,now){
-        const p=this.perspective,step=8;c.save();for(let d=p.depth;d>=1;d--){const y=d*step,shade=34+Math.min(d,14)*4;c.fillStyle=`rgb(${shade+78},${shade+42},${Math.max(18,shade-7)})`;c.strokeStyle="#3a210d";c.lineWidth=1;for(let col=0;col<7;col++){const x=this.px(col,6)-20;c.fillRect(x,this.py(col,6)+20+y,40,step);c.strokeRect(x,this.py(col,6)+20+y,40,step)}for(let row=0;row<7;row++){for(const side of [0,6]){const edge=this.px(side,row)+(side?20:-20),y0=this.py(side,row)-21.5+y;c.beginPath();c.moveTo(edge,y0);c.lineTo(edge+(side?6:-6),y0+4);c.lineTo(edge+(side?6:-6),y0+47);c.lineTo(edge,y0+43);c.closePath();c.fill();c.stroke()}}}c.restore();
+        const p=this.perspective,step=p.step,last=p.rows-1;c.save();for(let d=p.depth;d>=1;d--){const y=d*step,shade=38+d*5;c.fillStyle=`rgb(${shade+74},${shade+38},${Math.max(20,shade-8)})`;c.strokeStyle="#3a210d";c.lineWidth=1;for(let col=0;col<p.cols;col++){for(const row of [last,p.start-1]){if(row===p.start-1&&(col<p.start||col>p.end))continue;const x=this.px(col,row)-19.5;c.fillRect(x,this.py(col,row)+21.5+y,39,step);c.strokeRect(x,this.py(col,row)+21.5+y,39,step)}}for(let row=0;row<p.rows;row++){for(const side of [0,last]){const edge=this.px(side,row)+(side?19.5:-19.5),y0=this.py(side,row)-21.5+y;c.beginPath();c.moveTo(edge,y0);c.lineTo(edge+(side?5:-5),y0+3);c.lineTo(edge+(side?5:-5),y0+46);c.lineTo(edge,y0+43);c.closePath();c.fill();c.stroke()}if(row>=p.start&&row<=p.end)for(const side of [p.start-1,p.end+1]){const innerRight=side===p.start-1,edge=this.px(side,row)+(innerRight?19.5:-19.5),y0=this.py(side,row)-21.5+y;c.beginPath();c.moveTo(edge,y0);c.lineTo(edge+(innerRight?5:-5),y0+3);c.lineTo(edge+(innerRight?5:-5),y0+46);c.lineTo(edge,y0+43);c.closePath();c.fill();c.stroke()}}}c.restore();
       }
       drawPerspectiveCavities(c){
         const latest=new Map();this.cavities.forEach(v=>latest.set(`${v.col}:${v.row}`,v));latest.forEach(v=>{const d=Math.min(11,5+v.layer*2),w=v.w||40,h=v.h||43;c.save();c.translate(v.x,v.y);c.fillStyle="#1b0e05";c.fillRect(-w/2,-h/2,w,h);c.fillStyle="#6d3a11";c.beginPath();c.moveTo(-w/2,-h/2);c.lineTo(w/2,-h/2);c.lineTo(w/2-d,-h/2+d);c.lineTo(-w/2+d,-h/2+d);c.closePath();c.fill();c.fillStyle="#4b280d";c.beginPath();c.moveTo(-w/2,-h/2);c.lineTo(-w/2+d,-h/2+d);c.lineTo(-w/2+d,h/2);c.lineTo(-w/2,h/2);c.closePath();c.fill();c.fillStyle="#8a4a14";c.beginPath();c.moveTo(w/2,-h/2);c.lineTo(w/2-d,-h/2+d);c.lineTo(w/2-d,h/2);c.lineTo(w/2,h/2);c.closePath();c.fill();c.strokeStyle="#d69830";c.lineWidth=1;c.strokeRect(-w/2+.5,-h/2+.5,w-1,h-1);c.restore()})
       }
       currentPos(t,now){
-        if(t.state==="matching"&&this.pending){const q=ease(clamp((now-this.pending.start)/this.pending.duration,0,1));if(this.pending.kind==="rack")return{x:lerp(t.rackX,180,q),y:lerp(t.rackY,112,q),scale:1+Math.sin(q*Math.PI)*.18};if(this.mode==="center_collision")return{x:lerp(t.x,180,q),y:lerp(t.y,326,q),scale:1+Math.sin(q*Math.PI)*.16};return{x:t.x,y:t.y,scale:1+Math.sin(q*Math.PI)*.12}}
+        if(t.state==="matching"&&this.pending){const raw=clamp((now-this.pending.start)/this.pending.duration,0,1),q=ease(raw);if(this.pending.kind==="rack")return{x:lerp(t.rackX,180,q),y:lerp(t.rackY,112,q),scale:1+Math.sin(q*Math.PI)*.18};if(this.mode==="center_collision")return{x:lerp(t.x,180,q),y:lerp(t.y,326,q),scale:1+Math.sin(q*Math.PI)*.16};if(this.mode==="perspective_3d"){const first=this.pending.a===t,travel=ease(clamp((raw-.28)/.72,0,1)),lift=ease(clamp(raw/.28,0,1)),arc=Math.sin(travel*Math.PI)*64;return{x:lerp(t.x,180+(first?-14:14),travel),y:lerp(t.y-22*lift,326,travel)-arc,scale:1+Math.sin(raw*Math.PI)*.12,rotation:(first?-1:1)*Math.PI*2*travel,alpha:raw>.94?(1-raw)/.06:1}}return{x:t.x,y:t.y,scale:1+Math.sin(q*Math.PI)*.12}}
         if(t.state==="rack"){const q=ease(clamp((now-t.moveStart)/t.moveDuration,0,1));return{x:lerp(t.fromX,t.rackX,q),y:lerp(t.fromY,t.rackY,q),scale:lerp(1,.7,q)}}
         return{x:t.x,y:t.y,scale:1};
       }
       drawTile(c,t,now){
         const pos=this.currentPos(t,now),lift=t.selected?ease(clamp((now-(t.selectedAt||now))/150,0,1)):0,img=this.images.tiles[t.key];
-        c.save();c.globalAlpha=t.alpha??1;c.translate(pos.x,pos.y-lift*7);c.scale(pos.scale*(1+lift*.04),pos.scale*(1+lift*.04));if(this.mode!=="top_rack"&&!(this.mode==="perspective_3d"&&t.layer>0)){c.shadowColor="#001b";c.shadowBlur=t.selected?14:5;c.shadowOffsetY=t.selected?8:4}
+        c.save();c.globalAlpha=(t.alpha??1)*(pos.alpha??1);c.translate(pos.x,pos.y-lift*7);c.rotate(pos.rotation||0);c.scale(pos.scale*(1+lift*.04),pos.scale*(1+lift*.04));if(this.mode!=="top_rack"&&!(this.mode==="perspective_3d"&&t.layer>0)){c.shadowColor="#001b";c.shadowBlur=t.selected?14:5;c.shadowOffsetY=t.selected?8:4}
         if(this.mode==="gravity_fill"){c.fillStyle="#f7fff4";c.strokeStyle="#4ba777";c.lineWidth=2;c.beginPath();c.roundRect(-t.w/2,-t.h/2,t.w,t.h,7);c.fill();c.stroke()}
         c.drawImage(img,-t.w/2,-t.h/2,t.w,t.h);
         if(t.gold&&!t.layer){c.strokeStyle="#9a681f";c.lineWidth=2;c.strokeRect(-t.w/2,-t.h/2,t.w,t.h)}

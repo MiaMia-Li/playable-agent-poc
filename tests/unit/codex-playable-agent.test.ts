@@ -8,6 +8,7 @@ import type {
 import { CodexPlayableAgent, createCodexBuildAgent, createCodexBuildPrompt } from '@/lib/playable/codex-playable-agent'
 import { createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
+import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const validProposal = {
@@ -285,6 +286,16 @@ describe('CodexPlayableAgent', () => {
     expect(prompt).toContain('test-freeform-playable.mjs')
   })
 
+  it('tells 3D builds to adapt the current Three.js template without replacing its gameplay skeleton', () => {
+    const prompt = createCodexBuildPrompt('exact', undefined, undefined, 'perspective_3d')
+
+    expect(prompt).toContain('current perspective_3d template')
+    expect(prompt).toContain('Three.js/WebGL')
+    expect(prompt).toContain('8x8 outer ring')
+    expect(prompt).toContain('Do not replace it with the shared Canvas 2D runtime')
+    expect(prompt).toContain('Apply uploaded assets and confirmed changes in place')
+  })
+
   afterEach(() => {
     vi.unstubAllEnvs()
   })
@@ -548,6 +559,50 @@ describe('CodexPlayableAgent', () => {
     expect(buildRunner).toHaveBeenCalledOnce()
     const buildCalls = buildRunner.mock.calls as unknown as Array<[ConfirmedBuildInput]>
     expect(buildCalls[0][0]).toEqual(input)
+  })
+
+  it('retries the full isolated build after a transient Codex overload interruption', async () => {
+    const buildResult: BuildResult = {
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
+    }
+    const overload = new PlayableBuildExecutionError(
+      'agent',
+      'Reconnecting... 1/5 (stream disconnected before completion: Our servers are currently overloaded. Please try again later.)',
+    )
+    const buildRunner = vi.fn().mockRejectedValueOnce(overload).mockResolvedValueOnce(buildResult)
+    const buildRetryDelay = vi.fn(async () => undefined)
+    const agent = new CodexPlayableAgent({ buildRunner, buildRetryDelay })
+
+    await expect(
+      agent.build({
+        taskId: 'task-overloaded',
+        apiKey: 'sk-build-test',
+        confirmation: validProposal,
+      }),
+    ).resolves.toBe(buildResult)
+
+    expect(buildRunner).toHaveBeenCalledTimes(2)
+    expect(buildRetryDelay).toHaveBeenCalledOnce()
+    expect(buildRunner.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ taskId: 'task-overloaded-retry-2' }))
+  })
+
+  it('does not retry a non-transient Codex build failure', async () => {
+    const failure = new PlayableBuildExecutionError('agent', new Error('codex turn failed'))
+    const buildRunner = vi.fn().mockRejectedValueOnce(failure)
+    const buildRetryDelay = vi.fn(async () => undefined)
+    const agent = new CodexPlayableAgent({ buildRunner, buildRetryDelay })
+
+    await expect(
+      agent.build({
+        taskId: 'task-failed',
+        apiKey: 'sk-build-test',
+        confirmation: validProposal,
+      }),
+    ).rejects.toBe(failure)
+
+    expect(buildRunner).toHaveBeenCalledOnce()
+    expect(buildRetryDelay).not.toHaveBeenCalled()
   })
 
   it('instructs the build agent to generate output directly for a freeform route', async () => {

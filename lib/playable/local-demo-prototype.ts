@@ -208,7 +208,7 @@ function createProposal(
         center_collision: '选择两张相同麻将牌，牌面向中心碰撞并消除计分。',
         top_rack: '选择可见麻将牌进入上方牌架，相同牌配对后自动清除。',
         gravity_fill: '选择相同麻将牌消除，空位由上方牌面下落补齐。',
-        perspective_3d: '选择立体牌墙暴露的顶面，消除后逐层揭示下方麻将牌。',
+        perspective_3d: '选择八层立体牌墙暴露的顶面，同牌抬起后在中心碰撞碎裂，并揭示下方麻将牌。',
       }[mode],
     resources: {
       tileFaces: imageResource(),

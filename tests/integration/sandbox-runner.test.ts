@@ -294,6 +294,47 @@ describe('runPlayableBuild', () => {
     30_000,
   )
 
+  it('rejects a 2D artifact when the confirmed mode is the current perspective 3D template', async () => {
+    const sandbox = await createLocalSandbox()
+    const twoDimensionalArtifact = await readFile('public/playable-templates/center_collision.html', 'utf8')
+
+    await expect(
+      runPlayableBuild(buildInput('perspective_3d', 'sk-perspective-baseline-test'), {
+        createSandbox: async () => sandbox,
+        executeAgent: async ({ sandbox: agentSandbox, workspace, abortSignal }) => {
+          await agentSandbox.writeTextFile({
+            path: path.join(workspace, 'output.html'),
+            content: twoDimensionalArtifact,
+            abortSignal,
+          })
+        },
+      }),
+    ).rejects.toEqual(expect.objectContaining<Partial<PlayableBuildExecutionError>>({ stage: 'validation' }))
+  }, 30_000)
+
+  it('preserves the current perspective 3D template contract in an adapted build', async () => {
+    const sandbox = await createLocalSandbox()
+    const twoDimensionalArtifact = await readFile('public/playable-templates/center_collision.html', 'utf8')
+    const input = buildInput('perspective_3d', 'sk-perspective-adaptation-test')
+    input.confirmation = {
+      ...input.confirmation,
+      routing: { match: 'approximate', confidence: 0.9, differences: ['替换背景和美术主题'] },
+    }
+
+    await expect(
+      runPlayableBuild(input, {
+        createSandbox: async () => sandbox,
+        executeAgent: async ({ sandbox: agentSandbox, workspace, abortSignal }) => {
+          await agentSandbox.writeTextFile({
+            path: path.join(workspace, 'output.html'),
+            content: twoDimensionalArtifact,
+            abortSignal,
+          })
+        },
+      }),
+    ).rejects.toEqual(expect.objectContaining<Partial<PlayableBuildExecutionError>>({ stage: 'artifact_check' }))
+  }, 30_000)
+
   it('copies owned uploaded bytes into the task workspace and returns a truthful safe manifest', async () => {
     const sandbox = await createLocalSandbox()
     const input = buildInput('center_collision', 'sk-assets-test')
@@ -331,7 +372,7 @@ describe('runPlayableBuild', () => {
       entrypoint: 'playable.html',
       plugin: {
         id: 'mahjong-pair-match-playable',
-        version: '1.1.0',
+        version: '1.2.0',
         runtimeVersion: '2',
       },
     })

@@ -16,7 +16,7 @@ import type {
 } from './playable-agent-adapter'
 import { logExternalRequestError } from './external-request-logging'
 import { confirmationProposalSchema, type PlayableAgentReply, type RevisionProposal } from './schemas'
-import { runPlayableBuild, type PlayableSandbox } from './sandbox-runner'
+import { PlayableBuildExecutionError, runPlayableBuild, type PlayableSandbox } from './sandbox-runner'
 import {
   executeRequirementAnalysisTools,
   executeRequirementToolPlan,
@@ -53,10 +53,60 @@ const CODEX_INSTRUCTIONS = [
 ].join('\n')
 
 type BuildRunner = (input: ConfirmedBuildInput, options?: { abortSignal?: AbortSignal }) => Promise<BuildResult>
+type BuildRetryDelay = (delayMs: number, abortSignal: AbortSignal) => Promise<void>
+
+const CODEX_BUILD_MAX_ATTEMPTS = 2
+const CODEX_BUILD_RETRY_DELAY_MS = 2_000
 
 export interface CodexPlayableAgentDependencies {
   buildRunner?: BuildRunner
+  buildRetryDelay?: BuildRetryDelay
   skillRoot?: string
+}
+
+function errorMessages(error: unknown): string[] {
+  const messages: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current)
+    if (typeof current === 'string') {
+      messages.push(current)
+      break
+    }
+    if (typeof current !== 'object') break
+    const candidate = current as { cause?: unknown; message?: unknown }
+    if (typeof candidate.message === 'string') messages.push(candidate.message)
+    current = candidate.cause
+  }
+
+  return messages
+}
+
+function isRetryableCodexBuildFailure(error: unknown): boolean {
+  if (!(error instanceof PlayableBuildExecutionError) || error.stage !== 'agent') return false
+  const message = errorMessages(error).join('\n').toLowerCase()
+  return (
+    message.includes('reconnecting...') &&
+    message.includes('stream disconnected before completion') &&
+    message.includes('servers are currently overloaded')
+  )
+}
+
+function waitForBuildRetry(delayMs: number, abortSignal: AbortSignal): Promise<void> {
+  abortSignal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortSignal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    abortSignal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 async function readTextSkillFiles(root: string, directory = root): Promise<Array<{ path: string; content: string }>> {
@@ -229,6 +279,7 @@ async function executeBuildAgent(
   route: ConfirmedBuildInput['confirmation']['routing']['match'],
   revision: ConfirmedBuildInput['revision'],
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
+  mode?: ConfirmedBuildInput['confirmation']['mode'],
 ) {
   const skill = await loadSkill(skillRoot)
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
@@ -247,7 +298,7 @@ async function executeBuildAgent(
     try {
       await agent.generate({
         session,
-        prompt: createCodexBuildPrompt(route, revision, sourceTemplateId),
+        prompt: createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
         abortSignal: input.abortSignal,
       })
     } catch (error) {
@@ -280,6 +331,7 @@ export function createCodexBuildPrompt(
   route: ConfirmedBuildInput['confirmation']['routing']['match'],
   revision?: RevisionProposal,
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
+  mode?: ConfirmedBuildInput['confirmation']['mode'],
 ): string {
   const validationCommand =
     route === 'exact'
@@ -288,6 +340,14 @@ export function createCodexBuildPrompt(
   const finalInstructions = [
     'Treat output.html as the final artifact.',
     'Do not run the registered template build command after modifying output.html because it overwrites adaptations.',
+    ...(mode === 'perspective_3d'
+      ? [
+          'Use the prebuilt output.html as the current perspective_3d template and adapt it rather than recreating the game.',
+          'Preserve its Three.js/WebGL gameplay skeleton: the 8x8 outer ring, 4x4 center opening, eight-layer wall, tile lift, center collision, fracture, and lower-layer reveal.',
+          'Apply uploaded assets and confirmed changes in place while keeping data-playable-template="perspective_3d" and its template version marker.',
+          'Do not replace it with the shared Canvas 2D runtime or another Mahjong mode.',
+        ]
+      : []),
     `Validate the final artifact with: ${validationCommand}`,
   ]
 
@@ -335,11 +395,13 @@ export function createCodexBuildPrompt(
 
 export class CodexPlayableAgent implements PlayableAgentAdapter {
   private readonly buildRunner: BuildRunner
+  private readonly buildRetryDelay: BuildRetryDelay
   private readonly skillRoot: string
   private readonly activeTasks = new Map<string, AbortController>()
 
   constructor(dependencies: CodexPlayableAgentDependencies = {}) {
     this.skillRoot = dependencies.skillRoot ?? SKILL_ROOT
+    this.buildRetryDelay = dependencies.buildRetryDelay ?? waitForBuildRetry
     this.buildRunner =
       dependencies.buildRunner ??
       ((input, options) =>
@@ -351,6 +413,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
               input.confirmation.routing.match,
               input.revision,
               input.confirmation.sourceTemplateId,
+              input.confirmation.mode,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,
@@ -374,7 +437,16 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
     const controller = new AbortController()
     this.activeTasks.set(input.taskId, controller)
     try {
-      return await this.buildRunner(input, { abortSignal: controller.signal })
+      for (let attempt = 1; attempt <= CODEX_BUILD_MAX_ATTEMPTS; attempt += 1) {
+        const attemptInput = attempt === 1 ? input : { ...input, taskId: `${input.taskId}-retry-${attempt}` }
+        try {
+          return await this.buildRunner(attemptInput, { abortSignal: controller.signal })
+        } catch (error) {
+          if (attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error)) throw error
+          await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, controller.signal)
+        }
+      }
+      throw new Error('Codex build attempts exhausted')
     } finally {
       this.activeTasks.delete(input.taskId)
     }

@@ -79,7 +79,7 @@ const playableModeDefinitions = {
   },
   perspective_3d: {
     label: '3D 纵深',
-    description: '移除立体牌墙顶面并揭示下层',
+    description: '同牌抬起后中心碰撞碎裂，并揭示牌墙下层',
     configPath: `${skillRoot}/assets/templates/perspective_3d/config.json`,
     referencePath: `${skillRoot}/references/modes/perspective_3d.md`,
   },
