@@ -10,15 +10,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { PlayableMode } from '@/lib/playable/types'
+import type { PlayableTemplate } from '@/lib/playable/template-catalog'
 import { TemplatePreview } from './template-preview'
 
 interface TemplatePreviewDialogProps {
-  mode?: PlayableMode
+  mode?: PlayableTemplate
   creating?: boolean
   canStart?: boolean
   onOpenChange: (open: boolean) => void
-  onStart: (mode: PlayableMode) => void
+  onStart: (mode: PlayableTemplate) => void
 }
 
 export function TemplatePreviewDialog({

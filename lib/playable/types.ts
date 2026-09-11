@@ -12,3 +12,6 @@ export interface PlayableMode {
   pluginVersion: string
   runtimeVersion: string
 }
+
+export const sourceTemplateIds = ['dragon_slots', 'dragon_reward_wheel', 'zeus_scatter', 'balloon_master'] as const
+export type SourceTemplateId = (typeof sourceTemplateIds)[number]
