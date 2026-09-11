@@ -1,7 +1,17 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Download, FileJson2, Monitor, RefreshCw, Smartphone, Volume2, VolumeX } from 'lucide-react'
+import {
+  AlertTriangle,
+  Download,
+  ExternalLink,
+  FileJson2,
+  Monitor,
+  RefreshCw,
+  Smartphone,
+  Volume2,
+  VolumeX,
+} from 'lucide-react'
 import type { ConfirmationProposal, PlayableTaskPhase, RevisionProposal } from '@/lib/playable/schemas'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { Button } from '@/components/ui/button'
@@ -205,6 +215,22 @@ export function PlayablePreview({
           >
             {muted ? <VolumeX /> : <Volume2 />}
           </Button>
+          {hasArtifact ? (
+            <Button asChild size="icon" variant="ghost">
+              <a
+                href={authenticatedArtifactUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="在新标签页打开试玩"
+              >
+                <ExternalLink aria-hidden="true" />
+              </a>
+            </Button>
+          ) : (
+            <Button size="icon" variant="ghost" aria-label="在新标签页打开试玩" disabled>
+              <ExternalLink aria-hidden="true" />
+            </Button>
+          )}
           {hasArtifact ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

@@ -123,6 +123,12 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  html.playable-task-scroll-lock,
+  body.playable-task-scroll-lock {
+    overflow: clip;
+    overscroll-behavior: none;
+  }
 }
 
 button {

@@ -11,12 +11,15 @@ import { getSidebarWidth, setSidebarWidth, getSidebarOpen, setSidebarOpen } from
 import { nanoid } from 'nanoid'
 import { ConnectorsProvider } from '@/components/connectors-provider'
 import { usePathname } from 'next/navigation'
+import { PlayableStudioShell } from '@/components/playable/studio-shell'
 
 interface AppLayoutProps {
   children: React.ReactNode
   initialSidebarWidth?: number
   initialSidebarOpen?: boolean
   initialIsMobile?: boolean
+  playableAccountLabel?: string
+  playablePublicAccess?: boolean
 }
 
 interface TasksContextType {
@@ -92,7 +95,14 @@ function SidebarLoader({ width }: { width: number }) {
   )
 }
 
-export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, initialIsMobile }: AppLayoutProps) {
+export function AppLayout({
+  children,
+  initialSidebarWidth,
+  initialSidebarOpen,
+  initialIsMobile,
+  playableAccountLabel = 'Playable Studio',
+  playablePublicAccess = false,
+}: AppLayoutProps) {
   const pathname = usePathname()
   const isPlayablePath =
     pathname === '/' ||
@@ -100,7 +110,6 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
     pathname === '/versions' ||
     pathname === '/tasks' ||
     pathname.startsWith('/tasks/')
-  const isPlayableTaskPath = pathname.startsWith('/tasks/')
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoading, setIsLoading] = useState(true)
   // Initialize sidebar state based on user agent and preferences
@@ -318,23 +327,23 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
       }}
     >
       <ConnectorsProvider enabled={!isPlayablePath}>
-        <div
-          className="relative flex h-dvh min-h-0 overflow-hidden"
-          style={
-            {
-              '--sidebar-width': `${sidebarWidth}px`,
-              '--sidebar-open': isSidebarOpen ? '1' : '0',
-            } as React.CSSProperties
-          }
-          suppressHydrationWarning
-        >
-          {/* Backdrop - Mobile Only */}
-          {!isPlayablePath && isSidebarOpen && (
-            <div className="lg:hidden fixed inset-0 bg-black/50 z-30" onClick={closeSidebar} />
-          )}
+        {isPlayablePath ? (
+          <PlayableStudioShell accountLabel={playableAccountLabel} publicAccess={playablePublicAccess}>
+            {children}
+          </PlayableStudioShell>
+        ) : (
+          <div
+            className="relative flex h-dvh min-h-0 overflow-hidden"
+            style={
+              {
+                '--sidebar-width': `${sidebarWidth}px`,
+                '--sidebar-open': isSidebarOpen ? '1' : '0',
+              } as React.CSSProperties
+            }
+            suppressHydrationWarning
+          >
+            {isSidebarOpen && <div className="lg:hidden fixed inset-0 bg-black/50 z-30" onClick={closeSidebar} />}
 
-          {/* Sidebar */}
-          {!isPlayablePath && (
             <div
               className={`
             fixed inset-y-0 left-0 z-40
@@ -359,10 +368,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
                 )}
               </div>
             </div>
-          )}
 
-          {/* Resize Handle - Desktop Only, when sidebar is open */}
-          {!isPlayablePath && (
             <div
               className={`
             hidden lg:block fixed inset-y-0 cursor-col-resize group z-50 hover:bg-primary/20
@@ -378,18 +384,17 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
               <div className="absolute inset-0 w-2 -ml-0.5" />
               <div className="absolute inset-y-0 left-0 w-0.5 bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity" />
             </div>
-          )}
 
-          {/* Main Content */}
-          <div
-            className={`flex min-h-0 min-w-0 flex-1 flex-col ${isPlayableTaskPath ? 'overflow-hidden' : 'overflow-auto'} ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}`}
-            style={{
-              marginLeft: !isPlayablePath && isDesktop && isSidebarOpen ? `${sidebarWidth + 4}px` : '0px',
-            }}
-          >
-            {children}
+            <div
+              className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-auto ${isResizing || !hasMounted ? '' : 'transition-all duration-300 ease-in-out'}`}
+              style={{
+                marginLeft: isDesktop && isSidebarOpen ? `${sidebarWidth + 4}px` : '0px',
+              }}
+            >
+              {children}
+            </div>
           </div>
-        </div>
+        )}
       </ConnectorsProvider>
     </TasksContext.Provider>
   )

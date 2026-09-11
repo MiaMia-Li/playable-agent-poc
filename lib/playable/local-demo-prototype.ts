@@ -919,6 +919,10 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return this.builds.get(taskId) ?? []
   }
 
+  async listBuildsForTasks(taskIds: string[]): Promise<PlayableBuildRecord[]> {
+    return taskIds.flatMap((taskId) => this.builds.get(taskId) ?? [])
+  }
+
   async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
     return this.builds.get(taskId)?.find((build) => build.id === buildId)
   }
