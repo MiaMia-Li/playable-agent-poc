@@ -3,10 +3,26 @@ import { readFile } from "node:fs/promises";
 const htmlPath = process.argv[2];
 if (!htmlPath) throw new Error("usage: test-playable <html>");
 const html = await readFile(htmlPath, "utf8");
-if (html.includes("mode:'perspective_3d'") && html.includes("renderer:'Three.js WebGL'")) {
-  for (const token of ["const CW=360,CH=640,GOAL=4,SCORE_PER_MATCH=500", "LAYERS=8", "window.__PLAYABLE__", "playable:set-muted"]) {
+const expectedMode = process.env.PLAYABLE_MODE;
+if (expectedMode === "perspective_3d") {
+  const templateVersion = process.env.PLAYABLE_PLUGIN_VERSION;
+  const tokens = [
+    'data-playable-template="perspective_3d"',
+    "mode:'perspective_3d'",
+    "renderer:'Three.js WebGL'",
+    "const CW=360,CH=640,GOAL=4,SCORE_PER_MATCH=500",
+    "LAYERS=8",
+    "window.__PLAYABLE__",
+    "playable:set-muted"
+  ];
+  if (templateVersion) tokens.push(`data-template-version="${templateVersion}"`);
+  for (const token of tokens) {
     if (!html.includes(token)) throw new Error("perspective_3d contract is incomplete");
   }
+  console.log("PASS");
+  process.exit(0);
+}
+if (html.includes("mode:'perspective_3d'") && html.includes("renderer:'Three.js WebGL'")) {
   console.log("PASS");
   process.exit(0);
 }
@@ -29,6 +45,7 @@ const audioInstances=[];globalThis.Audio=class{constructor(src){this.src=src;thi
 
 new Function(script)();for(let i=0;i<5;i++)await Promise.resolve();
 const game=window.__PLAYABLE__;if(!game)throw new Error("game did not initialize");
+if(expectedMode&&game.mode!==expectedMode)throw new Error("playable mode does not match the confirmed mode");
 if(game.audio.muted!==true||game.audio.unlocked!==false||audioInstances.length!==0)throw new Error("audio was not initially muted and locked");
 elements.cta.click();if(storeOpenCount!==0)throw new Error("store opened before gameplay interaction");
 if(typeof windowListeners.message!=="function")throw new Error("mute message protocol missing");

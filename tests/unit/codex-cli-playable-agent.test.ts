@@ -278,4 +278,29 @@ describe('CodexCliPlayableAgent', () => {
       expect.objectContaining({ prompt: expect.stringContaining('implement every confirmed routing difference') }),
     )
   })
+
+  it('asks Codex CLI to use the current 3D template as the adaptation baseline', async () => {
+    const invokeCodex = vi.fn(async () => ({ completed: true }))
+    const result: BuildResult = {
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
+    }
+
+    await new CodexCliPlayableAgent({ invokeCodex, buildRunner: vi.fn(async () => result) }).build({
+      taskId: 'task-cli-perspective-3d',
+      apiKey: 'local-marker',
+      confirmation: { ...proposal, mode: 'perspective_3d' },
+    })
+
+    expect(invokeCodex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('current perspective_3d template'),
+      }),
+    )
+    expect(invokeCodex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('Do not replace it with the shared Canvas 2D runtime'),
+      }),
+    )
+  })
 })

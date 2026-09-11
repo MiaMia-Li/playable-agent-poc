@@ -113,8 +113,9 @@ function hasExternalResourceReference(html: string): boolean {
     if (!isEmbeddedReference(match[1])) return true
   }
 
+  const htmlWithoutScripts = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
   const cssResources = /url\(\s*["']?([^"')]+)["']?\s*\)/gi
-  for (const match of html.matchAll(cssResources)) {
+  for (const match of htmlWithoutScripts.matchAll(cssResources)) {
     if (!isEmbeddedReference(match[1])) return true
   }
   return false
@@ -122,6 +123,20 @@ function hasExternalResourceReference(html: string): boolean {
 
 function hasResponsiveViewport(html: string): boolean {
   return /<meta\s+name=["']viewport["'][^>]*width=device-width/i.test(html) && /<canvas\b/i.test(html)
+}
+
+function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['confirmation'], html: string): void {
+  if (confirmation.routing.match === 'freeform' || confirmation.mode !== 'perspective_3d') return
+  const requiredTokens = [
+    'data-playable-template="perspective_3d"',
+    `data-template-version="${MAHJONG_PLAYABLE_PLUGIN.version}"`,
+    "mode:'perspective_3d'",
+    "renderer:'Three.js WebGL'",
+    'LAYERS=8',
+  ]
+  if (requiredTokens.some((token) => !html.includes(token))) {
+    throw new Error('Perspective 3D template contract is missing')
+  }
 }
 
 async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
@@ -336,6 +351,10 @@ export async function runPlayableBuild(
             ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
             : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform,
         workingDirectory: workspace,
+        env: {
+          PLAYABLE_MODE: confirmation.mode,
+          PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
+        },
         abortSignal: dependencies.abortSignal,
       },
       'Playable validation failed',
@@ -349,6 +368,7 @@ export async function runPlayableBuild(
     if (artifact === null) throw new Error('Playable artifact is missing')
 
     const html = new TextDecoder().decode(artifact)
+    assertRegisteredTemplateContract(confirmation, html)
     if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
     if (html.includes(input.apiKey)) throw new Error('Playable artifact contains a credential')
     if (redactSecrets(html) !== html) throw new Error('Playable artifact contains a credential')
