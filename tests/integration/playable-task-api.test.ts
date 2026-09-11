@@ -2547,6 +2547,12 @@ describe('playable task API', () => {
         status: 'succeeded',
         confirmation,
         artifactKey: task.latestArtifactKey,
+        validation: createValidationReport({
+          bytes: 1024,
+          offlineResources: true,
+          responsiveViewport: true,
+          delivery: confirmation.delivery,
+        }),
         createdAt: new Date(5),
         completedAt: new Date(6),
       },
@@ -2570,7 +2576,14 @@ describe('playable task API', () => {
     expect(listBuildsForTasks).toHaveBeenCalledWith(['owned'])
     expect(body.tasks).toEqual([expect.objectContaining({ id: 'owned', title: 'Owned playable', hasArtifact: true })])
     expect(body.versions).toEqual([
-      expect.objectContaining({ id: 'build-2', taskId: 'owned', version: 2, current: true }),
+      expect.objectContaining({
+        id: 'build-2',
+        taskId: 'owned',
+        version: 2,
+        current: true,
+        delivery: expect.objectContaining({ label: 'AppLovin', logicalWidth: 360, logicalHeight: 640 }),
+        validation: expect.objectContaining({ bytes: 1024, deliveryCompliant: true }),
+      }),
       expect.objectContaining({ id: 'build-1', taskId: 'owned', version: 1, current: false }),
     ])
     expect(JSON.stringify(body)).not.toContain('failed-build')

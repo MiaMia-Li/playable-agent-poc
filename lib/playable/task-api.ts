@@ -1107,6 +1107,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return (buildsByTask.get(task.id) ?? []).flatMap((build) => {
           if (build.status !== 'succeeded') return []
           const version = ++successfulVersion
+          const delivery = build.confirmation.delivery
+          const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(delivery))
           return [
             {
               id: build.id,
@@ -1114,6 +1116,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               status: build.status,
               version,
               current: Boolean(build.artifactKey && build.artifactKey === task.latestArtifactKey),
+              delivery: {
+                label: deliveryProfile.label,
+                logicalWidth: delivery.logicalWidth,
+                logicalHeight: delivery.logicalHeight,
+                output: delivery.output,
+              },
+              validation: safeValidationSummary(build.validation, delivery),
               createdAt: build.createdAt.toISOString(),
               completedAt: build.completedAt?.toISOString() ?? null,
             },

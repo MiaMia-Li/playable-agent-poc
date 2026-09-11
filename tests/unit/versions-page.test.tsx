@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('next/navigation', () => ({
@@ -17,10 +17,10 @@ afterEach(() => {
 })
 
 describe('versions page loading', () => {
-  it('loads library metadata in one request and defers playable previews', async () => {
+  it('loads build records once without embedded previews and links previews to a new tab', async () => {
     const tasks = Array.from({ length: 3 }, (_, index) => ({
       id: `task-${index + 1}`,
-      title: `试玩 ${index + 1}`,
+      title: index === 0 ? '需求 1' : `试玩 ${index + 1}`,
       prompt: `需求 ${index + 1}`,
       phase: 'ready' as const,
       createdAt: '2026-09-10T00:00:00.000Z',
@@ -38,6 +38,17 @@ describe('versions page loading', () => {
             status: 'succeeded',
             version: 1,
             current: true,
+            delivery: {
+              label: 'AppLovin',
+              logicalWidth: 360,
+              logicalHeight: 640,
+              output: 'single-html',
+            },
+            validation: {
+              buildPassed: true,
+              deliveryCompliant: true,
+              bytes: 1048576,
+            },
             createdAt: '2026-09-10T00:00:00.000Z',
             completedAt: '2026-09-10T00:01:00.000Z',
           })),
@@ -66,11 +77,20 @@ describe('versions page loading', () => {
 
     render(<VersionsPage accountLabel="测试账号" />)
 
-    await waitFor(() => expect(screen.getAllByTitle(/缩略预览$/)).toHaveLength(3))
+    const firstVersion = await screen.findByRole('row', { name: '构建 build-1' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledWith('/api/playable-tasks/library', { cache: 'no-store' })
-    for (const preview of screen.getAllByTitle(/缩略预览$/)) {
-      expect(preview).toHaveAttribute('loading', 'lazy')
-    }
+    expect(document.querySelectorAll('iframe')).toHaveLength(0)
+    expect(within(firstVersion).queryByText('需求 1')).not.toBeInTheDocument()
+    expect(within(firstVersion).getByText('build-1')).toBeInTheDocument()
+    expect(within(firstVersion).getByText('当前产物')).toBeInTheDocument()
+    expect(within(firstVersion).getByText('1.0 MB')).toBeInTheDocument()
+    expect(within(firstVersion).getByText('校验通过')).toBeInTheDocument()
+    expect(within(firstVersion).getByRole('link', { name: '预览' })).toHaveAttribute(
+      'href',
+      '/api/playable-tasks/task-1/artifact?kind=playable&version=build-1',
+    )
+    expect(within(firstVersion).getByRole('link', { name: '预览' })).toHaveAttribute('target', '_blank')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

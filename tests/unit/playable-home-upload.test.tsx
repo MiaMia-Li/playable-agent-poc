@@ -37,7 +37,7 @@ describe('PlayableHome reference uploads', () => {
     expect(screen.getByLabelText('新试玩需求')).toBeEnabled()
     expect(screen.queryByText('最近生成')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '玩法模板' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '作品库' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '构建记录' })).toBeInTheDocument()
   })
 
   it('uploads selected image and video references before opening the new task', async () => {

@@ -56,7 +56,7 @@ interface PlayableStudioShellProps {
 const navigation = [
   { id: 'home', href: '/', label: '首页', icon: Home },
   { id: 'best-practices', href: '/best-practices', label: '玩法模板', icon: LayoutGrid },
-  { id: 'versions', href: '/versions', label: '作品库', icon: Clock3 },
+  { id: 'versions', href: '/versions', label: '构建记录', icon: Clock3 },
 ] as const
 
 function startOfToday() {
@@ -343,7 +343,7 @@ function SidebarContent({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
-            <AlertDialogDescription>删除后，它将从最近对话和作品库中隐藏。</AlertDialogDescription>
+            <AlertDialogDescription>删除后，它将从最近对话和构建记录中隐藏。</AlertDialogDescription>
           </AlertDialogHeader>
           {deleteError && <p className="text-destructive text-sm">{deleteError}</p>}
           <AlertDialogFooter>
