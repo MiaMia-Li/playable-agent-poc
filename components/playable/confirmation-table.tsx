@@ -152,7 +152,7 @@ export function ConfirmationTable({
             <tr>
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">路由</th>
               <td className="px-3 py-2">
-                <span>{routingLabels[proposal.routing.match]}</span>
+                <span>{proposal.sourceTemplateId ? '基于模板修改' : routingLabels[proposal.routing.match]}</span>
                 <span className="text-muted-foreground ml-2">
                   置信度 {Math.round(proposal.routing.confidence * 100)}%
                 </span>
@@ -174,7 +174,14 @@ export function ConfirmationTable({
                     : '实现方式'}
               </th>
               <td className="space-y-2 px-3 py-2">
-                {proposal.routing.match === 'freeform' ? (
+                {proposal.sourceTemplateId ? (
+                  <>
+                    <Badge variant="secondary">基于模板修改</Badge>
+                    <p className="text-muted-foreground text-xs">
+                      从已选模板的原始 HTML 开始，保留原有玩法和素材，按确认需求修改。
+                    </p>
+                  </>
+                ) : proposal.routing.match === 'freeform' ? (
                   <>
                     <Badge variant="secondary">Agent 自由生成</Badge>
                     <p className="text-muted-foreground text-xs">

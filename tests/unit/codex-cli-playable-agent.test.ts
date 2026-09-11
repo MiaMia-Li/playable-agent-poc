@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { BuildResult, ConfirmedBuildInput } from '@/lib/playable/playable-agent-adapter'
 import { CodexCliPlayableAgent } from '@/lib/playable/codex-cli-playable-agent'
@@ -203,6 +205,34 @@ describe('CodexCliPlayableAgent', () => {
       }),
     )
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
+  })
+
+  it('seeds template HTML before Codex and requests in-place changes', async () => {
+    const source = '<html><body>original template</body></html>'
+    let inspected = false
+    const invokeCodex = vi.fn(async (invocation) => {
+      expect(await readFile(path.join(invocation.workspace, 'output.html'), 'utf8')).toBe(source)
+      expect(await readFile(path.join(invocation.workspace, 'current-playable.html'), 'utf8')).toBe(source)
+      expect(invocation.prompt).toContain('Modify output.html in place')
+      expect(invocation.prompt).not.toContain('Create the requested game directly')
+      inspected = true
+      return { completed: true }
+    })
+    const result: BuildResult = {
+      html: source,
+      validation: createValidationReport({ bytes: source.length, offlineResources: true, responsiveViewport: true }),
+    }
+    await new CodexCliPlayableAgent({ invokeCodex, buildRunner: vi.fn(async () => result) }).build({
+      taskId: 'template-task',
+      apiKey: 'local-marker',
+      baseHtml: source,
+      confirmation: {
+        ...proposal,
+        sourceTemplateId: 'zeus_scatter',
+        routing: { match: 'freeform', confidence: 1, differences: ['Adapt source'] },
+      },
+    })
+    expect(inspected).toBe(true)
   })
 
   it('asks Codex to create output.html directly for a freeform route', async () => {

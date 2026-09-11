@@ -1,3 +1,4 @@
+import type { SourceTemplateId } from './types'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -714,11 +715,19 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
   private readonly researchReports = new Map<string, MarketResearchReport>()
   private readonly referenceSelections = new Map<string, PlayableReferenceSelectionRecord>()
 
-  async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
+  async createTask(input: {
+    id: string
+    userId: string
+    prompt: string
+    sourceTemplateId?: SourceTemplateId
+  }): Promise<PlayableTaskRecord> {
     const task: PlayableTaskRecord = {
       ...input,
       phase: 'draft',
-      requirementBrief: createRequirementBrief(),
+      requirementBrief: {
+        ...createRequirementBrief(),
+        ...(input.sourceTemplateId ? { sourceTemplateId: input.sourceTemplateId } : {}),
+      },
       confirmation: null,
       pendingRevision: null,
       latestArtifactKey: null,

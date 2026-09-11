@@ -1,3 +1,4 @@
+import { SOURCE_TEMPLATE_BUILD_PROMPT } from './source-template'
 import { spawn } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
@@ -215,6 +216,10 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     await writeFile(path.join(workspace, 'revision-plan.json'), JSON.stringify(input.revision, null, 2), 'utf8')
   }
   if (input.baseHtml) await writeFile(path.join(workspace, 'current-playable.html'), input.baseHtml, 'utf8')
+  if (input.confirmation.sourceTemplateId && input.revision?.strategy !== 'patch') {
+    if (!input.baseHtml) throw new Error('Template source is missing')
+    await writeFile(path.join(workspace, 'output.html'), input.baseHtml, 'utf8')
+  }
   if (input.gameplayBlueprint) {
     await writeFile(
       path.join(workspace, 'gameplay-blueprint.json'),
@@ -351,47 +356,49 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                 'Preserve every behavior and asset that revision-plan.json says must remain unchanged.',
                 'Run the required behavioral validation command. When it passes, return {"completed":true}.',
               ].join('\n')
-            : input.revision?.strategy === 'regenerate'
-              ? [
-                  'Read SKILL.md, confirmed-config.json, revision-plan.json, asset-manifest.json, and gameplay-blueprint.json when present.',
-                  'Regenerate output.html from the approved configuration and revision plan instead of modifying the previous artifact.',
-                  'Preserve the confirmed requirements and uploaded asset assignments.',
-                  'Run the required behavioral validation command. When it passes, return {"completed":true}.',
-                ].join('\n')
-              : input.confirmation.routing.match === 'freeform'
+            : input.confirmation.sourceTemplateId
+              ? SOURCE_TEMPLATE_BUILD_PROMPT
+              : input.revision?.strategy === 'regenerate'
                 ? [
-                    'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
-                    'The confirmed route is freeform because no registered template can express the requested core gameplay.',
-                    'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
-                    'Produce one offline responsive Canvas HTML with no external resources and optimize it for the confirmed delivery profile.',
-                    'Return an otherwise valid artifact even when it misses a soft channel size rule so compliance can be reported.',
-                    'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
-                    'Use uploaded files only for their declared resource slots.',
-                    'Do not modify confirmed-config.json or asset-manifest.json.',
-                    'Do not access files outside this workspace or make network requests.',
-                    'Run the freeform validation command. When it passes, return {"completed":true}.',
+                    'Read SKILL.md, confirmed-config.json, revision-plan.json, asset-manifest.json, and gameplay-blueprint.json when present.',
+                    'Regenerate output.html from the approved configuration and revision plan instead of modifying the previous artifact.',
+                    'Preserve the confirmed requirements and uploaded asset assignments.',
+                    'Run the required behavioral validation command. When it passes, return {"completed":true}.',
                   ].join('\n')
-                : input.confirmation.routing.match === 'approximate'
+                : input.confirmation.routing.match === 'freeform'
                   ? [
                       'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
-                      'The confirmed route is approximate: use the selected registered mode as the working baseline, then implement every confirmed routing difference and gameplay requirement in output.html.',
-                      'Run the existing template build first when useful, but do not stop at the unmodified template.',
-                      'Preserve the registered mode runtime contract and pass its required behavioral test after adapting the experience.',
+                      'The confirmed route is freeform because no registered template can express the requested core gameplay.',
+                      'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
+                      'Produce one offline responsive Canvas HTML with no external resources and optimize it for the confirmed delivery profile.',
+                      'Return an otherwise valid artifact even when it misses a soft channel size rule so compliance can be reported.',
+                      'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
                       'Use uploaded files only for their declared resource slots.',
                       'Do not modify confirmed-config.json or asset-manifest.json.',
                       'Do not access files outside this workspace or make network requests.',
-                      'When the adapted playable passes, return {"completed":true}.',
+                      'Run the freeform validation command. When it passes, return {"completed":true}.',
                     ].join('\n')
-                  : [
-                      'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
-                      'Build the approved playable in this workspace and run the required behavioral test.',
-                      'Write the final single-file playable to output.html.',
-                      'For a registered mode, use its existing template immediately; do not rewrite the large shared runtime.',
-                      'Use uploaded files only for their declared resource slots.',
-                      'Do not modify confirmed-config.json or asset-manifest.json.',
-                      'Do not access files outside this workspace or make network requests.',
-                      'When the playable passes, return {"completed":true}.',
-                    ].join('\n'),
+                  : input.confirmation.routing.match === 'approximate'
+                    ? [
+                        'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
+                        'The confirmed route is approximate: use the selected registered mode as the working baseline, then implement every confirmed routing difference and gameplay requirement in output.html.',
+                        'Run the existing template build first when useful, but do not stop at the unmodified template.',
+                        'Preserve the registered mode runtime contract and pass its required behavioral test after adapting the experience.',
+                        'Use uploaded files only for their declared resource slots.',
+                        'Do not modify confirmed-config.json or asset-manifest.json.',
+                        'Do not access files outside this workspace or make network requests.',
+                        'When the adapted playable passes, return {"completed":true}.',
+                      ].join('\n')
+                    : [
+                        'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
+                        'Build the approved playable in this workspace and run the required behavioral test.',
+                        'Write the final single-file playable to output.html.',
+                        'For a registered mode, use its existing template immediately; do not rewrite the large shared runtime.',
+                        'Use uploaded files only for their declared resource slots.',
+                        'Do not modify confirmed-config.json or asset-manifest.json.',
+                        'Do not access files outside this workspace or make network requests.',
+                        'When the playable passes, return {"completed":true}.',
+                      ].join('\n'),
       })
       if (!completionSchema.safeParse(completion).success) {
         console.error('Codex CLI build completion was invalid')

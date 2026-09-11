@@ -1,3 +1,8 @@
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { sourceTemplateIds } from './types'
+import { bindSourceTemplate, selectedSourceTemplate } from './source-template'
+import type { SourceTemplateId } from './types'
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
 import {
@@ -152,7 +157,12 @@ export interface PlayableBuildRecord {
 }
 
 export interface PlayableTaskRepository {
-  createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord>
+  createTask(input: {
+    id: string
+    userId: string
+    prompt: string
+    sourceTemplateId?: SourceTemplateId
+  }): Promise<PlayableTaskRecord>
   findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined>
   renameOwnedTask(taskId: string, userId: string, title: string): Promise<boolean>
   deleteOwnedTask(taskId: string, userId: string): Promise<boolean>
@@ -362,7 +372,10 @@ function safeTaskState(task: PlayableTaskRecord) {
     artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
     latestValidation: safeValidationSummary(task.latestValidation, task.confirmation?.delivery),
     requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
-    confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
+    confirmation:
+      task.phase !== 'draft' && task.confirmation
+        ? sanitizeConfirmation(bindSourceTemplate(task.confirmation, selectedSourceTemplate(task)))
+        : null,
     pendingRevision: task.pendingRevision ? sanitizeRevisionProposal(task.pendingRevision) : null,
   }
 }
@@ -712,14 +725,26 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     ) {
       throw new Error('Confirmation contains a credential')
     }
-    const sanitizedConfirmation = sanitizeConfirmation(task.confirmation, [
-      apiKey,
-      ...(mediaApiKey ? [mediaApiKey] : []),
-    ])
+    const sanitizedConfirmation = sanitizeConfirmation(
+      bindSourceTemplate(task.confirmation, selectedSourceTemplate(task)),
+      [apiKey, ...(mediaApiKey ? [mediaApiKey] : [])],
+    )
     const revision = task.pendingRevision
       ? sanitizeRevisionProposal(task.pendingRevision, [apiKey, ...(mediaApiKey ? [mediaApiKey] : [])])
       : undefined
     let baseHtml: string | undefined
+    if (sanitizedConfirmation.sourceTemplateId && revision?.strategy !== 'patch') {
+      baseHtml = await readFile(
+        path.join(
+          process.cwd(),
+          MAHJONG_PLAYABLE_PLUGIN.skillRoot,
+          'assets/templates',
+          sanitizedConfirmation.sourceTemplateId,
+          'source.html',
+        ),
+        'utf8',
+      )
+    }
     if (revision?.strategy === 'patch') {
       stage = 'base_artifact'
       const baseBuild = await repository.findBuild(task.id, revision.baseBuildId)
@@ -1084,13 +1109,18 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async create(request: NextRequest): Promise<Response> {
       const userId = await dependencies.authenticate(request)
       if (!userId) return jsonError(401, 'Unauthorized')
-      const body = (await request.json().catch(() => undefined)) as { prompt?: unknown } | undefined
+      const body = (await request.json().catch(() => undefined)) as
+        | { prompt?: unknown; sourceTemplateId?: unknown }
+        | undefined
       if (typeof body?.prompt !== 'string' || !body.prompt.trim()) return jsonError(400, 'Invalid request')
 
+      if (body.sourceTemplateId !== undefined && !sourceTemplateIds.includes(body.sourceTemplateId as SourceTemplateId))
+        return jsonError(400, 'Invalid template')
       const task = await dependencies.repository.createTask({
         id: dependencies.generateId(),
         userId,
         prompt: safeString(body.prompt.trim()),
+        ...(body.sourceTemplateId ? { sourceTemplateId: body.sourceTemplateId as SourceTemplateId } : {}),
       })
       return Response.json({ task: { id: task.id, phase: task.phase } }, { status: 201 })
     },
@@ -1297,6 +1327,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   ? (access.task.requirementBrief ?? createRequirementBrief())
                   : (access.task.requirementBrief ?? createRequirementBrief(access.task.prompt))
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
+              const templateId = selectedSourceTemplate(access.task)
+              delete nextBrief.sourceTemplateId
+              if (templateId) nextBrief.sourceTemplateId = templateId
               stage = 'brief_store'
               const briefUpdated = await dependencies.repository.updateRequirementBrief(
                 access.task.id,
@@ -1306,6 +1339,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (!briefUpdated) throw new Error('Task phase conflict')
               for (const tool of validatedReply.tools ?? []) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
+              }
+              if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
+                validatedReply.confirmation = bindSourceTemplate(validatedReply.confirmation, templateId)
               }
               const serialized = JSON.stringify(validatedReply)
               stage = 'agent_message_store'
@@ -1350,7 +1386,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              const validated = validatedReply.confirmation
+              const validated = bindSourceTemplate(validatedReply.confirmation, selectedSourceTemplate(access.task))
               stage = 'phase_transition'
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
@@ -1515,7 +1551,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       let sanitized: ConfirmationProposal
       try {
-        sanitized = sanitizeConfirmation(parsed.data)
+        sanitized = sanitizeConfirmation(bindSourceTemplate(parsed.data, selectedSourceTemplate(access.task)))
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }

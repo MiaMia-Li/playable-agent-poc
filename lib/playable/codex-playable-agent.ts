@@ -1,3 +1,4 @@
+import { SOURCE_TEMPLATE_BUILD_PROMPT } from './source-template'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { HarnessAgent } from '@ai-sdk/harness/agent'
@@ -227,6 +228,7 @@ async function executeBuildAgent(
   skillRoot: string,
   route: ConfirmedBuildInput['confirmation']['routing']['match'],
   revision: ConfirmedBuildInput['revision'],
+  sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
 ) {
   const skill = await loadSkill(skillRoot)
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
@@ -245,7 +247,7 @@ async function executeBuildAgent(
     try {
       await agent.generate({
         session,
-        prompt: createCodexBuildPrompt(route, revision),
+        prompt: createCodexBuildPrompt(route, revision, sourceTemplateId),
         abortSignal: input.abortSignal,
       })
     } catch (error) {
@@ -277,6 +279,7 @@ export function createCodexBuildAgent(input: { apiKey: string; skill: HarnessV1S
 export function createCodexBuildPrompt(
   route: ConfirmedBuildInput['confirmation']['routing']['match'],
   revision?: RevisionProposal,
+  sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
 ): string {
   const validationCommand =
     route === 'exact'
@@ -297,6 +300,8 @@ export function createCodexBuildPrompt(
       ...finalInstructions,
     ].join('\n')
   }
+
+  if (sourceTemplateId) return SOURCE_TEMPLATE_BUILD_PROMPT
 
   if (route === 'freeform') {
     return [
@@ -340,7 +345,13 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
       ((input, options) =>
         runPlayableBuild(input, {
           executeAgent: (agentInput) =>
-            executeBuildAgent(agentInput, this.skillRoot, input.confirmation.routing.match, input.revision),
+            executeBuildAgent(
+              agentInput,
+              this.skillRoot,
+              input.confirmation.routing.match,
+              input.revision,
+              input.confirmation.sourceTemplateId,
+            ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,
         }))

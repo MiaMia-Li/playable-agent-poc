@@ -1,3 +1,4 @@
+import type { SourceTemplateId } from './types'
 import { and, asc, desc, eq, gte, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
 import {
@@ -128,7 +129,12 @@ function toReferenceSelection(row: typeof playableReferenceSelections.$inferSele
 }
 
 export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
-  async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
+  async createTask(input: {
+    id: string
+    userId: string
+    prompt: string
+    sourceTemplateId?: SourceTemplateId
+  }): Promise<PlayableTaskRecord> {
     const [task] = await db
       .insert(tasks)
       .values({
@@ -138,7 +144,10 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         selectedAgent: 'codex',
         status: 'pending',
         phase: 'draft',
-        requirementBrief: createRequirementBrief(),
+        requirementBrief: {
+          ...createRequirementBrief(),
+          ...(input.sourceTemplateId ? { sourceTemplateId: input.sourceTemplateId } : {}),
+        },
         pendingRevision: null,
         progress: 0,
         logs: [],
