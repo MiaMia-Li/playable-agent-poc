@@ -37,7 +37,7 @@ describe('playable production contract', () => {
     expect(Object.keys(config)).toEqual(['core', 'theme', 'assets', 'ad', 'copy'])
     expect(config.core).toMatchObject({
       pluginId: 'mahjong-pair-match-playable',
-      pluginVersion: '1.1.0',
+      pluginVersion: '1.2.0',
       runtimeVersion: '2',
       mode: 'perspective_3d',
       routing: confirmation.routing,
@@ -57,7 +57,7 @@ describe('playable production contract', () => {
       },
     ])
 
-    expect(manifest.plugin).toEqual({ id: 'mahjong-pair-match-playable', version: '1.1.0', runtimeVersion: '2' })
+    expect(manifest.plugin).toEqual({ id: 'mahjong-pair-match-playable', version: '1.2.0', runtimeVersion: '2' })
     expect(manifest.sources).toHaveLength(5)
     expect(manifest.sources[0]).toMatchObject({ origin: 'task-upload', files: ['tiles.png'] })
     expect(JSON.stringify(manifest)).not.toContain('users/')

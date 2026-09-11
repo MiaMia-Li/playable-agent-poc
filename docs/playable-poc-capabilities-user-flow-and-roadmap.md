@@ -21,7 +21,7 @@
   → 试玩、下载或继续修改
 ```
 
-目前只注册了一个版本化 Plugin：`mahjong-pair-match-playable@1.1.0`，运行时版本为 `2`，支持 AppLovin 单 HTML 交付。
+目前只注册了一个版本化 Plugin：`mahjong-pair-match-playable@1.2.0`，运行时版本为 `2`，支持 AppLovin 单 HTML 交付。
 
 ## 2. 已实现能力总览
 

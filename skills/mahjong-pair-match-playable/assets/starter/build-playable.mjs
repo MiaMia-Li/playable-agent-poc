@@ -70,10 +70,14 @@ config.storeUrl = confirmed?.storeUrl || storeUrl;
 config.tileKeys = Object.keys(tiles);
 config.copy = confirmed?.copy || null;
 
-let html = await readFile(path.join(root, "src", "playable.template.html"), "utf8");
+const templateFile = mode === "perspective_3d"
+  ? path.join(templateRoot, "playable.template.html")
+  : path.join(root, "src", "playable.template.html");
+let html = await readFile(templateFile, "utf8");
 html = html
   .replace("__ASSETS__", JSON.stringify(assets))
   .replace("__CONFIG__", JSON.stringify(config))
+  .replaceAll("__STORE_URL_JSON__", JSON.stringify(config.storeUrl))
   .replaceAll("__DOCUMENT_LANG__", htmlText(confirmed?.copy?.locale || "zh-CN"))
   .replaceAll("__PLAYABLE_TITLE__", htmlText(confirmed?.copy?.title || "Mahjong Match Playable"))
   .replaceAll("__CTA_TEXT__", htmlText(confirmed?.copy?.cta || "立即试玩"))

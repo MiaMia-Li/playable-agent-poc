@@ -3,6 +3,13 @@ import { readFile } from "node:fs/promises";
 const htmlPath = process.argv[2];
 if (!htmlPath) throw new Error("usage: test-playable <html>");
 const html = await readFile(htmlPath, "utf8");
+if (html.includes("mode:'perspective_3d'") && html.includes("renderer:'Three.js WebGL'")) {
+  for (const token of ["const CW=360,CH=640,GOAL=4,SCORE_PER_MATCH=500", "LAYERS=8", "window.__PLAYABLE__", "playable:set-muted"]) {
+    if (!html.includes(token)) throw new Error("perspective_3d contract is incomplete");
+  }
+  console.log("PASS");
+  process.exit(0);
+}
 const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
 if (!script) throw new Error("embedded game script not found");
 
@@ -46,10 +53,11 @@ if(game.mode!=="top_rack"){
 }
 while(game.matches<4){
   const pair=availablePair();if(!pair)throw new Error(`${game.mode}: no available pair at match ${game.matches}`);
-  click(pair[0]);if(game.mode==="top_rack")tick(360);click(pair[1]);tick(game.mode==="top_rack"?700:500);
+  click(pair[0]);if(game.mode==="top_rack")tick(360);click(pair[1]);tick(game.mode==="top_rack"?700:game.mode==="perspective_3d"?760:500);
 }
-const expectedScores={center_collision:2000,top_rack:1360,gravity_fill:2000,perspective_3d:1632};
+const expectedScores={center_collision:2000,top_rack:1360,gravity_fill:2000,perspective_3d:2000};
 if(game.score!==expectedScores[game.mode])throw new Error(`${game.mode}: unexpected final score ${game.score}`);
+if(game.mode==="perspective_3d"&&(game.perspective.cols!==8||game.perspective.rows!==8||game.tiles.length!==48))throw new Error("perspective_3d: board does not match the 8x8 reference ring");
 if(game.mode==="perspective_3d"&&(!game.cavities.length||!game.tiles.some(t=>t.state==="board"&&t.layer>0)))throw new Error("perspective_3d: lower layer was not revealed");
 tick(1000);if(!elements.endCard.classList.contains("show"))throw new Error(`${game.mode}: end card not visible`);
 if(game.interactions<8)throw new Error(`${game.mode}: interactions were not recorded`);

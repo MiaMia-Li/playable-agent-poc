@@ -1,4 +1,4 @@
-import { playableAgentReplySchema } from './schemas'
+import { parsePersistedPlayableAgentReply } from './persisted-schema-compat'
 import type {
   ClarificationOption,
   ConfirmationProposal,
@@ -40,9 +40,7 @@ export function restorePlayableConversation(
         ]
       }
       try {
-        const parsed = playableAgentReplySchema.safeParse(JSON.parse(stored.content))
-        if (!parsed.success) return []
-        const reply = parsed.data
+        const reply = parsePersistedPlayableAgentReply(JSON.parse(stored.content))
         return [
           {
             message: {

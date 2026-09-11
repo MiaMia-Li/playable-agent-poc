@@ -33,6 +33,7 @@ export function TemplatePreview({ mode, title, className, interactive = false }:
           src={templateCoverPaths[mode]}
           alt={title}
           fill
+          unoptimized={mode === 'perspective_3d'}
           sizes="(min-width: 1024px) 250px, (min-width: 640px) 162px, 100vw"
           className="object-cover"
         />

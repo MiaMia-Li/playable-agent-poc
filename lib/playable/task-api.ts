@@ -22,6 +22,7 @@ import {
   type RevisionProposal,
   type VideoAnalysisStatus,
 } from './schemas'
+import { parsePersistedPlayableAgentReply } from './persisted-schema-compat'
 import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
 import { generatePlayableMediaAssets } from './media-generation'
@@ -570,8 +571,7 @@ function conversationContent(message: PlayableTaskMessageRecord, secrets: readon
   const safeContent = safeString(message.content, secrets)
   if (message.role === 'user') return safeContent
   try {
-    const parsed = playableAgentReplySchema.safeParse(JSON.parse(safeContent))
-    return parsed.success ? parsed.data.message : safeContent
+    return parsePersistedPlayableAgentReply(JSON.parse(safeContent)).message
   } catch {
     return safeContent
   }

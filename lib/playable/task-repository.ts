@@ -12,6 +12,7 @@ import {
   tasks,
 } from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
+import { parsePersistedConfirmation, parsePersistedRequirementBrief } from './persisted-schema-compat'
 import {
   confirmationProposalSchema,
   gameplayBlueprintSchema,
@@ -56,8 +57,8 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     userId: row.userId,
     prompt: row.prompt,
     phase: playableTaskPhaseSchema.parse(row.phase),
-    requirementBrief: row.requirementBrief ? requirementBriefSchema.parse(row.requirementBrief) : null,
-    confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
+    requirementBrief: row.requirementBrief ? parsePersistedRequirementBrief(row.requirementBrief) : null,
+    confirmation: row.confirmation ? parsePersistedConfirmation(row.confirmation) : null,
     pendingRevision: row.pendingRevision ? revisionProposalSchema.parse(row.pendingRevision) : null,
     latestArtifactKey: row.latestArtifactKey,
     latestValidation: row.latestValidation,
@@ -72,7 +73,7 @@ function toBuild(row: typeof playableTaskBuilds.$inferSelect): PlayableBuildReco
     id: row.id,
     taskId: row.taskId,
     status: row.status,
-    confirmation: confirmationProposalSchema.parse(row.confirmation),
+    confirmation: parsePersistedConfirmation(row.confirmation),
     revision: row.revision ? revisionProposalSchema.parse(row.revision) : null,
     artifactKey: row.artifactKey,
     validation: row.validation,
