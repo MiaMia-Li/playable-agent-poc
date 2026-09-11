@@ -20,6 +20,23 @@ afterEach(() => {
 })
 
 describe('PlayableStudioShell recent conversations', () => {
+  it('shows every loaded recent conversation', () => {
+    const tasks = Array.from({ length: 13 }, (_, index) => ({
+      id: `task-${index + 1}`,
+      prompt: `试玩对话 ${index + 1}`,
+      phase: 'draft' as const,
+      createdAt: new Date().toISOString(),
+    }))
+
+    render(
+      <PlayableStudioShell accountLabel="测试用户" tasks={tasks}>
+        <div>首页</div>
+      </PlayableStudioShell>,
+    )
+
+    expect(screen.getByRole('link', { name: /试玩对话 13/ })).toBeInTheDocument()
+  })
+
   it('pins task workspaces to the viewport and locks root scrolling', () => {
     mockPathname = '/tasks/task-1'
 

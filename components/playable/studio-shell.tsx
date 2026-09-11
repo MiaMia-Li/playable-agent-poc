@@ -140,7 +140,7 @@ function SidebarContent({
     const matches = normalized
       ? tasks.filter((task) => (task.title || task.prompt).toLocaleLowerCase().includes(normalized))
       : tasks
-    return matches.slice(0, 12)
+    return matches
   }, [searchQuery, tasks])
 
   function openRename(task: PlayableTaskSummary) {
