@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import { BuildConfirmationSummary } from './build-confirmation-dialog'
-import { PlayableStudioShell, type PlayableTaskSummary } from './studio-shell'
+import { usePlayableRecentTasks, type PlayableTaskSummary } from './recent-tasks-context'
 
 interface PlayableValidationSummary {
   buildPassed: boolean
@@ -59,12 +59,13 @@ function validationLabel(validation: PlayableValidationSummary | null) {
   return { label: '校验通过', className: 'text-emerald-700' }
 }
 
-export function VersionsPage({ accountLabel, publicAccess = false }: { accountLabel: string; publicAccess?: boolean }) {
-  const [tasks, setTasks] = useState<PlayableTaskSummary[] | null>(null)
+export function VersionsPage() {
   const [versions, setVersions] = useState<VersionListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const recentTasks = usePlayableRecentTasks()
+  const replaceTasks = recentTasks?.replaceTasks
 
   useEffect(() => {
     let active = true
@@ -76,7 +77,7 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
       .then(({ tasks: loadedTasks, versions: loadedVersions }) => {
         if (!active) return
         const tasksById = new Map(loadedTasks.map((task) => [task.id, task]))
-        setTasks(loadedTasks)
+        replaceTasks?.(loadedTasks)
         setVersions(
           loadedVersions.flatMap((version) => {
             const task = tasksById.get(version.taskId)
@@ -93,7 +94,7 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
     return () => {
       active = false
     }
-  }, [])
+  }, [replaceTasks])
 
   const visibleVersions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase()
@@ -108,114 +109,112 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
   }, [query, versions])
 
   return (
-    <PlayableStudioShell activeSection="versions" accountLabel={accountLabel} publicAccess={publicAccess} tasks={tasks}>
-      <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-20 lg:pb-16">
-        <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
-          <div>
-            <h1 className="mt-1 text-3xl font-semibold tracking-tight">构建记录</h1>
-            <p className="text-muted-foreground mt-3 max-w-2xl text-sm sm:text-base">
-              查看每次成功构建的构建方案、校验结果和历史版本。
-            </p>
-          </div>
-          <Input
-            className="w-full sm:w-72"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索构建 ID…"
-            aria-label="搜索构建记录"
-          />
+    <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-20 lg:pb-16">
+      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight">构建记录</h1>
+          <p className="text-muted-foreground mt-3 max-w-2xl text-sm sm:text-base">
+            查看每次成功构建的构建方案、校验结果和历史版本。
+          </p>
         </div>
+        <Input
+          className="w-full sm:w-72"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="搜索构建 ID…"
+          aria-label="搜索构建记录"
+        />
+      </div>
 
-        {error && <p className="text-destructive mt-6 text-sm">{error}</p>}
-        {loading ? (
-          <div className="text-muted-foreground flex items-center justify-center gap-2 py-24 text-sm" role="status">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            正在加载版本…
-          </div>
-        ) : visibleVersions.length === 0 ? (
-          <div className="mt-10 rounded-2xl border px-6 py-16 text-center">
-            <p className="font-medium">还没有构建记录</p>
-            <p className="text-muted-foreground mt-2 text-sm">完成一次试玩构建后，记录会出现在这里。</p>
-          </div>
-        ) : (
-          <section className="mt-8 overflow-hidden rounded-2xl border" aria-label="构建记录列表">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left text-sm">
-                <thead className="bg-muted/40 text-muted-foreground border-b text-xs font-medium">
-                  <tr>
-                    <th scope="col" className="px-5 py-3 font-medium">
-                      构建 ID
-                    </th>
-                    <th scope="col" className="px-5 py-3 font-medium">
-                      构建方案
-                    </th>
-                    <th scope="col" className="px-5 py-3 font-medium">
-                      文件与校验
-                    </th>
-                    <th scope="col" className="px-5 py-3 font-medium">
-                      完成时间
-                    </th>
-                    <th scope="col" className="px-5 py-3 text-right font-medium">
-                      操作
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {visibleVersions.map((item) => {
-                    const taskUrl = `/tasks/${item.task.id}`
-                    const playableUrl = artifactUrl(item)
-                    const downloadUrl = `${playableUrl}&download=1`
-                    const validation = validationLabel(item.validation)
-                    return (
-                      <tr key={item.id} aria-label={`构建 ${item.id}`} className="transition-colors hover:bg-muted/20">
-                        <td className="px-5 py-4 align-middle">
-                          <p className="text-sm font-medium">{item.id}</p>
-                          {/* {item.current && (
+      {error && <p className="text-destructive mt-6 text-sm">{error}</p>}
+      {loading ? (
+        <div className="text-muted-foreground flex items-center justify-center gap-2 py-24 text-sm" role="status">
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          正在加载版本…
+        </div>
+      ) : visibleVersions.length === 0 ? (
+        <div className="mt-10 rounded-2xl border px-6 py-16 text-center">
+          <p className="font-medium">还没有构建记录</p>
+          <p className="text-muted-foreground mt-2 text-sm">完成一次试玩构建后，记录会出现在这里。</p>
+        </div>
+      ) : (
+        <section className="mt-8 overflow-hidden rounded-2xl border" aria-label="构建记录列表">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-left text-sm">
+              <thead className="bg-muted/40 text-muted-foreground border-b text-xs font-medium">
+                <tr>
+                  <th scope="col" className="px-5 py-3 font-medium">
+                    构建 ID
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-medium">
+                    构建方案
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-medium">
+                    文件与校验
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-medium">
+                    完成时间
+                  </th>
+                  <th scope="col" className="px-5 py-3 text-right font-medium">
+                    操作
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {visibleVersions.map((item) => {
+                  const taskUrl = `/tasks/${item.task.id}`
+                  const playableUrl = artifactUrl(item)
+                  const downloadUrl = `${playableUrl}&download=1`
+                  const validation = validationLabel(item.validation)
+                  return (
+                    <tr key={item.id} aria-label={`构建 ${item.id}`} className="transition-colors hover:bg-muted/20">
+                      <td className="px-5 py-4 align-middle">
+                        <p className="text-sm font-medium">{item.id}</p>
+                        {/* {item.current && (
                             <span className="mt-1 inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
                               当前产物
                             </span>
                           )} */}
-                        </td>
-                        <td className="max-w-72 px-5 py-4 align-middle">
-                          <BuildConfirmationSummary buildId={item.id} confirmation={item.confirmation} />
-                        </td>
-                        <td className="px-5 py-4 align-middle">
-                          <p className="font-medium">{item.validation ? formatBytes(item.validation.bytes) : '—'}</p>
-                          <p className={`mt-1 text-xs ${validation.className}`}>{validation.label}</p>
-                        </td>
-                        <td className="text-muted-foreground px-5 py-4 align-middle text-sm whitespace-nowrap">
-                          {new Date(item.completedAt ?? item.createdAt).toLocaleString('zh-CN', { hour12: false })}
-                        </td>
-                        <td className="px-5 py-4 align-middle">
-                          <div className="flex justify-end gap-2">
-                            <Button asChild variant="outline" size="sm">
-                              <a href={playableUrl} target="_blank" rel="noopener noreferrer">
-                                <ExternalLink aria-hidden="true" />
-                                预览
-                              </a>
-                            </Button>
-                            <Button asChild variant="outline" size="sm">
-                              <Link href={taskUrl}>
-                                <MessageSquareText aria-hidden="true" />
-                                回到对话
-                              </Link>
-                            </Button>
-                            <Button asChild size="icon" variant="ghost">
-                              <a href={downloadUrl} aria-label={`下载构建 ${item.id} HTML`}>
-                                <Download aria-hidden="true" />
-                              </a>
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-      </main>
-    </PlayableStudioShell>
+                      </td>
+                      <td className="max-w-72 px-5 py-4 align-middle">
+                        <BuildConfirmationSummary buildId={item.id} confirmation={item.confirmation} />
+                      </td>
+                      <td className="px-5 py-4 align-middle">
+                        <p className="font-medium">{item.validation ? formatBytes(item.validation.bytes) : '—'}</p>
+                        <p className={`mt-1 text-xs ${validation.className}`}>{validation.label}</p>
+                      </td>
+                      <td className="text-muted-foreground px-5 py-4 align-middle text-sm whitespace-nowrap">
+                        {new Date(item.completedAt ?? item.createdAt).toLocaleString('zh-CN', { hour12: false })}
+                      </td>
+                      <td className="px-5 py-4 align-middle">
+                        <div className="flex justify-end gap-2">
+                          <Button asChild variant="outline" size="sm">
+                            <a href={playableUrl} target="_blank" rel="noopener noreferrer">
+                              <ExternalLink aria-hidden="true" />
+                              预览
+                            </a>
+                          </Button>
+                          <Button asChild variant="outline" size="sm">
+                            <Link href={taskUrl}>
+                              <MessageSquareText aria-hidden="true" />
+                              回到对话
+                            </Link>
+                          </Button>
+                          <Button asChild size="icon" variant="ghost">
+                            <a href={downloadUrl} aria-label={`下载构建 ${item.id} HTML`}>
+                              <Download aria-hidden="true" />
+                            </a>
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </main>
   )
 }

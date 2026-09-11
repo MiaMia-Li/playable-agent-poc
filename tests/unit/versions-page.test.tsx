@@ -9,7 +9,7 @@ vi.mock('next/navigation', () => ({
 }))
 
 import { VersionsPage } from '@/components/playable/versions-page'
-import { PlayableRecentTasksProvider } from '@/components/playable/recent-tasks-context'
+import { PlayableRecentTasksProvider, usePlayableRecentTasks } from '@/components/playable/recent-tasks-context'
 
 afterEach(() => {
   cleanup()
@@ -17,8 +17,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+function RecentTaskProbe() {
+  const recentTasks = usePlayableRecentTasks()
+  return <span>{recentTasks?.tasks[0]?.title}</span>
+}
+
 describe('versions page loading', () => {
-  it('keeps recent conversations visible while build records are loading', () => {
+  it('keeps recent conversations in shared state while build records are loading', () => {
     const existingTask = {
       id: 'existing-task',
       title: '已经加载的最近对话',
@@ -35,11 +40,12 @@ describe('versions page loading', () => {
 
     render(
       <PlayableRecentTasksProvider initialTasks={[existingTask]}>
-        <VersionsPage accountLabel="测试账号" />
+        <VersionsPage />
+        <RecentTaskProbe />
       </PlayableRecentTasksProvider>,
     )
 
-    expect(screen.getByRole('link', { name: /已经加载的最近对话/ })).toBeInTheDocument()
+    expect(screen.getByText('已经加载的最近对话')).toBeInTheDocument()
   })
 
   it('loads build records once without embedded previews and links previews to a new tab', async () => {
@@ -135,7 +141,7 @@ describe('versions page loading', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<VersionsPage accountLabel="测试账号" />)
+    render(<VersionsPage />)
 
     const firstVersion = await screen.findByRole('row', { name: '构建 build-1' })
     expect(fetchMock).toHaveBeenCalledTimes(1)

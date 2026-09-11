@@ -3,12 +3,13 @@ import { Globe2 } from 'lucide-react'
 interface StudioAccountProps {
   accountLabel: string
   publicAccess?: boolean
+  compact?: boolean
 }
 
-export function StudioAccount({ accountLabel, publicAccess = false }: StudioAccountProps) {
+export function StudioAccount({ accountLabel, publicAccess = false, compact = false }: StudioAccountProps) {
   return (
     <div
-      className="flex h-9 items-center gap-2.5 rounded-lg px-2"
+      className={`flex h-9 items-center rounded-lg ${compact ? 'justify-center' : 'gap-2.5 px-2'}`}
       aria-label={publicAccess ? '账户：公开体验，任务共享' : `账户：${accountLabel}`}
     >
       {publicAccess ? (
@@ -20,9 +21,15 @@ export function StudioAccount({ accountLabel, publicAccess = false }: StudioAcco
           {accountLabel.slice(0, 1).toUpperCase()}
         </span>
       )}
-      <span className="min-w-0 flex-1 truncate text-sm">{publicAccess ? '公开体验' : accountLabel}</span>
-      {publicAccess && (
-        <span className="text-muted-foreground bg-foreground/[0.06] rounded-full px-2 py-0.5 text-[10px]">共享</span>
+      {!compact && (
+        <>
+          <span className="min-w-0 flex-1 truncate text-sm">{publicAccess ? '公开体验' : accountLabel}</span>
+          {publicAccess && (
+            <span className="text-muted-foreground bg-foreground/[0.06] rounded-full px-2 py-0.5 text-[10px]">
+              共享
+            </span>
+          )}
+        </>
       )}
     </div>
   )
