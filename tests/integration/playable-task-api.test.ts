@@ -2581,6 +2581,7 @@ describe('playable task API', () => {
         taskId: 'owned',
         version: 2,
         current: true,
+        confirmation,
         delivery: expect.objectContaining({ label: 'AppLovin', logicalWidth: 360, logicalHeight: 640 }),
         validation: expect.objectContaining({ bytes: 1024, deliveryCompliant: true }),
       }),

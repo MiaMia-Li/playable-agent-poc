@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('next/navigation', () => ({
@@ -63,6 +63,41 @@ describe('versions page loading', () => {
             status: 'succeeded',
             version: 1,
             current: true,
+            confirmation: {
+              routing: { match: 'freeform', confidence: 0.8, differences: ['不受模板状态机限制'] },
+              mode: 'gravity_fill',
+              gameplay: '相同牌向中心碰撞并消除',
+              presentation: {
+                assetFields: [
+                  { slot: 'tileFaces', label: '麻将牌面' },
+                  { slot: 'backgroundBoard', label: '上传的美女荷官、赌场背景与中心碰撞棋盘' },
+                  { slot: 'animationEffects', label: '碰撞、消除与计分特效' },
+                  { slot: 'audio', label: '点击、碰撞与消除音效' },
+                  { slot: 'endCard', label: '挑战结束卡' },
+                ],
+                copyFields: ['title', 'cta', 'disclaimer', 'locale'],
+                showReferenceAssets: true,
+              },
+              resources: {
+                tileFaces: { status: '内置默认', treatment: '使用系统牌面' },
+                backgroundBoard: {
+                  status: '用户上传',
+                  treatment: '7e3fbaddfd99d9f0da4dec4054aeeb9bce19ceapetxC1_w658.webp',
+                },
+                animationEffects: { status: '内置默认', treatment: '使用系统特效' },
+                audio: { status: '内置默认', treatment: '使用系统音频' },
+                endCard: { status: '内置默认', treatment: '使用系统结束卡' },
+              },
+              copy: { title: '测试游戏', cta: '立即下载', disclaimer: '测试演示', locale: 'zh-CN' },
+              storeUrl: 'https://example.com/app',
+              delivery: {
+                network: 'applovin',
+                logicalWidth: 360,
+                logicalHeight: 640,
+                output: 'single-html',
+                maxBytes: 5242880,
+              },
+            },
             delivery: {
               label: 'AppLovin',
               logicalWidth: 360,
@@ -108,14 +143,27 @@ describe('versions page loading', () => {
     expect(document.querySelectorAll('iframe')).toHaveLength(0)
     expect(within(firstVersion).queryByText('需求 1')).not.toBeInTheDocument()
     expect(within(firstVersion).getByText('build-1')).toBeInTheDocument()
-    expect(within(firstVersion).getByText('当前产物')).toBeInTheDocument()
     expect(within(firstVersion).getByText('1.0 MB')).toBeInTheDocument()
     expect(within(firstVersion).getByText('校验通过')).toBeInTheDocument()
+    expect(within(firstVersion).getByText('下落补位')).toHaveAttribute('data-slot', 'badge')
+    expect(within(firstVersion).getByText('Agent 自由生成')).toHaveAttribute('data-slot', 'badge')
+    expect(within(firstVersion).queryByText('相同牌向中心碰撞并消除')).not.toBeInTheDocument()
+    expect(within(firstVersion).queryByText('AppLovin')).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: '交付规格' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(within(firstVersion).getByRole('link', { name: '预览' })).toHaveAttribute(
       'href',
       '/api/playable-tasks/task-1/artifact?kind=playable&version=build-1',
     )
     expect(within(firstVersion).getByRole('link', { name: '预览' })).toHaveAttribute('target', '_blank')
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(within(firstVersion).getByRole('button', { name: '查看完整配置' }))
+    expect(await screen.findByRole('dialog', { name: '构建配置' })).toHaveTextContent('测试游戏')
+    expect(screen.getByRole('dialog', { name: '构建配置' })).toHaveTextContent('相同牌向中心碰撞并消除')
+    expect(screen.getByRole('dialog', { name: '构建配置' })).toHaveTextContent('系统素材')
+    expect(screen.getByRole('dialog', { name: '构建配置' })).toHaveTextContent('上传的美女荷官、赌场背景与中心碰撞棋盘')
+    expect(screen.getByRole('dialog', { name: '构建配置' })).toHaveTextContent(
+      '7e3fbaddfd99d9f0da4dec4054aeeb9bce19ceapetxC1_w658.webp',
+    )
+    expect(screen.getByRole('dialog', { name: '构建配置' })).toHaveTextContent('AppLovin')
   })
 })

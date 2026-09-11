@@ -1116,6 +1116,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               status: build.status,
               version,
               current: Boolean(build.artifactKey && build.artifactKey === task.latestArtifactKey),
+              confirmation: sanitizeConfirmation(build.confirmation),
               delivery: {
                 label: deliveryProfile.label,
                 logicalWidth: delivery.logicalWidth,

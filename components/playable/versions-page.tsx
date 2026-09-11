@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { Download, ExternalLink, Loader2, MessageSquareText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import { BuildConfirmationSummary } from './build-confirmation-dialog'
 import { PlayableStudioShell, type PlayableTaskSummary } from './studio-shell'
 
 interface PlayableValidationSummary {
@@ -25,6 +27,7 @@ interface PlayableBuildSummary {
   status: 'building' | 'failed' | 'succeeded'
   version: number | null
   current: boolean
+  confirmation: ConfirmationProposal
   delivery: PlayableDeliverySummary
   validation: PlayableValidationSummary | null
   createdAt: string
@@ -111,7 +114,7 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
           <div>
             <h1 className="mt-1 text-3xl font-semibold tracking-tight">构建记录</h1>
             <p className="text-muted-foreground mt-3 max-w-2xl text-sm sm:text-base">
-              查看每次成功构建的交付规格、校验结果和历史版本。
+              查看每次成功构建的构建方案、校验结果和历史版本。
             </p>
           </div>
           <Input
@@ -144,7 +147,7 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
                       构建 ID
                     </th>
                     <th scope="col" className="px-5 py-3 font-medium">
-                      交付规格
+                      构建方案
                     </th>
                     <th scope="col" className="px-5 py-3 font-medium">
                       文件与校验
@@ -167,17 +170,14 @@ export function VersionsPage({ accountLabel, publicAccess = false }: { accountLa
                       <tr key={item.id} aria-label={`构建 ${item.id}`} className="transition-colors hover:bg-muted/20">
                         <td className="px-5 py-4 align-middle">
                           <p className="text-sm font-medium">{item.id}</p>
-                          {item.current && (
+                          {/* {item.current && (
                             <span className="mt-1 inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
                               当前产物
                             </span>
-                          )}
+                          )} */}
                         </td>
-                        <td className="px-5 py-4 align-middle">
-                          <p className="font-medium">{item.delivery.label}</p>
-                          <p className="text-muted-foreground mt-1 text-xs">
-                            {item.delivery.logicalWidth} × {item.delivery.logicalHeight} · 单文件 HTML
-                          </p>
+                        <td className="max-w-72 px-5 py-4 align-middle">
+                          <BuildConfirmationSummary buildId={item.id} confirmation={item.confirmation} />
                         </td>
                         <td className="px-5 py-4 align-middle">
                           <p className="font-medium">{item.validation ? formatBytes(item.validation.bytes) : '—'}</p>
