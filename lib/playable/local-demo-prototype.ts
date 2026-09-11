@@ -847,6 +847,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       return
     task.phase = 'building'
     task.confirmation = confirmation
+    task.updatedAt = new Date()
     const builds = this.builds.get(taskId) ?? []
     builds.push({
       id: buildId,
@@ -861,9 +862,15 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return task
   }
 
-  async compareAndSetPhase(taskId: string, expected: PlayableTaskPhase, next: PlayableTaskPhase): Promise<boolean> {
+  async compareAndSetPhase(
+    taskId: string,
+    buildId: string,
+    expected: PlayableTaskPhase,
+    next: PlayableTaskPhase,
+  ): Promise<boolean> {
     const task = this.tasks.get(taskId)
-    if (!task || task.phase !== expected) return false
+    const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
+    if (!task || task.phase !== expected || build?.status !== 'building') return false
     task.phase = next
     return true
   }
@@ -905,14 +912,39 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return true
   }
 
-  async markFailed(taskId: string, buildId: string): Promise<void> {
+  async touchBuild(taskId: string, buildId: string): Promise<boolean> {
     const task = this.tasks.get(taskId)
-    if (task && ['building', 'validating'].includes(task.phase)) task.phase = 'failed'
     const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
-    if (build?.status === 'building') {
+    if (!task || !['building', 'validating'].includes(task.phase) || build?.status !== 'building') return false
+    task.updatedAt = new Date()
+    return true
+  }
+
+  async failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['building', 'validating'].includes(task.phase) || !task.updatedAt || task.updatedAt >= staleBefore)
+      return false
+    task.phase = 'failed'
+    task.updatedAt = new Date()
+    const build = this.builds
+      .get(taskId)
+      ?.filter((candidate) => candidate.status === 'building')
+      .at(-1)
+    if (build) {
       build.status = 'failed'
       build.completedAt = new Date()
     }
+    return true
+  }
+
+  async markFailed(taskId: string, buildId: string): Promise<boolean> {
+    const task = this.tasks.get(taskId)
+    const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
+    if (!task || !['building', 'validating'].includes(task.phase) || build?.status !== 'building') return false
+    task.phase = 'failed'
+    build.status = 'failed'
+    build.completedAt = new Date()
+    return true
   }
 
   async listBuilds(taskId: string): Promise<PlayableBuildRecord[]> {
