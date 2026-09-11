@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Loader2, Paperclip, Sparkles } from 'lucide-react'
+import { ArrowRight, Loader2, Paperclip } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
 import type {
   ConfirmationProposal,
@@ -13,8 +13,6 @@ import type {
   RevisionProposal,
   VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
-import { User } from '@/components/auth/user'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
@@ -32,7 +30,6 @@ import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { PLAYABLE_MODES } from '@/lib/playable/template-registry'
 import type { PlayableModeId } from '@/lib/playable/types'
-import { PlayableStudioShell } from './studio-shell'
 import { usePlayableRecentTasks } from './recent-tasks-context'
 import { TemplatePreview } from './template-preview'
 import { TemplatePreviewDialog } from './template-preview-dialog'
@@ -86,10 +83,6 @@ export function PlayableWorkspace({
   initialBuildId,
   initialBuildFailureMessage,
   initialValidation = null,
-  localDemo = false,
-  localCodex = false,
-  localHarness = false,
-  publicAccess = false,
   initialConversation = [],
   initialAssets = [],
   initialVideoAnalysisStatus,
@@ -230,24 +223,7 @@ export function PlayableWorkspace({
 
   return (
     <main className="bg-background flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex h-14 shrink-0 items-center justify-between border-b px-4 sm:px-6">
-        <Link href="/" className="flex items-center gap-2 font-semibold" aria-label="试玩工作台首页">
-          <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
-            <Sparkles className="size-4" />
-          </span>
-          Playable Studio
-        </Link>
-        {localDemo ? (
-          <Badge variant="secondary">本地演示 · 数据不保存</Badge>
-        ) : localCodex || localHarness ? (
-          <Badge variant="secondary">{localHarness ? '本地 Harness · 线上 Agent' : '本地 Codex · 实际数据'}</Badge>
-        ) : publicAccess ? (
-          <Badge variant="secondary">公开体验</Badge>
-        ) : (
-          <User />
-        )}
-      </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(22rem,0.78fr)_minmax(32rem,1.22fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[2fr_3fr]">
         <ChatWorkspace
           taskId={taskId}
           initialPrompt={initialPrompt}
@@ -309,7 +285,6 @@ const templatePrompts: Record<PlayableModeId, string> = {
 
 export function PlayableHome({
   user,
-  authProvider,
   localDemo = false,
   localCodex = false,
   localHarness = false,
@@ -468,126 +443,120 @@ export function PlayableHome({
     })
   }
 
-  const accountLabel = publicAccess
-    ? '公开体验 · 任务共享'
-    : user?.name || user?.username || (authProvider === 'github' ? 'GitHub 用户' : 'Playable Studio')
-
   return (
-    <PlayableStudioShell activeSection="home" accountLabel={accountLabel}>
-      <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-24 lg:pb-16">
-        <section className="mx-auto max-w-4xl text-center" aria-labelledby="home-heading">
-          <h1 id="home-heading" className="text-3xl font-semibold tracking-tight sm:text-4xl">
-            想做一个什么样的试玩？
-          </h1>
-          <p className="text-muted-foreground mt-3 text-sm sm:text-base">
-            说说你的玩法想法，或上传参考素材，我们从这里开始。
-          </p>
-          <div className="bg-background mt-6 rounded-2xl border p-2.5 text-left">
-            <Textarea
-              aria-label="新试玩需求"
-              placeholder="描述玩法、视觉方向，或上传参考素材…"
-              className="min-h-20 resize-none border-0 px-2.5 py-2 text-base shadow-none focus-visible:ring-0"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              disabled={!user || creating || Boolean(creatingTemplate)}
-            />
-            {attachments.length > 0 && (
-              <div className="mb-3 px-1">
-                <AssetPreviewList
-                  ariaLabel="已选择的参考素材"
-                  items={attachments.map(({ id, file, previewUrl }) => ({
-                    id,
-                    filename: file.name,
-                    mimeType: file.type,
-                    size: file.size,
-                    previewUrl,
-                  }))}
-                  disabled={creating}
-                  onRemove={(item) => removeAttachment(item.id)}
-                />
-              </div>
-            )}
-            <div className="flex items-center justify-between gap-2">
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
-                onClick={() => attachmentInput.current?.click()}
-                aria-label="添加参考图片或视频"
-              >
-                <Paperclip aria-hidden="true" />
-              </Button>
-              <input
-                ref={attachmentInput}
-                className="sr-only"
-                type="file"
-                multiple
-                accept={PLAYABLE_REFERENCE_ACCEPT}
-                aria-label="上传参考图片或视频"
-                disabled={!user || creating}
-                onChange={(event) => {
-                  addAttachments(event.target.files)
-                  event.target.value = ''
-                }}
+    <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-24 lg:pb-16">
+      <section className="mx-auto max-w-4xl text-center" aria-labelledby="home-heading">
+        <h1 id="home-heading" className="text-3xl font-semibold tracking-tight sm:text-4xl">
+          想做一个什么样的试玩？
+        </h1>
+        <p className="text-muted-foreground mt-3 text-sm sm:text-base">
+          说说你的玩法想法，或上传参考素材，我们从这里开始。
+        </p>
+        <div className="bg-background mt-6 rounded-2xl border p-2.5 text-left">
+          <Textarea
+            aria-label="新试玩需求"
+            placeholder="描述玩法、视觉方向，或上传参考素材…"
+            className="min-h-20 resize-none border-0 px-2.5 py-2 text-base shadow-none focus-visible:ring-0"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            disabled={!user || creating || Boolean(creatingTemplate)}
+          />
+          {attachments.length > 0 && (
+            <div className="mb-3 px-1">
+              <AssetPreviewList
+                ariaLabel="已选择的参考素材"
+                items={attachments.map(({ id, file, previewUrl }) => ({
+                  id,
+                  filename: file.name,
+                  mimeType: file.type,
+                  size: file.size,
+                  previewUrl,
+                }))}
+                disabled={creating}
+                onRemove={(item) => removeAttachment(item.id)}
               />
-              <Button
-                size="icon"
-                className="rounded-full"
-                onClick={() => void createPlayable()}
-                disabled={!user || (!prompt.trim() && attachments.length === 0) || creating}
-                aria-label="新建试玩"
-              >
-                {creating ? <Loader2 className="animate-spin" /> : <ArrowRight />}
-              </Button>
             </div>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
+              onClick={() => attachmentInput.current?.click()}
+              aria-label="添加参考图片或视频"
+            >
+              <Paperclip aria-hidden="true" />
+            </Button>
+            <input
+              ref={attachmentInput}
+              className="sr-only"
+              type="file"
+              multiple
+              accept={PLAYABLE_REFERENCE_ACCEPT}
+              aria-label="上传参考图片或视频"
+              disabled={!user || creating}
+              onChange={(event) => {
+                addAttachments(event.target.files)
+                event.target.value = ''
+              }}
+            />
+            <Button
+              size="icon"
+              className="rounded-full"
+              onClick={() => void createPlayable()}
+              disabled={!user || (!prompt.trim() && attachments.length === 0) || creating}
+              aria-label="新建试玩"
+            >
+              {creating ? <Loader2 className="animate-spin" /> : <ArrowRight />}
+            </Button>
           </div>
-          {!user && !publicAccess && <p className="text-muted-foreground mt-3 text-sm">登录后即可创建并保存试玩。</p>}
-          {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-        </section>
+        </div>
+        {!user && !publicAccess && <p className="text-muted-foreground mt-3 text-sm">登录后即可创建并保存试玩。</p>}
+        {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
+      </section>
 
-        <section className="mt-10" aria-labelledby="quick-start-heading">
-          <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 id="quick-start-heading" className="font-semibold">
-              从玩法模板快速开始
-            </h2>
-            <Link href="/best-practices" className="text-muted-foreground hover:text-foreground text-sm">
-              浏览全部模板 →
-            </Link>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {PLAYABLE_MODES.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                className="group overflow-hidden rounded-xl border text-left transition-all hover:-translate-y-0.5 hover:bg-muted/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
-                onClick={() => setPreviewMode(mode.id)}
-                aria-label={`预览${mode.label}模板`}
-              >
-                <div className="relative aspect-[4/5] w-full border-b">
-                  <TemplatePreview mode={mode.id} title={`${mode.label}模板封面`} className="absolute inset-0" />
-                  <span className="bg-background/90 absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap shadow-sm backdrop-blur-sm">
-                    点击试玩
-                  </span>
-                </div>
-                <div className="min-h-24 px-3 py-3">
-                  <h3 className="text-sm font-semibold">{mode.label}</h3>
-                  <p className="text-muted-foreground mt-1 text-xs leading-5">{mode.description}</p>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-        <TemplatePreviewDialog
-          mode={PLAYABLE_MODES.find((mode) => mode.id === previewMode)}
-          creating={Boolean(previewMode && creatingTemplate === previewMode)}
-          canStart={Boolean(user)}
-          onOpenChange={(open) => {
-            if (!open) setPreviewMode(undefined)
-          }}
-          onStart={(mode) => void createFromTemplate(mode.id)}
-        />
-      </main>
-    </PlayableStudioShell>
+      <section className="mt-10" aria-labelledby="quick-start-heading">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 id="quick-start-heading" className="font-semibold">
+            从玩法模板快速开始
+          </h2>
+          <Link href="/best-practices" className="text-muted-foreground hover:text-foreground text-sm">
+            浏览全部模板 →
+          </Link>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {PLAYABLE_MODES.map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              className="group overflow-hidden rounded-xl border text-left transition-all hover:-translate-y-0.5 hover:bg-muted/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+              onClick={() => setPreviewMode(mode.id)}
+              aria-label={`预览${mode.label}模板`}
+            >
+              <div className="relative aspect-[4/5] w-full border-b">
+                <TemplatePreview mode={mode.id} title={`${mode.label}模板封面`} className="absolute inset-0" />
+                <span className="bg-background/90 absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap shadow-sm backdrop-blur-sm">
+                  点击试玩
+                </span>
+              </div>
+              <div className="min-h-24 px-3 py-3">
+                <h3 className="text-sm font-semibold">{mode.label}</h3>
+                <p className="text-muted-foreground mt-1 text-xs leading-5">{mode.description}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+      <TemplatePreviewDialog
+        mode={PLAYABLE_MODES.find((mode) => mode.id === previewMode)}
+        creating={Boolean(previewMode && creatingTemplate === previewMode)}
+        canStart={Boolean(user)}
+        onOpenChange={(open) => {
+          if (!open) setPreviewMode(undefined)
+        }}
+        onStart={(mode) => void createFromTemplate(mode.id)}
+      />
+    </main>
   )
 }

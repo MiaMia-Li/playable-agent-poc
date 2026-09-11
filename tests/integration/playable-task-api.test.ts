@@ -332,6 +332,10 @@ class MemoryRepository implements PlayableTaskRepository {
     return this.builds.filter((build) => build.taskId === taskId)
   }
 
+  async listBuildsForTasks(taskIds: string[]): Promise<PlayableBuildRecord[]> {
+    return this.builds.filter((build) => taskIds.includes(build.taskId))
+  }
+
   async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
     return this.builds.find((build) => build.taskId === taskId && build.id === buildId)
   }
@@ -530,6 +534,7 @@ describe('playable task API', () => {
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
     const responses = await Promise.all([
       harness.handlers.list(request('/api/playable-tasks')),
+      harness.handlers.library(request('/api/playable-tasks/library')),
       harness.handlers.create(request('/api/playable-tasks', 'POST', { prompt: 'game' })),
       harness.handlers.rename(request('/api/playable-tasks/owned', 'PATCH', { title: 'Renamed' }), context),
       harness.handlers.remove(request('/api/playable-tasks/owned', 'DELETE'), context),
@@ -540,7 +545,7 @@ describe('playable task API', () => {
       harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), context),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 401])
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 401, 401])
   })
 
   it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
@@ -2510,6 +2515,82 @@ describe('playable task API', () => {
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
     expect(failedVersion.status).toBe(404)
+  })
+
+  it('returns owned library metadata through one bulk build lookup', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.title = 'Owned playable'
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build-2/playable.html'
+    harness.repository.builds.push(
+      {
+        id: 'build-1',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: 'users/user-1/tasks/owned/build-1/playable.html',
+        createdAt: new Date(1),
+        completedAt: new Date(2),
+      },
+      {
+        id: 'failed-build',
+        taskId: 'owned',
+        status: 'failed',
+        confirmation,
+        artifactKey: null,
+        createdAt: new Date(3),
+        completedAt: new Date(4),
+      },
+      {
+        id: 'build-2',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: task.latestArtifactKey,
+        validation: createValidationReport({
+          bytes: 1024,
+          offlineResources: true,
+          responsiveViewport: true,
+          delivery: confirmation.delivery,
+        }),
+        createdAt: new Date(5),
+        completedAt: new Date(6),
+      },
+      {
+        id: 'foreign-build',
+        taskId: 'foreign',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: 'users/user-2/tasks/foreign/build/playable.html',
+        createdAt: new Date(7),
+        completedAt: new Date(8),
+      },
+    )
+    const listBuildsForTasks = vi.spyOn(harness.repository, 'listBuildsForTasks')
+
+    const response = await harness.handlers.library(request('/api/playable-tasks/library'))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
+    expect(listBuildsForTasks).toHaveBeenCalledWith(['owned'])
+    expect(body.tasks).toEqual([expect.objectContaining({ id: 'owned', title: 'Owned playable', hasArtifact: true })])
+    expect(body.versions).toEqual([
+      expect.objectContaining({
+        id: 'build-2',
+        taskId: 'owned',
+        version: 2,
+        current: true,
+        confirmation,
+        delivery: expect.objectContaining({ label: 'AppLovin', logicalWidth: 360, logicalHeight: 640 }),
+        validation: expect.objectContaining({ bytes: 1024, deliveryCompliant: true }),
+      }),
+      expect.objectContaining({ id: 'build-1', taskId: 'owned', version: 1, current: false }),
+    ])
+    expect(JSON.stringify(body)).not.toContain('failed-build')
+    expect(JSON.stringify(body)).not.toContain('foreign')
+    expect(JSON.stringify(body)).not.toContain('artifactKey')
+    expect(JSON.stringify(body)).not.toContain('users/user-1')
   })
 
   it.each(['failed', 'validating'] as const)(

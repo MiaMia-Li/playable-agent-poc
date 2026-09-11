@@ -76,7 +76,6 @@ describe('PlayableWorkspace', () => {
   it('does not expose shared AI credential controls to public users', () => {
     render(<PlayableWorkspace taskId="task-7" publicAccess />)
 
-    expect(screen.getByText('公开体验')).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: '配置 OpenAI API Key' })).not.toBeInTheDocument()
     expect(screen.queryByText(/自备 API Key/)).not.toBeInTheDocument()
   })
@@ -314,6 +313,7 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('button', { name: '横屏预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '刷新预览' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '取消静音预览' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '在新标签页打开试玩' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
   })
 
@@ -1607,6 +1607,11 @@ describe('PlayableWorkspace', () => {
     render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="build-1" />)
 
     expect(screen.getByRole('group', { name: '预览控制' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '在新标签页打开试玩' })).toHaveAttribute(
+      'href',
+      '/api/playable-tasks/task-7/artifact?kind=playable',
+    )
+    expect(screen.getByRole('link', { name: '在新标签页打开试玩' })).toHaveAttribute('target', '_blank')
     expect(screen.getByRole('button', { name: '下载交付物' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '验收通过' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '返回修改' })).not.toBeInTheDocument()

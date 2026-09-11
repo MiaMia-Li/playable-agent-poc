@@ -412,6 +412,16 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return rows.map(toBuild)
   }
 
+  async listBuildsForTasks(taskIds: string[]): Promise<PlayableBuildRecord[]> {
+    if (taskIds.length === 0) return []
+    const rows = await db
+      .select()
+      .from(playableTaskBuilds)
+      .where(inArray(playableTaskBuilds.taskId, taskIds))
+      .orderBy(asc(playableTaskBuilds.createdAt))
+    return rows.map(toBuild)
+  }
+
   async findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined> {
     const [row] = await db
       .select()

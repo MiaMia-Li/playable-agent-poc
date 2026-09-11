@@ -187,6 +187,7 @@ export interface PlayableTaskRepository {
   requestRevision(taskId: string, userId: string): Promise<boolean>
   markFailed(taskId: string, buildId: string): Promise<void>
   listBuilds(taskId: string): Promise<PlayableBuildRecord[]>
+  listBuildsForTasks?(taskIds: string[]): Promise<PlayableBuildRecord[]>
   findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined>
   appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void>
   listEvents(taskId: string): Promise<PlayableEventRecord[]>
@@ -364,6 +365,18 @@ function safeTaskState(task: PlayableTaskRecord) {
     requirementBrief: task.requirementBrief ? sanitizeRequirementBrief(task.requirementBrief) : null,
     confirmation: task.phase !== 'draft' && task.confirmation ? sanitizeConfirmation(task.confirmation) : null,
     pendingRevision: task.pendingRevision ? sanitizeRevisionProposal(task.pendingRevision) : null,
+  }
+}
+
+function taskListItem(task: PlayableTaskRecord) {
+  return {
+    id: task.id,
+    title: task.title ?? null,
+    prompt: safeString(task.prompt),
+    ...safeTaskState(task),
+    mode: task.confirmation?.mode ?? null,
+    createdAt: task.createdAt?.toISOString() ?? null,
+    updatedAt: task.updatedAt?.toISOString() ?? null,
   }
 }
 
@@ -1069,16 +1082,60 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!userId) return jsonError(401, 'Unauthorized')
       const tasks = await dependencies.repository.listOwnedTasks(userId)
       return Response.json({
-        tasks: tasks.map((task) => ({
-          id: task.id,
-          title: task.title ?? null,
-          prompt: safeString(task.prompt),
-          ...safeTaskState(task),
-          mode: task.confirmation?.mode ?? null,
-          createdAt: task.createdAt?.toISOString() ?? null,
-          updatedAt: task.updatedAt?.toISOString() ?? null,
-        })),
+        tasks: tasks.map(taskListItem),
       })
+    },
+
+    async library(request: NextRequest): Promise<Response> {
+      const userId = await dependencies.authenticate(request)
+      if (!userId) return jsonError(401, 'Unauthorized')
+      const tasks = await dependencies.repository.listOwnedTasks(userId)
+      const artifactTasks = tasks.filter((task) => task.latestArtifactKey)
+      const taskIds = artifactTasks.map((task) => task.id)
+      const builds = dependencies.repository.listBuildsForTasks
+        ? await dependencies.repository.listBuildsForTasks(taskIds)
+        : (await Promise.all(taskIds.map((taskId) => dependencies.repository.listBuilds(taskId)))).flat()
+      const buildsByTask = new Map<string, PlayableBuildRecord[]>()
+      for (const build of builds) {
+        const taskBuilds = buildsByTask.get(build.taskId) ?? []
+        taskBuilds.push(build)
+        buildsByTask.set(build.taskId, taskBuilds)
+      }
+      const taskItems = tasks.map(taskListItem)
+      const versions = artifactTasks.flatMap((task) => {
+        let successfulVersion = 0
+        return (buildsByTask.get(task.id) ?? []).flatMap((build) => {
+          if (build.status !== 'succeeded') return []
+          const version = ++successfulVersion
+          const delivery = build.confirmation.delivery
+          const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(delivery))
+          return [
+            {
+              id: build.id,
+              taskId: task.id,
+              status: build.status,
+              version,
+              current: Boolean(build.artifactKey && build.artifactKey === task.latestArtifactKey),
+              confirmation: sanitizeConfirmation(build.confirmation),
+              delivery: {
+                label: deliveryProfile.label,
+                logicalWidth: delivery.logicalWidth,
+                logicalHeight: delivery.logicalHeight,
+                output: delivery.output,
+              },
+              validation: safeValidationSummary(build.validation, delivery),
+              createdAt: build.createdAt.toISOString(),
+              completedAt: build.completedAt?.toISOString() ?? null,
+            },
+          ]
+        })
+      })
+      versions.sort(
+        (left, right) =>
+          new Date(right.completedAt ?? right.createdAt).getTime() -
+          new Date(left.completedAt ?? left.createdAt).getTime(),
+      )
+      return Response.json({ tasks: taskItems, versions }, { headers: { 'Cache-Control': 'private, no-store' } })
     },
 
     async create(request: NextRequest): Promise<Response> {
