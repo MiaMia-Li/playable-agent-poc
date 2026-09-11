@@ -191,6 +191,29 @@ afterEach(async () => {
 })
 
 describe('runPlayableBuild', () => {
+  it('seeds selected template output before the remote build agent runs', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-template-seed')
+    input.confirmation = {
+      ...input.confirmation,
+      sourceTemplateId: 'zeus_scatter',
+      routing: { match: 'freeform', confidence: 1, differences: ['Modify selected source'] },
+    }
+    input.baseHtml = await readFile('public/playable-templates/center_collision.html', 'utf8')
+    let inspected = false
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ workspace }) => {
+        expect(await readFile(path.join(workspace, 'output.html'), 'utf8')).toBe(input.baseHtml)
+        expect(await readFile(path.join(workspace, 'current-playable.html'), 'utf8')).toBe(input.baseHtml)
+        inspected = true
+      },
+    })
+    expect(inspected).toBe(true)
+    expect(result.html).toBe(input.baseHtml)
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+  })
+
   it('classifies Sandbox allocation failures before workspace setup', async () => {
     const providerError = Object.assign(new Error('private Vercel response'), { statusCode: 402 })
 

@@ -1,3 +1,4 @@
+import type { SourceTemplateId } from './types'
 import { and, asc, desc, eq, gte, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
 import {
@@ -12,7 +13,6 @@ import {
   tasks,
 } from '@/lib/db/schema'
 import { generateId } from '@/lib/utils/id'
-import { parsePersistedConfirmation, parsePersistedRequirementBrief } from './persisted-schema-compat'
 import {
   confirmationProposalSchema,
   gameplayBlueprintSchema,
@@ -57,8 +57,8 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     userId: row.userId,
     prompt: row.prompt,
     phase: playableTaskPhaseSchema.parse(row.phase),
-    requirementBrief: row.requirementBrief ? parsePersistedRequirementBrief(row.requirementBrief) : null,
-    confirmation: row.confirmation ? parsePersistedConfirmation(row.confirmation) : null,
+    requirementBrief: row.requirementBrief ? requirementBriefSchema.parse(row.requirementBrief) : null,
+    confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
     pendingRevision: row.pendingRevision ? revisionProposalSchema.parse(row.pendingRevision) : null,
     latestArtifactKey: row.latestArtifactKey,
     latestValidation: row.latestValidation,
@@ -73,7 +73,7 @@ function toBuild(row: typeof playableTaskBuilds.$inferSelect): PlayableBuildReco
     id: row.id,
     taskId: row.taskId,
     status: row.status,
-    confirmation: parsePersistedConfirmation(row.confirmation),
+    confirmation: confirmationProposalSchema.parse(row.confirmation),
     revision: row.revision ? revisionProposalSchema.parse(row.revision) : null,
     artifactKey: row.artifactKey,
     validation: row.validation,
@@ -129,7 +129,12 @@ function toReferenceSelection(row: typeof playableReferenceSelections.$inferSele
 }
 
 export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
-  async createTask(input: { id: string; userId: string; prompt: string }): Promise<PlayableTaskRecord> {
+  async createTask(input: {
+    id: string
+    userId: string
+    prompt: string
+    sourceTemplateId?: SourceTemplateId
+  }): Promise<PlayableTaskRecord> {
     const [task] = await db
       .insert(tasks)
       .values({
@@ -139,7 +144,10 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         selectedAgent: 'codex',
         status: 'pending',
         phase: 'draft',
-        requirementBrief: createRequirementBrief(),
+        requirementBrief: {
+          ...createRequirementBrief(),
+          ...(input.sourceTemplateId ? { sourceTemplateId: input.sourceTemplateId } : {}),
+        },
         pendingRevision: null,
         progress: 0,
         logs: [],

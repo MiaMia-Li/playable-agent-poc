@@ -31,7 +31,7 @@ export type RequirementToolName = (typeof requirementToolNames)[number]
 
 export const requirementToolCallSchema = z.strictObject({
   name: z.enum(requirementToolNames),
-  brief: requirementBriefSchema.nullable(),
+  brief: requirementBriefSchema.omit({ sourceTemplateId: true }).nullable(),
   request: requirementInputRequestSchema.nullable(),
   confirmation: generatedConfirmationProposalSchema.nullable(),
   revision: revisionPlanSchema.nullable(),

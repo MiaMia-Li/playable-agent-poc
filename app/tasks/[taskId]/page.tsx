@@ -1,3 +1,4 @@
+import { bindSourceTemplate, selectedSourceTemplate } from '@/lib/playable/source-template'
 import { notFound } from 'next/navigation'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
@@ -35,11 +36,16 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
     repository.listEvents(task.id),
     repository.listReferenceSelections?.(task.id, session.user.id) ?? Promise.resolve([]),
   ])
+  const sourceTemplateId = selectedSourceTemplate(task)
   const initialConversation = restorePlayableConversation(
     storedMessages,
     task.pendingRevision,
     builds,
     referenceSelections,
+  ).map((message) =>
+    message.confirmation
+      ? { ...message, confirmation: bindSourceTemplate(message.confirmation, sourceTemplateId) }
+      : message,
   )
   const initialBuildFailureMessage =
     task.phase === 'failed' ? events.findLast((event) => event.type === 'build_failed')?.message : undefined
@@ -49,7 +55,13 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
       taskId={task.id}
       initialPrompt={task.prompt}
       initialPhase={task.phase}
-      initialProposal={task.phase === 'draft' ? undefined : (task.confirmation ?? undefined)}
+      initialProposal={
+        task.phase === 'draft'
+          ? undefined
+          : task.confirmation
+            ? bindSourceTemplate(task.confirmation, sourceTemplateId)
+            : undefined
+      }
       initialRevision={task.pendingRevision ?? undefined}
       initialBrief={task.requirementBrief ?? undefined}
       initialConversation={initialConversation}

@@ -7,11 +7,6 @@ import {
   playableTaskPhases,
   revisionProposalSchema,
 } from '@/lib/playable/schemas'
-import {
-  parsePersistedConfirmation,
-  parsePersistedRequirementBrief,
-} from '@/lib/playable/persisted-schema-compat'
-import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 
 const validProposal = {
   routing: { match: 'approximate', confidence: 0.84, differences: ['奖励表现使用模板默认效果'] },
@@ -41,23 +36,6 @@ const validProposal = {
     maxBytes: 5242880,
   },
 } as const
-
-describe('persisted schema compatibility', () => {
-  it('accepts and removes the deprecated source template ID from persisted briefs', () => {
-    const brief = createRequirementBrief('制作 3D 纵深麻将')
-
-    expect(parsePersistedRequirementBrief({ ...brief, sourceTemplateId: 'perspective_3d' })).toEqual(brief)
-  })
-
-  it('accepts and removes the deprecated source template ID from persisted confirmations', () => {
-    expect(
-      parsePersistedConfirmation({
-        ...validProposal,
-        sourceTemplateId: 'perspective_3d',
-      }),
-    ).toEqual(validProposal)
-  })
-})
 
 describe('confirmation proposal schema', () => {
   it('accepts all nine consolidated confirmation categories and preserves the exact store URL', () => {

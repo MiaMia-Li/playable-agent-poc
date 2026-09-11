@@ -1,27 +1,20 @@
 'use client'
 
+import { sourceTemplateIds, type SourceTemplateId } from '@/lib/playable/types'
+
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { PLAYABLE_MODES } from '@/lib/playable/template-registry'
-import type { PlayableModeId } from '@/lib/playable/types'
+import { PLAYABLE_TEMPLATES, templatePrompts, type PlayableTemplateId } from '@/lib/playable/template-catalog'
 import { TemplatePreview } from './template-preview'
 import { TemplatePreviewDialog } from './template-preview-dialog'
 
-const templatePrompts: Record<PlayableModeId, string> = {
-  center_collision: '基于「中心碰撞」玩法模板开始迭代：保留相同牌向中心碰撞并消除计分的核心玩法。',
-  top_rack: '基于「上方牌架」玩法模板开始迭代：保留可见牌进入四槽牌架并配对清除的核心玩法。',
-  gravity_fill: '基于「下落补位」玩法模板开始迭代：保留网格配对消除、列下落和顶部补位的核心玩法。',
-  perspective_3d:
-    '基于「3D 纵深」玩法模板开始迭代：使用 8×8 外环与 4×4 中空的八层牌墙，同牌抬起后在中心碰撞碎裂并揭示下一层。',
-}
-
 export function BestPracticesPage() {
   const router = useRouter()
-  const [creatingMode, setCreatingMode] = useState<PlayableModeId>()
-  const [previewMode, setPreviewMode] = useState<PlayableModeId>()
+  const [creatingMode, setCreatingMode] = useState<PlayableTemplateId>()
+  const [previewMode, setPreviewMode] = useState<PlayableTemplateId>()
   const [error, setError] = useState('')
 
-  async function startFromTemplate(mode: PlayableModeId) {
+  async function startFromTemplate(mode: PlayableTemplateId) {
     if (creatingMode) return
     setCreatingMode(mode)
     setError('')
@@ -29,7 +22,10 @@ export function BestPracticesPage() {
       const response = await fetch('/api/playable-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: templatePrompts[mode] }),
+        body: JSON.stringify({
+          prompt: templatePrompts[mode],
+          ...(sourceTemplateIds.includes(mode as SourceTemplateId) ? { sourceTemplateId: mode } : {}),
+        }),
       })
       if (!response.ok) throw new Error('无法从模板创建试玩')
       const body = (await response.json()) as { task: { id: string } }
@@ -55,7 +51,7 @@ export function BestPracticesPage() {
       {error && <p className="text-destructive mt-5 text-sm">{error}</p>}
 
       <section className="mt-9 grid gap-5 md:grid-cols-2" aria-label="玩法模板">
-        {PLAYABLE_MODES.map((mode) => (
+        {PLAYABLE_TEMPLATES.map((mode) => (
           <button
             key={mode.id}
             type="button"
@@ -82,7 +78,7 @@ export function BestPracticesPage() {
         ))}
       </section>
       <TemplatePreviewDialog
-        mode={PLAYABLE_MODES.find((mode) => mode.id === previewMode)}
+        mode={PLAYABLE_TEMPLATES.find((mode) => mode.id === previewMode)}
         creating={Boolean(previewMode && creatingMode === previewMode)}
         onOpenChange={(open) => {
           if (!open) setPreviewMode(undefined)

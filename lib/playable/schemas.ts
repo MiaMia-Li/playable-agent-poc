@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { APPLOVIN_MAX_BYTES, DELIVERY_PROFILE_IDS, matchesDeliveryProfileSnapshot } from './delivery-standards'
 import { marketResearchReportSchema } from './research/schemas'
-import { playableModeIds } from './types'
+import { playableModeIds, sourceTemplateIds } from './types'
 
 export const videoAnalysisStatuses = ['pending', 'preprocessing', 'analyzing', 'succeeded', 'failed'] as const
 
@@ -205,6 +205,7 @@ function validateConfirmationPresentation(
 
 export const confirmationProposalSchema = z
   .strictObject({
+    sourceTemplateId: z.enum(sourceTemplateIds).optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),
     ...confirmationProposalShape,
@@ -255,6 +256,7 @@ export const requirementInputRequestSchema = z.strictObject({
 })
 
 export const requirementBriefSchema = z.strictObject({
+  sourceTemplateId: z.enum(sourceTemplateIds).optional(),
   version: z.literal(1),
   summary: z.string().trim().max(600),
   gameplay: z.strictObject({

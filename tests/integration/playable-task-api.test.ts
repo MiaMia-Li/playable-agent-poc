@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import { templatePrompts } from '@/lib/playable/template-catalog'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
@@ -1923,6 +1925,35 @@ describe('playable task API', () => {
     expect(harness.repository.builds).toEqual([
       expect.objectContaining({ status: 'succeeded', artifactKey: task?.latestArtifactKey }),
     ])
+  })
+
+  it.each(['structured', 'legacy'])('loads selected source HTML for %s template tasks', async (selection) => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    if (selection === 'structured')
+      task.requirementBrief = { ...createRequirementBrief(), sourceTemplateId: 'zeus_scatter' }
+    else task.prompt = templatePrompts.zeus_scatter.replace('基于已选模板修改，', '使用 freeform 路线，')
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'template-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirmation: expect.objectContaining({
+          sourceTemplateId: 'zeus_scatter',
+          routing: expect.objectContaining({ match: 'freeform' }),
+        }),
+        baseHtml: await readFile(
+          'skills/mahjong-pair-match-playable/assets/templates/zeus_scatter/source.html',
+          'utf8',
+        ),
+      }),
+    )
   })
 
   it('publishes an AppLovin artifact that only fails delivery size compliance', async () => {
