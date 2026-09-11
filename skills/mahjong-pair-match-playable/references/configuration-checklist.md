@@ -1,6 +1,8 @@
 # Configuration Checklist
 
-Use this after the user selects an included mode or accepts an approximate Plugin match. Produce one consolidated confirmation table and wait for one approval before implementation. Do not split these decisions into the former eight-stage confirmation workflow.
+Use this after the user selects a standalone HTML template, an included mode, or a custom gameplay route. Produce one consolidated confirmation table and wait for one approval before implementation. Do not split these decisions into the former eight-stage confirmation workflow.
+
+For a standalone template, record `sourceTemplateId`, its original interaction, and every requested change to board outcomes, stage order, rewards, timing, or ending. Reuse its embedded visuals/audio by default and describe missing assets explicitly. The Mahjong-specific selection/mismatch/default-asset rows below apply only where relevant to that game. An existing approved `confirmed-config.json` authorizes the build; do not ask for the same approval again.
 
 ## Confirmation table
 
@@ -41,6 +43,8 @@ Users may replace any proposed default by uploading their own resources before a
 - Do not use WebGL unless required; if used, add initialization and context-loss fallbacks.
 
 ## Acceptance
+
+For standalone templates, use the selected template reference and confirmed changes for gameplay acceptance; the Mahjong mismatch and match-count rules below do not apply. Check delivery, audio, navigation, and ending for every route.
 
 - Initial state is gameplay, not the end card.
 - Mismatch changes neither score nor board state.
