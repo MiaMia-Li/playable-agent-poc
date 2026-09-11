@@ -50,7 +50,8 @@ interface PlayableStudioShellProps {
   accountLabel: string
   publicAccess?: boolean
   children: React.ReactNode
-  tasks?: PlayableTaskSummary[]
+  /** `null` means the caller is loading tasks and the existing shared list should be preserved. */
+  tasks?: PlayableTaskSummary[] | null
 }
 
 const navigation = [
@@ -371,7 +372,7 @@ function PlayableStudioShellContent({
   const replaceTasks = recentTasks?.replaceTasks
 
   useEffect(() => {
-    if (providedTasks !== undefined) replaceTasks?.(providedTasks)
+    if (providedTasks !== undefined && providedTasks !== null) replaceTasks?.(providedTasks)
   }, [providedTasks, replaceTasks])
 
   return (
@@ -430,7 +431,7 @@ export function PlayableStudioShell(props: PlayableStudioShellProps) {
   const recentTasks = usePlayableRecentTasks()
   if (!recentTasks) {
     return (
-      <PlayableRecentTasksProvider initialTasks={props.tasks}>
+      <PlayableRecentTasksProvider initialTasks={props.tasks === null ? [] : props.tasks}>
         <PlayableStudioShellContent {...props} />
       </PlayableRecentTasksProvider>
     )

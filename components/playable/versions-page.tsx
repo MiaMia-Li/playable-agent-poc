@@ -57,7 +57,7 @@ function validationLabel(validation: PlayableValidationSummary | null) {
 }
 
 export function VersionsPage({ accountLabel, publicAccess = false }: { accountLabel: string; publicAccess?: boolean }) {
-  const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
+  const [tasks, setTasks] = useState<PlayableTaskSummary[] | null>(null)
   const [versions, setVersions] = useState<VersionListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

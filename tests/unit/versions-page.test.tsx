@@ -9,6 +9,7 @@ vi.mock('next/navigation', () => ({
 }))
 
 import { VersionsPage } from '@/components/playable/versions-page'
+import { PlayableRecentTasksProvider } from '@/components/playable/recent-tasks-context'
 
 afterEach(() => {
   cleanup()
@@ -17,6 +18,30 @@ afterEach(() => {
 })
 
 describe('versions page loading', () => {
+  it('keeps recent conversations visible while build records are loading', () => {
+    const existingTask = {
+      id: 'existing-task',
+      title: '已经加载的最近对话',
+      prompt: '创建一个试玩',
+      phase: 'ready' as const,
+      createdAt: '2026-09-10T00:00:00.000Z',
+      updatedAt: '2026-09-10T00:00:00.000Z',
+      hasArtifact: true,
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    )
+
+    render(
+      <PlayableRecentTasksProvider initialTasks={[existingTask]}>
+        <VersionsPage accountLabel="测试账号" />
+      </PlayableRecentTasksProvider>,
+    )
+
+    expect(screen.getByRole('link', { name: /已经加载的最近对话/ })).toBeInTheDocument()
+  })
+
   it('loads build records once without embedded previews and links previews to a new tab', async () => {
     const tasks = Array.from({ length: 3 }, (_, index) => ({
       id: `task-${index + 1}`,
