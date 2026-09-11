@@ -10,5 +10,10 @@ export default function BestPractices() {
   const session = localDemo ? localDemoSession : localCodex || localHarness ? localCodexSession : publicPlayableSession
   const accountLabel = localDemo ? '本地演示' : localCodex ? '本地 Codex' : localHarness ? '本地 Harness' : '公开体验'
 
-  return <BestPracticesPage accountLabel={session?.user.name || session?.user.username || accountLabel} />
+  return (
+    <BestPracticesPage
+      accountLabel={session?.user.name || session?.user.username || accountLabel}
+      publicAccess={!localDemo && !localCodex && !localHarness}
+    />
+  )
 }

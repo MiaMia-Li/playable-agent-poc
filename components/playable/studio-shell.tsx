@@ -5,7 +5,6 @@ import Link from 'next/link'
 import {
   Clock3,
   Ellipsis,
-  Globe2,
   Home,
   LayoutGrid,
   Loader2,
@@ -40,6 +39,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { PlayableRecentTasksProvider, usePlayableRecentTasks, type PlayableTaskSummary } from './recent-tasks-context'
+import { StudioAccount } from './studio-account'
 
 export type { PlayableTaskSummary } from './recent-tasks-context'
 
@@ -48,7 +48,9 @@ type StudioSection = 'home' | 'best-practices' | 'versions'
 interface PlayableStudioShellProps {
   activeSection: StudioSection
   accountLabel: string
+  publicAccess?: boolean
   children: React.ReactNode
+  tasks?: PlayableTaskSummary[]
 }
 
 const navigation = [
@@ -88,8 +90,13 @@ function groupTasks(tasks: PlayableTaskSummary[]) {
 function SidebarContent({
   activeSection,
   accountLabel,
+  publicAccess,
+  skipInitialLoad = false,
   onNavigate,
-}: Pick<PlayableStudioShellProps, 'activeSection' | 'accountLabel'> & { onNavigate?: () => void }) {
+}: Pick<PlayableStudioShellProps, 'activeSection' | 'accountLabel' | 'publicAccess'> & {
+  skipInitialLoad?: boolean
+  onNavigate?: () => void
+}) {
   const [searchQuery, setSearchQuery] = useState('')
   const [renameTarget, setRenameTarget] = useState<PlayableTaskSummary | null>(null)
   const [renameTitle, setRenameTitle] = useState('')
@@ -100,12 +107,12 @@ function SidebarContent({
   const [deleteError, setDeleteError] = useState('')
   const recentTasks = usePlayableRecentTasks()
   if (!recentTasks) throw new Error('Recent task context is unavailable')
-  const isPublicExperience = accountLabel === '公开体验 · 任务共享'
   const { ensureLoaded, removeTask, renameTask, tasks } = recentTasks
 
   useEffect(() => {
+    if (skipInitialLoad) return
     void ensureLoaded()
-  }, [ensureLoaded])
+  }, [ensureLoaded, skipInitialLoad])
 
   const visibleTasks = useMemo(() => {
     const normalized = searchQuery.trim().toLocaleLowerCase()
@@ -290,23 +297,7 @@ function SidebarContent({
       </div>
 
       <div className="border-t px-3 py-2">
-        <div className="flex h-9 items-center gap-2.5 rounded-lg px-2">
-          {isPublicExperience ? (
-            <span className="bg-background text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-md border">
-              <Globe2 className="size-3.5" aria-hidden="true" />
-            </span>
-          ) : (
-            <span className="bg-foreground text-background flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium">
-              {accountLabel.slice(0, 1).toUpperCase()}
-            </span>
-          )}
-          <span className="min-w-0 flex-1 truncate text-sm">{isPublicExperience ? '公开体验' : accountLabel}</span>
-          {isPublicExperience && (
-            <span className="text-muted-foreground bg-foreground/[0.06] rounded-full px-2 py-0.5 text-[10px]">
-              共享
-            </span>
-          )}
-        </div>
+        <StudioAccount accountLabel={accountLabel} publicAccess={publicAccess} />
       </div>
 
       <Dialog
@@ -368,13 +359,30 @@ function SidebarContent({
   )
 }
 
-function PlayableStudioShellContent({ activeSection, accountLabel, children }: PlayableStudioShellProps) {
+function PlayableStudioShellContent({
+  activeSection,
+  accountLabel,
+  publicAccess = false,
+  children,
+  tasks: providedTasks,
+}: PlayableStudioShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const recentTasks = usePlayableRecentTasks()
+  const replaceTasks = recentTasks?.replaceTasks
+
+  useEffect(() => {
+    if (providedTasks !== undefined) replaceTasks?.(providedTasks)
+  }, [providedTasks, replaceTasks])
 
   return (
     <div className="bg-background flex h-dvh min-h-0 overflow-hidden">
       <aside className="bg-muted/35 hidden w-72 shrink-0 border-r lg:block">
-        <SidebarContent activeSection={activeSection} accountLabel={accountLabel} />
+        <SidebarContent
+          activeSection={activeSection}
+          accountLabel={accountLabel}
+          publicAccess={publicAccess}
+          skipInitialLoad={providedTasks !== undefined}
+        />
       </aside>
 
       {mobileOpen && (
@@ -397,6 +405,8 @@ function PlayableStudioShellContent({ activeSection, accountLabel, children }: P
             <SidebarContent
               activeSection={activeSection}
               accountLabel={accountLabel}
+              publicAccess={publicAccess}
+              skipInitialLoad={providedTasks !== undefined}
               onNavigate={() => setMobileOpen(false)}
             />
           </aside>
@@ -420,7 +430,7 @@ export function PlayableStudioShell(props: PlayableStudioShellProps) {
   const recentTasks = usePlayableRecentTasks()
   if (!recentTasks) {
     return (
-      <PlayableRecentTasksProvider>
+      <PlayableRecentTasksProvider initialTasks={props.tasks}>
         <PlayableStudioShellContent {...props} />
       </PlayableRecentTasksProvider>
     )

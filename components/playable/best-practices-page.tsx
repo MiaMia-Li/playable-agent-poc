@@ -10,6 +10,7 @@ import { TemplatePreviewDialog } from './template-preview-dialog'
 
 interface BestPracticesPageProps {
   accountLabel: string
+  publicAccess?: boolean
 }
 
 const templatePrompts: Record<PlayableModeId, string> = {
@@ -19,7 +20,7 @@ const templatePrompts: Record<PlayableModeId, string> = {
   perspective_3d: '基于「3D 纵深」玩法模板开始迭代：保留移除顶层牌面并逐层揭示下方内容的核心玩法。',
 }
 
-export function BestPracticesPage({ accountLabel }: BestPracticesPageProps) {
+export function BestPracticesPage({ accountLabel, publicAccess = false }: BestPracticesPageProps) {
   const router = useRouter()
   const [creatingMode, setCreatingMode] = useState<PlayableModeId>()
   const [previewMode, setPreviewMode] = useState<PlayableModeId>()
@@ -45,7 +46,7 @@ export function BestPracticesPage({ accountLabel }: BestPracticesPageProps) {
   }
 
   return (
-    <PlayableStudioShell activeSection="best-practices" accountLabel={accountLabel}>
+    <PlayableStudioShell activeSection="best-practices" accountLabel={accountLabel} publicAccess={publicAccess}>
       <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-20 lg:pb-16">
         <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <div>

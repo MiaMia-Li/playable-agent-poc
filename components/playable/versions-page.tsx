@@ -20,7 +20,12 @@ interface VersionListItem extends PlayableBuildSummary {
   task: PlayableTaskSummary
 }
 
-export function VersionsPage({ accountLabel }: { accountLabel: string }) {
+interface VersionResponseItem extends PlayableBuildSummary {
+  taskId: string
+}
+
+export function VersionsPage({ accountLabel, publicAccess = false }: { accountLabel: string; publicAccess?: boolean }) {
+  const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
   const [versions, setVersions] = useState<VersionListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -28,35 +33,20 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
 
   useEffect(() => {
     let active = true
-    void fetch('/api/playable-tasks', { cache: 'no-store' })
+    void fetch('/api/playable-tasks/library', { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error('无法加载版本库')
-        return (await response.json()) as { tasks: PlayableTaskSummary[] }
+        return (await response.json()) as { tasks: PlayableTaskSummary[]; versions: VersionResponseItem[] }
       })
-      .then(async ({ tasks }) => {
-        const taskBuilds = await Promise.all(
-          tasks
-            .filter((task) => task.hasArtifact)
-            .map(async (task) => {
-              const response = await fetch(`/api/playable-tasks/${encodeURIComponent(task.id)}/versions`, {
-                cache: 'no-store',
-              })
-              if (!response.ok) return []
-              const body = (await response.json()) as { builds: PlayableBuildSummary[] }
-              return body.builds
-                .filter((build) => build.status === 'succeeded' && build.version !== null)
-                .map((build) => ({ ...build, task }))
-            }),
-        )
+      .then(({ tasks: loadedTasks, versions: loadedVersions }) => {
         if (!active) return
+        const tasksById = new Map(loadedTasks.map((task) => [task.id, task]))
+        setTasks(loadedTasks)
         setVersions(
-          taskBuilds
-            .flat()
-            .sort(
-              (left, right) =>
-                new Date(right.completedAt ?? right.createdAt).getTime() -
-                new Date(left.completedAt ?? left.createdAt).getTime(),
-            ),
+          loadedVersions.flatMap((version) => {
+            const task = tasksById.get(version.taskId)
+            return task ? [{ ...version, task }] : []
+          }),
         )
       })
       .catch((cause) => {
@@ -77,7 +67,7 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
   }, [query, versions])
 
   return (
-    <PlayableStudioShell activeSection="versions" accountLabel={accountLabel}>
+    <PlayableStudioShell activeSection="versions" accountLabel={accountLabel} publicAccess={publicAccess} tasks={tasks}>
       <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-20 lg:pb-16">
         <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <div>
@@ -123,6 +113,7 @@ export function VersionsPage({ accountLabel }: { accountLabel: string }) {
                     <iframe
                       title={`${taskTitle} v${item.version} 缩略预览`}
                       src={artifactUrl}
+                      loading="lazy"
                       sandbox="allow-scripts"
                       tabIndex={-1}
                       className="pointer-events-none h-[640px] w-[360px] origin-top-left scale-[0.1778] border-0"

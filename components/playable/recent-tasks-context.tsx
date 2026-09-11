@@ -18,6 +18,7 @@ export interface PlayableTaskSummary {
 interface PlayableRecentTasksValue {
   tasks: PlayableTaskSummary[]
   ensureLoaded(): Promise<void>
+  replaceTasks(tasks: PlayableTaskSummary[]): void
   addTask(task: PlayableTaskSummary): void
   renameTask(taskId: string, title: string): void
   removeTask(taskId: string): void
@@ -25,9 +26,15 @@ interface PlayableRecentTasksValue {
 
 const PlayableRecentTasksContext = createContext<PlayableRecentTasksValue | null>(null)
 
-export function PlayableRecentTasksProvider({ children }: { children: React.ReactNode }) {
-  const [tasks, setTasks] = useState<PlayableTaskSummary[]>([])
-  const loaded = useRef(false)
+export function PlayableRecentTasksProvider({
+  children,
+  initialTasks,
+}: {
+  children: React.ReactNode
+  initialTasks?: PlayableTaskSummary[]
+}) {
+  const [tasks, setTasks] = useState<PlayableTaskSummary[]>(initialTasks ?? [])
+  const loaded = useRef(initialTasks !== undefined)
   const pendingRequest = useRef<Promise<void> | null>(null)
 
   const ensureLoaded = useCallback(() => {
@@ -54,6 +61,11 @@ export function PlayableRecentTasksProvider({ children }: { children: React.Reac
     setTasks((current) => current.map((task) => (task.id === taskId ? { ...task, title } : task)))
   }, [])
 
+  const replaceTasks = useCallback((nextTasks: PlayableTaskSummary[]) => {
+    loaded.current = true
+    setTasks(nextTasks)
+  }, [])
+
   const addTask = useCallback((task: PlayableTaskSummary) => {
     setTasks((current) => [task, ...current.filter((candidate) => candidate.id !== task.id)])
   }, [])
@@ -63,8 +75,8 @@ export function PlayableRecentTasksProvider({ children }: { children: React.Reac
   }, [])
 
   const value = useMemo(
-    () => ({ tasks, ensureLoaded, addTask, renameTask, removeTask }),
-    [addTask, ensureLoaded, removeTask, renameTask, tasks],
+    () => ({ tasks, ensureLoaded, replaceTasks, addTask, renameTask, removeTask }),
+    [addTask, ensureLoaded, removeTask, renameTask, replaceTasks, tasks],
   )
 
   return <PlayableRecentTasksContext.Provider value={value}>{children}</PlayableRecentTasksContext.Provider>

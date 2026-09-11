@@ -32,8 +32,7 @@ describe('PlayableHome reference uploads', () => {
       />,
     )
 
-    expect(screen.getByText('公开体验')).toBeInTheDocument()
-    expect(screen.getByText('共享')).toBeInTheDocument()
+    expect(screen.getByLabelText('账户：公开体验，任务共享')).toBeInTheDocument()
     expect(screen.queryByText(/登录后/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('新试玩需求')).toBeEnabled()
     expect(screen.queryByText('最近生成')).not.toBeInTheDocument()

@@ -468,12 +468,10 @@ export function PlayableHome({
     })
   }
 
-  const accountLabel = publicAccess
-    ? '公开体验 · 任务共享'
-    : user?.name || user?.username || (authProvider === 'github' ? 'GitHub 用户' : 'Playable Studio')
+  const accountLabel = user?.name || user?.username || (authProvider === 'github' ? 'GitHub 用户' : 'Playable Studio')
 
   return (
-    <PlayableStudioShell activeSection="home" accountLabel={accountLabel}>
+    <PlayableStudioShell activeSection="home" accountLabel={accountLabel} publicAccess={publicAccess}>
       <main className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 lg:pt-24 lg:pb-16">
         <section className="mx-auto max-w-4xl text-center" aria-labelledby="home-heading">
           <h1 id="home-heading" className="text-3xl font-semibold tracking-tight sm:text-4xl">
