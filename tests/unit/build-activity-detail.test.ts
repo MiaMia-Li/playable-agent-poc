@@ -7,6 +7,25 @@ import {
 } from '@/lib/playable/build-activity-detail'
 
 describe('公开构建事件', () => {
+  it('隐藏 CLI 和分段 Harness 的内部完成协议，保留正常说明', () => {
+    const report = vi.fn()
+    reportCliBuildActivity(
+      { type: 'item.completed', item: { type: 'agent_message', text: '{"completed":true}' } },
+      report,
+    )
+    const stream = createHarnessActivityReporter(report)
+    stream.accept({ type: 'text-delta', id: 'completion', text: '{"completed":' })
+    stream.accept({ type: 'text-delta', id: 'completion', text: 'true}' })
+    stream.accept({ type: 'text-end', id: 'completion' })
+    stream.flush()
+    expect(report).not.toHaveBeenCalled()
+    reportCliBuildActivity(
+      { type: 'item.completed', item: { type: 'agent_message', text: '检查完成，等待发布' } },
+      report,
+    )
+    expect(report).toHaveBeenCalledExactlyOnceWith('agent_message', { text: '检查完成，等待发布' })
+  })
+
   it('按段保存公开摘要，工具调用立即报告，未知原始载荷不报告', () => {
     const report = vi.fn()
     const stream = createHarnessActivityReporter(report)

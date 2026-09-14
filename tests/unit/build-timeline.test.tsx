@@ -5,6 +5,27 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { BuildTimeline } from '@/components/playable/build-timeline'
 
 afterEach(cleanup)
+it('历史完成协议不展示，只有应用发布成功才提示可以体验', () => {
+  const events = [
+    { id: 'start', type: 'build_started' },
+    {
+      id: 'json',
+      type: 'build_activity_agent_message',
+      message: JSON.stringify({ version: 1, detail: { text: '```json\n{"completed":true}\n```' } }),
+    },
+    { id: 'agent-end', type: 'build_activity_agent_completed' },
+  ]
+  const view = render(<BuildTimeline events={events} running />)
+  expect(screen.queryByText(/completed/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/试玩已生成/)).not.toBeInTheDocument()
+  view.rerender(<BuildTimeline events={[...events, { id: 'fail', type: 'build_failed' }]} running={false} />)
+  expect(screen.queryByText(/试玩已生成/)).not.toBeInTheDocument()
+  view.rerender(<BuildTimeline events={[...events, { id: 'done', type: 'build_succeeded' }]} running={false} />)
+  expect(screen.getByText(/试玩已生成，可以开始体验/)).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: /已工作/ }))
+  expect(screen.queryByText(/completed/)).not.toBeInTheDocument()
+})
+
 it('保留历史构建，展开最新记录时不混入旧步骤', () => {
   render(
     <BuildTimeline

@@ -21,6 +21,20 @@ function text(value: unknown): string | undefined {
   }
 }
 
+/** 内部完成协议不是用户文案，也不能用来判断产物已发布。 */
+export function isBuildCompletionMessage(value?: string): boolean {
+  if (!value) return false
+  const candidate = value.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1')
+  try {
+    const parsed = JSON.parse(candidate)
+    return (
+      parsed !== null && typeof parsed === 'object' && parsed.completed === true && Object.keys(parsed).length === 1
+    )
+  } catch {
+    return false
+  }
+}
+
 /** 两种适配器都先挑选公开字段，最终由宿主统一脱敏后落库。 */
 export function reportCliBuildActivity(value: unknown, report?: BuildActivityCallback) {
   const event = record(value)
@@ -29,6 +43,7 @@ export function reportCliBuildActivity(value: unknown, report?: BuildActivityCal
   const id = typeof item.id === 'string' ? item.id : undefined
   // Codex JSON 事件中的 reasoning 是提供方公开的推理摘要，不是隐藏思维链。
   if (event.type === 'item.completed' && ['agent_message', 'reasoning'].includes(String(item.type))) {
+    if (item.type === 'agent_message' && isBuildCompletionMessage(text(item.text))) return
     report?.(item.type === 'reasoning' ? 'reasoning_summary' : 'agent_message', { id, text: text(item.text) })
     return
   }
@@ -51,7 +66,8 @@ export function createHarnessActivityReporter(report?: BuildActivityCallback) {
   const flush = (id?: string) => {
     for (const [key, part] of pending) {
       if (id !== undefined && key !== id) continue
-      if (part.text) report?.(part.type, { id: key, text: part.text })
+      if (part.text && !(part.type === 'agent_message' && isBuildCompletionMessage(part.text)))
+        report?.(part.type, { id: key, text: part.text })
       pending.delete(key)
     }
   }
