@@ -272,7 +272,7 @@ async function createProposal(
   throw new PlayableAgentError('output_invalid')
 }
 
-async function executeBuildAgent(
+export async function executeBuildAgent(
   input: {
     authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
     sandbox: PlayableSandbox
@@ -299,6 +299,7 @@ async function executeBuildAgent(
     logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
     throw error
   }
+  let executionFailed = false
   try {
     try {
       onActivity?.('agent_started')
@@ -328,6 +329,7 @@ async function executeBuildAgent(
       input.abortSignal?.throwIfAborted()
       onActivity?.('agent_completed')
     } catch (error) {
+      executionFailed = true
       logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
       throw error
     }
@@ -335,8 +337,13 @@ async function executeBuildAgent(
     try {
       await session.destroy()
     } catch (error) {
-      logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
-      throw error
+      // 取消后命令可能已退出；清理异常不能覆盖原始超时或用户取消原因。
+      if (executionFailed) {
+        console.warn('Codex session cleanup failed after agent execution failed')
+      } else {
+        logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
+        throw error
+      }
     }
   }
 }
