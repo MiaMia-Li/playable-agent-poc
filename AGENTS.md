@@ -2,6 +2,23 @@
 
 This document contains critical rules and guidelines for AI agents working on this codebase.
 
+## Project Overview
+
+This repo started from Vercel's coding-agent template (GitHub repos, `app/repos`, `app/[owner]`, `lib/github`); the actual product is **Playable Studio**, which lives mostly in `lib/playable/`, `components/playable/`, `app/tasks/`, and `app/api/playable-tasks/`. Domain vocabulary (Reference Video, Gameplay Blueprint, Gameplay Annotation, Requirement Brief, Confirmation Proposal, …) is defined in `CONTEXT.md` — use those terms exactly.
+
+### Commands
+
+```bash
+pnpm test                                        # vitest run (all of tests/unit + tests/integration)
+pnpm test tests/unit/requirement-tools.test.ts   # single file
+pnpm test -t "test name substring"               # single test by name
+pnpm demo                                        # user-run only: in-memory repo, deterministic agent, no credentials
+pnpm db:generate && pnpm db:migrate              # after editing lib/db/schema.ts
+pnpm check:gemini-video                          # live Gemini video-analysis check (needs .env.local)
+```
+
+The pre-commit hook runs `pnpm format`.
+
 ## Security Rules
 
 ### CRITICAL: No Dynamic Values in Logs
@@ -196,6 +213,18 @@ Only these variables should be exposed to the client (via `NEXT_PUBLIC_` prefix)
 - `NEXT_PUBLIC_GITHUB_CLIENT_ID` - GitHub OAuth client ID (public)
 
 ## Architecture Guidelines
+
+### Playable Studio Architecture
+
+- **Three agents behind one interface.** `PlayableAgentAdapter` (`lib/playable/playable-agent-adapter.ts`) exposes `proposeConfirmation()` (requirement agent), `build()` (build agent), and `cancel()`. `lib/playable/task-route-handlers.ts` picks the implementation by run mode: `CodexPlayableAgent` (production, OpenRouter Responses API), `CodexCliPlayableAgent` (`LOCAL_CODEX_MODE`), `LocalDemoAgent` (`LOCAL_DEMO_MODE`). A separate market research agent lives in `lib/playable/research/`.
+- **Requirement agent** is a tool loop defined in `lib/playable/requirement-tools.ts` (system instructions, structured output schema, tools such as `analyze_reference_video` / `update_requirement_brief` / `submit_confirmation`, plus tool-order and terminal-state validation). `POST /api/playable-tasks/:taskId/messages` streams its progress back as NDJSON.
+- **Task state machine**: `draft → awaiting_confirmation → building → validating → ready`; revisions go `ready → awaiting_revision_confirmation → building → …`. Any build failure moves to `failed` but keeps the previous successful artifact.
+- **Build**: `runConfirmedBuild()` in `lib/playable/task-api.ts` runs in the background after confirm (the route returns 202). It writes the confirmation, assets, and `skills/mahjong-pair-match-playable/` into a Vercel Sandbox (`lib/playable/sandbox-runner.ts`), then validates the output (size, offline assets, responsiveness, mute, CTA, credential leaks).
+- **Persistence**: Postgres via Drizzle (`lib/db/schema.ts`, repository in `lib/playable/task-repository.ts`) stores state and JSONB snapshots only. Binaries, `playable.html`, and sidecar JSON live in Private Blob (`lib/playable/artifact-store.ts`). Version numbers come from the order of successful `playable_task_builds` rows.
+- **Video analysis** calls Gemini directly (`lib/playable/video-analysis-service.ts`, `video-gameplay-analyst.ts`, `reference-video-client.ts`) — see `docs/adr/0001-gemini-direct-for-video-analysis.md` and `docs/reference-video-analysis-v2-spec.md`. The ffmpeg/QDAI pipeline described in `docs/playable-agent-architecture.md` is superseded. A Blueprint is passed to agents only when its `assetId` matches the Active Reference Video.
+- **Credentials**: every model call uses the single server-side `OPENROUTER_API_KEY` (`lib/playable/shared-ai-key.ts`) with no fallback to `OPENAI_API_KEY`/`AI_GATEWAY_API_KEY`; Gemini video analysis uses `GEMINI_API_KEY`. Tasks and assets are shared across all visitors in this public POC.
+
+The full flow, with every table, is in `docs/playable-agent-architecture.md`. Design specs and plans are under `docs/superpowers/`.
 
 ### Repository Page Structure
 
