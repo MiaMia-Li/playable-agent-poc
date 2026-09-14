@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
 import { deliveryProfileIdFor, getDeliveryProfile } from '@/lib/playable/delivery-standards'
+import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
 import { getPlayableMode } from '@/lib/playable/template-registry'
 
 const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = {
@@ -33,7 +34,9 @@ interface BuildConfirmationDialogProps {
 }
 
 export function BuildConfirmationSummary({ buildId, confirmation }: BuildConfirmationDialogProps) {
-  const mode = getPlayableMode(confirmation.mode)
+  const mode =
+    PLAYABLE_TEMPLATES.find((template) => template.id === confirmation.sourceTemplateId) ??
+    getPlayableMode(confirmation.mode)
 
   return (
     <div>
@@ -50,7 +53,9 @@ export function BuildConfirmationSummary({ buildId, confirmation }: BuildConfirm
 
 export function BuildConfirmationDialog({ buildId, confirmation }: BuildConfirmationDialogProps) {
   const presentation = confirmation.presentation ?? defaultConfirmationPresentation
-  const mode = getPlayableMode(confirmation.mode)
+  const mode =
+    PLAYABLE_TEMPLATES.find((template) => template.id === confirmation.sourceTemplateId) ??
+    getPlayableMode(confirmation.mode)
   const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(confirmation.delivery))
 
   return (

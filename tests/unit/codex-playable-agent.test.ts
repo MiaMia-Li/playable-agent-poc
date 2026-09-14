@@ -278,6 +278,31 @@ describe('CodexPlayableAgent', () => {
     expect(prompt).toContain('test-freeform-playable.mjs')
   })
 
+  it.each(['exact', 'approximate', 'freeform'] as const)('独立模板补丁优先于旧 mode，并统一校验：%s', (route) => {
+    const prompt = createCodexBuildPrompt(
+      route,
+      {
+        id: 'revision-source',
+        baseBuildId: 'build-source',
+        baseVersion: 1,
+        targetVersion: 2,
+        strategy: 'patch',
+        summary: '调整转轴顺序',
+        changes: ['移除第一轮'],
+        preserved: ['保留转轴引擎'],
+      },
+      'dragon_slots',
+      'perspective_3d',
+    )
+    expect(prompt).toContain('Copy current-playable.html to output.html')
+    expect(prompt).toContain('revision-plan.json')
+    expect(prompt).toContain('sourceTemplateId and confirmed gameplay take precedence')
+    expect(prompt).toContain('test-freeform-playable.mjs')
+    expect(prompt).not.toContain('Three.js')
+    expect(prompt).not.toContain('test-playable.mjs')
+    expect(prompt).not.toContain('already seeded from that source')
+  })
+
   it('tells approximate builds to modify the prebuilt baseline without rebuilding it', () => {
     const prompt = createCodexBuildPrompt('approximate')
 

@@ -205,7 +205,7 @@ function validateConfirmationPresentation(
 
 export const confirmationProposalSchema = z
   .strictObject({
-    sourceTemplateId: z.enum(sourceTemplateIds).optional(),
+    sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),
     ...confirmationProposalShape,
@@ -256,7 +256,7 @@ export const requirementInputRequestSchema = z.strictObject({
 })
 
 export const requirementBriefSchema = z.strictObject({
-  sourceTemplateId: z.enum(sourceTemplateIds).optional(),
+  sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
   version: z.literal(1),
   summary: z.string().trim().max(600),
   gameplay: z.strictObject({

@@ -1,3 +1,4 @@
+import { sourceTemplateIds } from '@/lib/playable/types'
 import { exec } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import os from 'node:os'
@@ -191,14 +192,33 @@ afterEach(async () => {
 })
 
 describe('runPlayableBuild', () => {
-  it('seeds selected template output before the remote build agent runs', async () => {
+  it.each(
+    sourceTemplateIds.flatMap((sourceTemplateId) =>
+      (['exact', 'approximate', 'freeform'] as const).flatMap((match) =>
+        ([undefined, 'patch', 'regenerate'] as const).map((strategy) => ({ sourceTemplateId, match, strategy })),
+      ),
+    ),
+  )('独立模板基线与校验：$sourceTemplateId / $match / $strategy', async ({ sourceTemplateId, match, strategy }) => {
     const sandbox = await createLocalSandbox()
     const input = buildInput('center_collision', 'sk-template-seed')
     input.confirmation = {
       ...input.confirmation,
-      sourceTemplateId: 'zeus_scatter',
-      routing: { match: 'freeform', confidence: 1, differences: ['Modify selected source'] },
+      sourceTemplateId,
+      mode: 'perspective_3d',
+      routing: { match, confidence: 1, differences: match === 'exact' ? [] : ['Modify selected source'] },
     }
+    if (strategy)
+      input.revision = {
+        id: 'revision',
+        baseBuildId: 'base',
+        baseVersion: 1,
+        targetVersion: 2,
+        strategy,
+        summary: '调整游戏',
+        changes: ['修改交互'],
+        preserved: ['保留引擎'],
+      }
+    // 使用已通过验收的轻量 HTML 验证编排，不调用真实模型生成。
     input.baseHtml = await readFile('public/playable-templates/center_collision.html', 'utf8')
     let inspected = false
     const result = await runPlayableBuild(input, {
@@ -209,6 +229,7 @@ describe('runPlayableBuild', () => {
         inspected = true
       },
     })
+    expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(true)
     expect(inspected).toBe(true)
     expect(result.html).toBe(input.baseHtml)
     expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)

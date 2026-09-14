@@ -173,6 +173,7 @@ describe('real playable task route wiring', () => {
 
     expect(infrastructure.repository.touchBuild).toHaveBeenCalledWith('task-1', 'build-1')
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
+      onActivity: expect.any(Function),
       taskId: 'task-1',
       apiKey: 'sk-shared-key',
       confirmation,

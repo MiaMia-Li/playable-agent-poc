@@ -1,3 +1,4 @@
+import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
@@ -126,7 +127,7 @@ function hasResponsiveViewport(html: string): boolean {
 }
 
 function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['confirmation'], html: string): void {
-  if (confirmation.routing.match === 'freeform' || confirmation.mode !== 'perspective_3d') return
+  if (!usesPerspectiveTemplate(confirmation)) return
   const requiredTokens = [
     'data-playable-template="perspective_3d"',
     `data-template-version="${MAHJONG_PLAYABLE_PLUGIN.version}"`,
@@ -150,6 +151,8 @@ async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): 
       : {}
   const provider = createVercelSandbox({
     runtime: 'node24',
+    // 与确认接口的 30 分钟预算一致，避免 Sandbox 默认期限提前终止 Agent。
+    timeout: 30 * 60 * 1000,
     ports: [4000],
     fetch: createExternalErrorLoggingFetch('Vercel Sandbox', [
       process.env.SANDBOX_VERCEL_TOKEN ?? '',
@@ -202,6 +205,7 @@ export async function runPlayableBuild(
 ): Promise<BuildResult> {
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
+  input.onActivity?.('preparing')
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
   const freeform = confirmation.routing.match === 'freeform'
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
@@ -301,14 +305,14 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (confirmation.sourceTemplateId && input.revision?.strategy !== 'patch') {
+    } else if (confirmation.sourceTemplateId || input.revision?.strategy === 'patch') {
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),
         content: input.baseHtml,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (!freeform && input.revision?.strategy !== 'patch') {
+    } else if (!freeform) {
       stage = 'artifact_build'
       await dependencies.logger?.info('Building playable baseline')
       await requireSuccessfulCommand(
@@ -342,14 +346,12 @@ export async function runPlayableBuild(
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
+    input.onActivity?.('validating')
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(
       sandbox,
       {
-        command:
-          confirmation.routing.match === 'exact'
-            ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
-            : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform,
+        command: buildValidationCommand(confirmation),
         workingDirectory: workspace,
         env: {
           PLAYABLE_MODE: confirmation.mode,
