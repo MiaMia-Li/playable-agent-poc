@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { buildStageLabels, type BuildStage } from '@/lib/playable/build-timing'
 import { AgentText, ReasoningText } from './reasoning-text'
 import { Sparkles, Terminal, FilePenLine } from 'lucide-react'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
@@ -37,6 +38,12 @@ function compactSteps(events: BuildTimelineEvent[]) {
 }
 
 function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: boolean }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [running])
   const start = events.findLastIndex((event) => event.type === 'build_started')
   const current = events.slice(Math.max(0, start))
   const rows = compactSteps(current)
@@ -46,9 +53,22 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
   // 构建结束自动收起，展开偏好仅影响当前构建，不改变持久化记录。
   const expanded = selection?.key === selectionKey ? selection.value : running ? 'progress' : ''
   const firstTime = Date.parse(current[0]?.createdAt ?? '')
-  const lastTime = Date.parse(latest?.createdAt ?? '')
+  const lastTime = running ? now : Date.parse(latest?.createdAt ?? '')
   const seconds = Number.isFinite(lastTime - firstTime) ? Math.max(0, Math.round((lastTime - firstTime) / 1000)) : 0
   const duration = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
+  // 同一阶段可能因修复重试多次进入；只累计完成区间，再加当前运行区间，避免重复计时。
+  const totals: Partial<Record<BuildStage, number>> = {}
+  let active: { stage: BuildStage; at: number } | undefined
+  for (const event of current) {
+    const timing = readBuildActivityDetail(event.message)?.timing
+    if (!timing) continue
+    if (event.type === 'build_activity_stage_started') active = timing
+    if (event.type === 'build_activity_stage_completed') {
+      totals[timing.stage] = (totals[timing.stage] ?? 0) + (timing.durationMs ?? 0)
+      if (active?.stage === timing.stage) active = undefined
+    }
+  }
+  if (active && running) totals[active.stage] = (totals[active.stage] ?? 0) + Math.max(0, now - active.at)
   if (!running && rows.length === 0) return null
   return (
     <section aria-label="构建执行记录" className="flex min-w-0 items-start gap-3">
@@ -65,10 +85,18 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
         <AccordionItem value="progress" className="border-0">
           <AccordionTrigger className="text-muted-foreground justify-start gap-2 py-1 text-xs font-normal hover:no-underline [&>svg]:size-3">
             <span role="status" className="truncate">
-              {running ? '正在构建' : `已工作 ${duration}`} · {latest ? buildEventLabel(latest.type) : '准备构建'}
+              {running ? `正在构建 ${duration}` : `已工作 ${duration}`} ·{' '}
+              {running && active ? buildStageLabels[active.stage] : latest ? buildEventLabel(latest.type) : '准备构建'}
             </span>
           </AccordionTrigger>
           <AccordionContent className="pb-1">
+            {running &&
+              current.some((event) => event.type === 'build_activity_preview_delayed') &&
+              !current.some((event) => event.type === 'build_preview_ready') && (
+                <p role="status" className="text-muted-foreground mt-2 text-xs">
+                  生成时间超过预览目标，正在继续完成修改。
+                </p>
+              )}
             <ol aria-label="构建步骤" className="mt-2 space-y-3 text-sm">
               {rows.map((event) => {
                 const detail = event.detail
@@ -129,6 +157,23 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
             </ol>
           </AccordionContent>
         </AccordionItem>
+        {Object.keys(totals).length > 0 && (
+          <dl aria-label="构建阶段耗时" className="text-muted-foreground mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            {Object.entries(buildStageLabels).map(([stage, label]) => (
+              <div key={stage} className="flex gap-1">
+                <dt>{label}</dt>
+                <dd>
+                  {totals[stage as BuildStage] === undefined
+                    ? stage === 'browser' && !running
+                      ? '未记录'
+                      : '待开始'
+                    : `${Math.floor(totals[stage as BuildStage]! / 60000)}分${Math.floor(totals[stage as BuildStage]! / 1000) % 60}秒`}
+                  {running && active?.stage === stage ? ' · 进行中' : ''}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
         {/* 完成文案只认应用发布成功，不能根据 Agent 返回的 completed 提前宣告产物可用。 */}
         {latest?.type === 'build_succeeded' && !running && (
           <p className="mt-2 text-sm">试玩已生成，可以开始体验。需要调整时，直接描述想改的地方。</p>

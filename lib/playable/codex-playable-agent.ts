@@ -1,3 +1,5 @@
+import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
+import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import type { BuildActivityCallback } from './build-activity'
 import { createHarnessActivityReporter } from './build-activity-detail'
@@ -28,7 +30,7 @@ import {
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
-  requirementAgentStepSchema,
+  requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { marketResearchReportSchema } from './research/schemas'
@@ -37,7 +39,8 @@ import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel }
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 const CODEX_INSTRUCTIONS = [
-  'Follow the supplied Mahjong playable Skill exactly.',
+  'For a revision that changes only title, CTA text, disclaimer, locale or store URL, set parameterOnly true in the revision plan. Never set it for gameplay, rewards, round order, layout, images or audio changes.',
+  'Follow the supplied gameplay-specific playable Skill exactly.',
   'Collect requirements over multiple turns. Ask one focused clarification at a time and never repeat information already answered in conversation history.',
   'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the available gameplay templates as concise selectable options.',
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
@@ -118,6 +121,7 @@ async function readTextSkillFiles(root: string, directory = root): Promise<Array
   const nested = await Promise.all(
     entries.map(async (entry): Promise<Array<{ path: string; content: string }>> => {
       const absolutePath = path.join(directory, entry.name)
+      if (entry.isDirectory() && ['assets', 'agents'].includes(entry.name)) return []
       if (entry.isDirectory()) return readTextSkillFiles(root, absolutePath)
       if (!entry.isFile() || !/\.(?:md|json|mjs|html|ya?ml)$/i.test(entry.name)) return []
       return [
@@ -131,14 +135,21 @@ async function readTextSkillFiles(root: string, directory = root): Promise<Array
   return nested.flat().sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function loadSkill(root: string): Promise<HarnessV1Skill> {
-  const files = await readTextSkillFiles(root)
+async function loadSkill(
+  root: string,
+  confirmation: Pick<ConfirmedBuildInput['confirmation'], 'sourceTemplateId' | 'routing' | 'mode'>,
+): Promise<HarnessV1Skill> {
+  // Harness 只注册文字指令；二进制素材和 HTML 已由工作区打包传输，不再重复上传。
+  const files = (await Promise.all(buildSkillRoots(confirmation, root).map((root) => readTextSkillFiles(root))))
+    .flat()
+    .filter((file) => !file.path.startsWith('assets/') && includeBuildSkillFile(file.path, confirmation))
+  const entry = await buildSkillEntry(confirmation)
   const skill = files.find((file) => file.path === 'SKILL.md')
   if (!skill) throw new Error('Playable Skill instructions are missing')
   return {
-    name: 'mahjong-pair-match-playable',
-    description: 'Build one validated Mahjong pair-match playable from a registered mode.',
-    content: skill.content,
+    name: entry.name,
+    description: entry.description,
+    content: root === SKILL_ROOT ? entry.content : skill.content,
     files: files.filter((file) => file !== skill),
   }
 }
@@ -191,7 +202,7 @@ async function createProposal(
       model: openai.responses(readPlayableAgentModel()),
       instructions: REQUIREMENT_AGENT_INSTRUCTIONS,
       prompt: safePrompt,
-      output: Output.object({ schema: requirementAgentStepSchema }),
+      output: Output.object({ schema: requirementAgentStepOutputSchema }),
       abortSignal,
       providerOptions: {
         openai: {
@@ -276,8 +287,9 @@ async function createProposal(
   throw new PlayableAgentError('output_invalid')
 }
 
-async function executeBuildAgent(
+export async function executeBuildAgent(
   input: {
+    phase?: 'preview' | 'acceptance'
     authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
     sandbox: PlayableSandbox
     taskId: string
@@ -290,7 +302,11 @@ async function executeBuildAgent(
   mode?: ConfirmedBuildInput['confirmation']['mode'],
   onActivity?: BuildActivityCallback,
 ) {
-  const skill = await loadSkill(skillRoot)
+  const skill = await loadSkill(skillRoot, {
+    sourceTemplateId,
+    routing: { match: route, confidence: 1, differences: [] },
+    mode: mode ?? 'gravity_fill',
+  })
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
   let session
   try {
@@ -303,13 +319,21 @@ async function executeBuildAgent(
     logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
     throw error
   }
+  let executionFailed = false
   try {
     try {
       onActivity?.('agent_started')
       const result = await agent.stream({
         session,
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
-        prompt: [PLAYABLE_TOOLS_PROMPT, createCodexBuildPrompt(route, revision, sourceTemplateId, mode)].join('\n'),
+        prompt: [
+          PLAYABLE_TOOLS_PROMPT,
+          input.phase === 'preview'
+            ? PREVIEW_BUILD_PROMPT
+            : input.phase === 'acceptance'
+              ? FULL_ACCEPTANCE_PROMPT
+              : createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
+        ].join('\n'),
         abortSignal: input.abortSignal,
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
@@ -332,6 +356,7 @@ async function executeBuildAgent(
       input.abortSignal?.throwIfAborted()
       onActivity?.('agent_completed')
     } catch (error) {
+      executionFailed = true
       logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
       throw error
     }
@@ -339,8 +364,13 @@ async function executeBuildAgent(
     try {
       await session.destroy()
     } catch (error) {
-      logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
-      throw error
+      // 取消后命令可能已退出；清理异常不能覆盖原始超时或用户取消原因。
+      if (executionFailed) {
+        console.warn('Codex session cleanup failed after agent execution failed')
+      } else {
+        logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
+        throw error
+      }
     }
   }
 }
@@ -475,7 +505,8 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
         try {
           return await this.buildRunner(attemptInput, { abortSignal: controller.signal })
         } catch (error) {
-          if (attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error)) throw error
+          if (input.onPreview || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
+            throw error
           await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, controller.signal)
         }
       }

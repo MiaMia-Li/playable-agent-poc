@@ -1,3 +1,4 @@
+import { sourceTemplateFile } from '@/lib/playable/build-skill'
 import { readFile } from 'node:fs/promises'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { templatePrompts } from '@/lib/playable/template-catalog'
@@ -2205,6 +2206,7 @@ describe('playable task API', () => {
     expect(await response.json()).toEqual({
       task: {
         phase: 'building',
+        previewVersion: null,
         hasArtifact: false,
         artifactVersion: null,
         latestValidation: null,
@@ -2464,16 +2466,20 @@ describe('playable task API', () => {
     })
     const events = await harness.repository.listEvents(task.id)
     expect(events.map((event) => event.type)).toEqual([
+      'build_activity_stage_started',
       'build_activity_command_started',
       'build_activity_command_failed',
+      'build_activity_stage_completed',
       'build_failed',
     ])
     expect(JSON.stringify(events)).not.toContain('private diagnostic')
     expect(JSON.stringify(events)).not.toContain('sk-test-secret')
-    expect(JSON.parse(events[0].message!)).toMatchObject({
-      version: 1,
-      detail: { input: 'echo [已隐藏]', output: '检查完成' },
-    })
+    expect(JSON.parse(events.find((event) => event.type === 'build_activity_command_started')!.message!)).toMatchObject(
+      {
+        version: 1,
+        detail: { input: 'echo [已隐藏]', output: '检查完成' },
+      },
+    )
     const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
       params: Promise.resolve({ taskId: 'owned' }),
     })
@@ -2504,10 +2510,7 @@ describe('playable task API', () => {
       expect(harness.agent.build).toHaveBeenCalledWith(
         expect.objectContaining({
           confirmation: selected,
-          baseHtml: await readFile(
-            `skills/mahjong-pair-match-playable/assets/templates/${sourceTemplateId}/source.html`,
-            'utf8',
-          ),
+          baseHtml: await readFile(sourceTemplateFile(sourceTemplateId), 'utf8'),
         }),
       )
       expect(createProductionConfig(selected).core.sourceTemplateId).toBe(sourceTemplateId)
@@ -2588,10 +2591,7 @@ describe('playable task API', () => {
     expect(harness.agent.build).toHaveBeenCalledWith(
       expect.objectContaining({
         revision: expect.objectContaining({ strategy: 'regenerate' }),
-        baseHtml: await readFile(
-          'skills/mahjong-pair-match-playable/assets/templates/balloon_master/source.html',
-          'utf8',
-        ),
+        baseHtml: await readFile(sourceTemplateFile('balloon_master'), 'utf8'),
       }),
     )
   })
@@ -2617,10 +2617,7 @@ describe('playable task API', () => {
           sourceTemplateId: 'zeus_scatter',
           routing: confirmation.routing,
         }),
-        baseHtml: await readFile(
-          'skills/mahjong-pair-match-playable/assets/templates/zeus_scatter/source.html',
-          'utf8',
-        ),
+        baseHtml: await readFile(sourceTemplateFile('zeus_scatter'), 'utf8'),
       }),
     )
   })
@@ -3457,4 +3454,56 @@ describe('PrivateVercelArtifactStore', () => {
     )
     await expect(store.describe('users/u/tasks/t/assets/a')).resolves.toEqual({ size: 9, contentType: 'video/mp4' })
   })
+})
+
+it('publishes preview independently, retains it on acceptance failure, and blocks preview downloads', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'awaiting_confirmation'
+  task.confirmation = confirmation
+  await h.repository.claimBuild(task.id, task.userId, confirmation, 'preview-build')
+  vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
+    await input.onPreview!('<html>provisional</html>')
+    expect(task.phase).toBe('building')
+    expect(task.latestArtifactKey).toBeNull()
+    const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+    const response = await h.handlers.events(request('/api/playable-tasks/owned/events'), ctx)
+    expect((await response.json()).task.previewVersion).toBe('preview-build')
+    const inline = await h.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build'),
+      ctx,
+    )
+    expect(await inline.text()).toBe('<html>provisional</html>')
+    expect(inline.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    for (const suffix of ['&download=1', '&version=preview-build']) {
+      expect(
+        (
+          await h.handlers.artifact(
+            request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build' + suffix),
+            ctx,
+          )
+        ).status,
+      ).toBe(404)
+    }
+    expect(
+      (
+        await h.handlers.artifact(request('/api/playable-tasks/foreign/artifact?kind=playable&preview=preview-build'), {
+          params: Promise.resolve({ taskId: 'foreign' }),
+        })
+      ).status,
+    ).toBe(404)
+    throw new Error('Acceptance failed')
+  })
+  await runConfirmedBuild({
+    task,
+    apiKey: 'sk-test-secret',
+    buildId: 'preview-build',
+    repository: h.repository,
+    agent: h.agent,
+    artifactStore: h.artifactStore,
+  })
+  expect(task.phase).toBe('failed')
+  expect(task.latestArtifactKey).toBeNull()
+  expect([...h.artifacts.keys()].some((key) => key.endsWith('/preview.html'))).toBe(true)
+  expect([...h.artifacts.keys()].some((key) => key.endsWith('/playable.html'))).toBe(false)
 })

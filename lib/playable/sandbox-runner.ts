@@ -1,5 +1,9 @@
+import { readBuildSkillFiles } from './build-skill'
+import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
+import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
+import { applyCampaignParameters } from './campaign-parameters'
+import { createHash } from 'node:crypto'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
-import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
@@ -10,8 +14,6 @@ import { confirmationProposalSchema } from './schemas'
 import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { PLAYABLE_SANDBOX_TOOLS_VERSION, PLAYABLE_TOOLS_CHECK } from './sandbox-tools'
-
-const DEFAULT_SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 interface SandboxCommandOptions {
   command: string
@@ -41,6 +43,7 @@ interface BuildLogger {
 }
 
 export interface ExecuteAgentInput {
+  phase?: 'preview' | 'acceptance'
   authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
   sandbox: PlayableSandbox
   workspace: string
@@ -74,32 +77,6 @@ export class PlayableBuildExecutionError extends Error {
     super(cause instanceof Error ? cause.message : 'Playable build execution failed', { cause })
     this.name = 'PlayableBuildExecutionError'
   }
-}
-
-interface SkillFile {
-  relativePath: string
-  content: Uint8Array
-}
-
-async function readSkillFiles(root: string, directory = root): Promise<SkillFile[]> {
-  const entries = await readdir(directory, { withFileTypes: true })
-  const files = await Promise.all(
-    entries.map(async (entry): Promise<SkillFile[]> => {
-      if (isFilesystemMetadata(entry.name, entry.isDirectory())) return []
-      const absolutePath = path.join(directory, entry.name)
-      if (entry.isDirectory()) return readSkillFiles(root, absolutePath)
-      if (!entry.isFile()) return []
-      return [
-        { relativePath: path.relative(root, absolutePath), content: new Uint8Array(await readFile(absolutePath)) },
-      ]
-    }),
-  )
-  return files.flat().sort((left, right) => left.relativePath.localeCompare(right.relativePath))
-}
-
-function isFilesystemMetadata(name: string, directory: boolean): boolean {
-  if (directory && ['.git', '.svn', '__MACOSX'].includes(name)) return true
-  return name === '.DS_Store' || name === 'Thumbs.db' || name === 'desktop.ini' || name.startsWith('._')
 }
 
 function safeWorkspaceFilename(id: string, filename: string): string {
@@ -203,27 +180,11 @@ async function requireSuccessfulCommand(
   if (result.exitCode !== 0) throw new Error(failureMessage)
 }
 
-async function assertMasterUnchanged(
-  sandbox: PlayableSandbox,
-  masterRoot: string,
-  files: SkillFile[],
-  abortSignal?: AbortSignal,
-) {
-  for (const file of files) {
-    const copied = await sandbox.readBinaryFile({
-      path: path.join(masterRoot, file.relativePath),
-      abortSignal,
-    })
-    if (copied === null || !Buffer.from(copied).equals(Buffer.from(file.content))) {
-      throw new Error('Skill master was modified')
-    }
-  }
-}
-
 export async function runPlayableBuild(
   input: ConfirmedBuildInput,
   dependencies: RunPlayableBuildDependencies,
 ): Promise<BuildResult> {
+  const previewDeadline = Date.now() + PREVIEW_TARGET_MS
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
   input.onActivity?.('preparing')
@@ -232,7 +193,7 @@ export async function runPlayableBuild(
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
 
   dependencies.abortSignal?.throwIfAborted()
-  const skillFiles = await readSkillFiles(dependencies.skillRoot ?? DEFAULT_SKILL_ROOT)
+  const skillFiles = await readBuildSkillFiles(confirmation, dependencies.skillRoot)
   const createSandbox = dependencies.createSandbox ?? createPlayableSandbox
   let sandbox: PlayableSandbox | undefined
   let operationError: unknown
@@ -241,9 +202,9 @@ export async function runPlayableBuild(
   try {
     sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
     const sandboxRoot = sandbox.defaultWorkingDirectory
-    const masterRoot = path.join(sandboxRoot, 'skill-master')
     const workspace = path.join(sandboxRoot, 'work')
     stage = 'workspace'
+    input.onActivity?.('transferring')
     if (serializedConfirmation.includes(input.apiKey)) {
       throw new Error('Confirmation contains a credential')
     }
@@ -251,13 +212,7 @@ export async function runPlayableBuild(
       throw new Error('Confirmation contains a credential')
     }
     await dependencies.logger?.info('Preparing isolated playable workspace')
-    for (const file of skillFiles) {
-      await sandbox.writeBinaryFile({
-        path: path.join(masterRoot, file.relativePath),
-        content: file.content,
-        abortSignal: dependencies.abortSignal,
-      })
-    }
+    await uploadWorkspaceBundle(sandbox, skillFiles, dependencies.abortSignal)
     await requireSuccessfulCommand(
       sandbox,
       { command: 'cp -R skill-master work', workingDirectory: sandboxRoot, abortSignal: dependencies.abortSignal },
@@ -353,7 +308,37 @@ export async function runPlayableBuild(
 
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
-    await dependencies.executeAgent({
+    const earlyPreview = Boolean(input.onPreview && supportsFastPreview(confirmation))
+    let parameterPatched = false
+    if (
+      earlyPreview &&
+      input.revision?.parameterOnly &&
+      input.baseHtml &&
+      input.baseConfirmation &&
+      input.reusableScenarios
+    ) {
+      const patched = applyCampaignParameters(input.baseHtml, input.baseConfirmation, confirmation)
+      if (patched) {
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'output.html'),
+          content: patched,
+          abortSignal: dependencies.abortSignal,
+        })
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'work/preview-scenario.mjs'),
+          content: input.reusableScenarios.preview,
+          abortSignal: dependencies.abortSignal,
+        })
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'work/scenario.mjs'),
+          content: input.reusableScenarios.full,
+          abortSignal: dependencies.abortSignal,
+        })
+        parameterPatched = true
+        input.onActivity?.('parameters_applied')
+      }
+    }
+    const agentInput: ExecuteAgentInput = {
       authEnvironment: {
         CODEX_API_KEY: input.apiKey,
         OPENAI_BASE_URL: OPENROUTER_BASE_URL,
@@ -362,9 +347,81 @@ export async function runPlayableBuild(
       workspace,
       taskId: input.taskId,
       abortSignal: dependencies.abortSignal,
-    })
+    }
+    if (!parameterPatched) {
+      if (earlyPreview) {
+        await withPreviewBudget(
+          (abortSignal) => dependencies.executeAgent({ ...agentInput, phase: 'preview', abortSignal }),
+          {
+            signal: dependencies.abortSignal,
+            targetMs: previewDeadline - Date.now(),
+            onTargetExceeded: () => input.onActivity?.('preview_delayed'),
+          },
+        )
+      } else await dependencies.executeAgent(agentInput)
+    }
+    if (earlyPreview) {
+      // 预览同样使用不可修改的验收入口，工作区里的场景仅描述实际交互。
+      await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
+      input.onActivity?.('preview_checking')
+      const checkSignal = dependencies.abortSignal
+      await requireSuccessfulCommand(
+        sandbox,
+        {
+          command:
+            'node ../skill-master/assets/starter/work/browser-acceptance.mjs output.html work/preview-scenario.mjs --smoke',
+          workingDirectory: workspace,
+          abortSignal: checkSignal,
+        },
+        'Preview interaction check failed',
+      )
+      const preview = await sandbox.readTextFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: checkSignal,
+      })
+      if (
+        !preview ||
+        !hasResponsiveViewport(preview) ||
+        hasExternalResourceReference(preview) ||
+        preview.includes(input.apiKey) ||
+        redactSecrets(preview) !== preview
+      )
+        throw new Error('Preview artifact check failed')
+      await input.onPreview!(preview)
+      // 参数修改优先复用已通过的场景；失败后才让模型处理一次，避免正常路径重复推理。
+      const acceptanceInput = {
+        ...agentInput,
+        phase: 'acceptance' as const,
+        abortSignal: dependencies.abortSignal ?? new AbortController().signal,
+      }
+      let reused = false
+      if (parameterPatched) {
+        const result = await sandbox.run({
+          command: 'node ../skill-master/assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs',
+          workingDirectory: workspace,
+          abortSignal: acceptanceInput.abortSignal,
+        })
+        reused = result.exitCode === 0
+      }
+      if (!reused) await dependencies.executeAgent(acceptanceInput)
+      const reportText = await sandbox.readTextFile({
+        path: path.join(workspace, 'work/browser-acceptance/report.json'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const finalHtml = await sandbox.readBinaryFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const report = reportText ? JSON.parse(reportText) : null
+      if (
+        !finalHtml ||
+        report?.passed !== true ||
+        report?.smoke !== false ||
+        report?.sha256 !== createHash('sha256').update(finalHtml).digest('hex')
+      )
+        throw new Error('Full browser acceptance did not pass')
+    }
     stage = 'integrity'
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
     input.onActivity?.('validating')
@@ -398,8 +455,19 @@ export async function runPlayableBuild(
     if (hasExternalResourceReference(html)) throw new Error('Playable artifact contains an external resource')
     if (!hasResponsiveViewport(html)) throw new Error('Playable artifact is missing responsive viewport support')
 
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
+    await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
+    const previewScenario = await sandbox.readTextFile({
+      path: path.join(workspace, 'work/preview-scenario.mjs'),
+      abortSignal: dependencies.abortSignal,
+    })
+    const fullScenario = await sandbox.readTextFile({
+      path: path.join(workspace, 'work/scenario.mjs'),
+      abortSignal: dependencies.abortSignal,
+    })
     return {
+      ...(previewScenario && fullScenario && previewScenario.length <= 128000 && fullScenario.length <= 128000
+        ? { reusableScenarios: { preview: previewScenario, full: fullScenario } }
+        : {}),
       html,
       assetManifest,
       validation: createValidationReport({

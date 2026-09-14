@@ -142,6 +142,10 @@ export class PlayableAgentError extends Error {
 }
 
 export interface ConfirmedBuildInput {
+  /** 基础交互检查通过后交给宿主展示；不改变正式版本和验收状态。 */
+  onPreview?: (html: string) => Promise<void>
+  baseConfirmation?: ConfirmationProposal
+  reusableScenarios?: { preview: string; full: string }
   /** 上报步骤及公开详情；由宿主脱敏后落库，回调不序列化进 Agent 配置。 */
   onActivity?: BuildActivityCallback
   taskId: string
@@ -154,6 +158,7 @@ export interface ConfirmedBuildInput {
 }
 
 export interface BuildResult {
+  reusableScenarios?: { preview: string; full: string }
   html: string
   assetManifest?: PlayableAssetManifest
   validation: PlayableValidationReport

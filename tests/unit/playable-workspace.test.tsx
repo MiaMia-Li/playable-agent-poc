@@ -1743,3 +1743,21 @@ describe('PlayableWorkspace', () => {
     expect(screen.queryByRole('button', { name: '返回修改' })).not.toBeInTheDocument()
   })
 })
+
+it('shows a provisional playable without enabling delivery, then switches to the accepted version', () => {
+  const { rerender } = render(<PlayablePreview taskId="preview-task" phase="building" previewVersion="pending" />)
+  expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+    'src',
+    '/api/playable-tasks/preview-task/artifact?kind=playable&preview=pending',
+  )
+  expect(screen.getByText('预览已就绪，完整验收中。当前版本仅供体验。')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
+  rerender(<PlayablePreview taskId="preview-task" phase="failed" previewVersion="pending" />)
+  expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
+  expect(screen.getByText('预览可体验，完整验收未通过。请继续修改后再交付。')).toBeInTheDocument()
+  rerender(<PlayablePreview taskId="preview-task" phase="ready" previewVersion="pending" artifactVersion="accepted" />)
+  expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+    'src',
+    '/api/playable-tasks/preview-task/artifact?kind=playable',
+  )
+})
