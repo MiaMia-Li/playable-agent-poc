@@ -232,7 +232,12 @@ export interface PlayableTaskRepository {
     buildId: string,
     revision?: RevisionProposal,
   ): Promise<PlayableTaskRecord | undefined>
-  compareAndSetPhase(taskId: string, expected: PlayableTaskPhase, next: PlayableTaskPhase): Promise<boolean>
+  compareAndSetPhase(
+    taskId: string,
+    buildId: string,
+    expected: PlayableTaskPhase,
+    next: PlayableTaskPhase,
+  ): Promise<boolean>
   publishArtifact(
     taskId: string,
     buildId: string,
@@ -242,7 +247,9 @@ export interface PlayableTaskRepository {
   ): Promise<boolean>
   acceptArtifact(taskId: string, userId: string): Promise<boolean>
   requestRevision(taskId: string, userId: string): Promise<boolean>
-  markFailed(taskId: string, buildId: string): Promise<void>
+  touchBuild(taskId: string, buildId: string): Promise<boolean>
+  failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean>
+  markFailed(taskId: string, buildId: string): Promise<boolean>
   listBuilds(taskId: string): Promise<PlayableBuildRecord[]>
   listBuildsForTasks?(taskIds: string[]): Promise<PlayableBuildRecord[]>
   findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined>
@@ -349,6 +356,8 @@ interface HandlerDependencies {
   artifactStore: ArtifactStore
   schedule: BackgroundScheduler
   buildStartedEventTimeoutMs?: number
+  buildHeartbeatIntervalMs?: number
+  staleBuildTimeoutMs?: number
   requirementStreamKeepaliveMs?: number
   mediaGenerator?: MediaGenerator
   imageAnalyst?: ReferenceImageAnalyst
@@ -373,6 +382,7 @@ interface ConfirmedBuildDependencies {
   artifactStore: ArtifactStore
   mediaGenerator?: MediaGenerator
   gameplayBlueprint?: GameplayBlueprintDocument
+  buildHeartbeatIntervalMs?: number
 }
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -539,6 +549,9 @@ const ARTIFACT_CSP =
 const PREVIEW_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
+const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
+const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
+const STALE_BUILD_FAILURE_MESSAGE = '构建进程已停止，请重新确认方案并重试。'
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ error }, { status })
@@ -816,15 +829,68 @@ async function recordBuildFailure(
   buildId: string,
   message = DEFAULT_BUILD_FAILURE_MESSAGE,
 ): Promise<void> {
-  await Promise.allSettled([
-    repository.markFailed(taskId, buildId),
-    repository.appendEvent({
+  let failed = true
+  try {
+    failed = await repository.markFailed(taskId, buildId)
+  } catch {
+    // Preserve a terminal event when persistence fails unexpectedly.
+  }
+  if (!failed) return
+  await repository
+    .appendEvent({
       taskId,
       type: 'build_failed',
       phase: 'failed',
       message,
-    }),
-  ])
+    })
+    .catch(() => undefined)
+}
+
+function startBuildHeartbeat(
+  repository: PlayableTaskRepository,
+  taskId: string,
+  buildId: string,
+  intervalMs: number,
+): () => void {
+  let stopped = false
+  let heartbeatPending = false
+  const heartbeat = () => {
+    if (stopped || heartbeatPending) return
+    heartbeatPending = true
+    void repository
+      .touchBuild(taskId, buildId)
+      .catch(() => undefined)
+      .finally(() => {
+        heartbeatPending = false
+      })
+  }
+  heartbeat()
+  const timer = setInterval(heartbeat, intervalMs)
+  timer.unref?.()
+  return () => {
+    stopped = true
+    clearInterval(timer)
+  }
+}
+
+async function reconcileStaleBuild(
+  repository: PlayableTaskRepository,
+  task: PlayableTaskRecord,
+  staleBuildTimeoutMs: number,
+): Promise<void> {
+  if (!['building', 'validating'].includes(task.phase) || !task.updatedAt) return
+  const staleBefore = new Date(Date.now() - staleBuildTimeoutMs)
+  if (task.updatedAt >= staleBefore) return
+  const failed = await repository.failStaleBuild(task.id, task.userId, staleBefore)
+  if (!failed) return
+  await repository
+    .appendEvent({
+      taskId: task.id,
+      type: 'build_failed',
+      phase: 'failed',
+      message: STALE_BUILD_FAILURE_MESSAGE,
+    })
+    .catch(() => undefined)
 }
 
 type ConfirmedBuildStage =
@@ -886,6 +952,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     await recordBuildFailure(repository, task.id, buildId)
     return
   }
+
+  const stopHeartbeat = startBuildHeartbeat(
+    repository,
+    task.id,
+    buildId,
+    dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
+  )
 
   let stage: ConfirmedBuildStage = 'confirmation'
   try {
@@ -985,7 +1058,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     }
     if (containsExactSecret(result.html, apiKey)) throw new Error('Artifact contains a credential')
     if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
-    const validating = await repository.compareAndSetPhase(task.id, 'building', 'validating')
+    const validating = await repository.compareAndSetPhase(task.id, buildId, 'building', 'validating')
     if (!validating) {
       await recordBuildFailure(repository, task.id, buildId)
       return
@@ -1028,6 +1101,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
   } catch (cause) {
     logConfirmedBuildFailure(stage, cause)
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
+  } finally {
+    stopHeartbeat()
   }
 }
 
@@ -1983,6 +2058,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             agent: dependencies.agent,
             artifactStore: dependencies.artifactStore,
             mediaGenerator: dependencies.mediaGenerator,
+            buildHeartbeatIntervalMs: dependencies.buildHeartbeatIntervalMs,
             gameplayBlueprint,
           })
         })
@@ -1996,8 +2072,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async events(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      const events = await dependencies.repository.listEvents(access.task.id)
+      await reconcileStaleBuild(
+        dependencies.repository,
+        access.task,
+        dependencies.staleBuildTimeoutMs ?? DEFAULT_STALE_BUILD_TIMEOUT_MS,
+      )
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
+      const events = await dependencies.repository.listEvents(access.task.id)
       return Response.json(
         { task: safeTaskState(latestTask), events: events.map(eventJson) },
         { headers: { 'Cache-Control': 'private, no-store' } },
