@@ -2,7 +2,7 @@
 
 > 文档基线：2026-09-11，2026-09-14 按网关实测结果修订，并对照代码库复核过一次可行性
 > 2026-09-14 二次修订：Phase 0 执行完毕，结果推翻 §0 对 `generationConfig` 的判断，见 §0.1
-> 状态：Phase 0 完成，Phase 1 起实施中（**Verification Pass 暂缓，本期只做首轮分析**）
+> 状态：Phase 0–5 已实施（2026-09-14），Phase 6 随各阶段一并落地（**Verification Pass 暂缓，本期只做首轮分析**）。与原设计的差异见各阶段下的实施说明与 §6.4 末尾
 > 相关决策：[ADR 0001](./adr/0001-gemini-direct-for-video-analysis.md)、[ADR 0002](./adr/0002-layered-gameplay-blueprint.md)
 > 前置约束：[AI 网关 Gemini 能力申请](./gateway-gemini-api-requests.md)
 > 术语以根目录 `CONTEXT.md` 为准
@@ -117,6 +117,7 @@ Phase 0 已执行完毕，`scripts/check-gemini-video-analysis.ts` 可复现全�
 | ------------------- | ------------------------- | -------------------------------------------------------- |
 | `attempt`           | `integer`，非空，默认 `1` | 区分同一支视频的多次分析                                 |
 | `media_resolution`  | `text`，可空              | 本次实际生效的分辨率，`high` 或 `default`，见 §6.2 的通道彩票 |
+| `intent_text`       | `text`，可空              | 本次 `intentDivergence` 所依据的用户意图（由 brief 推导），用来判断意图是否晚到，见 §6.4。migration `0033` 补入 |
 
 `media_resolution` 只在成功时写入，失败行留空。它是 provenance 而非配置：记的是「这次实际得到了什么」，不是「这次要求了什么」——后者永远是 `HIGH`，记下来没有信息量。
 
@@ -337,6 +338,15 @@ new GoogleGenAI({
 
 写入前再加一道深度比对：除 `intentDivergence` 以外的字段与原记录不相等就当失败。这趟是把整份 Blueprint 喂回模型再要一份完整输出，模型很可能顺手润饰了别的推论，那等于在用户不知情的情况下改写了原始观察，而保留 `attempt` 列的理由正是 provenance（§4.2）。
 
+#### 实施说明（2026-09-14）
+
+落地时有四处与上文不同，均已与需求方确认：
+
+- **意图取自 brief，不取 `task.prompt`。** 首页只传附件时 `task.prompt` 是占位句「请根据上传的参考素材制作试玩」，真实意图沉淀在每轮全量重写的 `RequirementBrief` 里。`deriveGameplayIntent` 用 brief 的 summary 与 gameplay 四栏拼出意图文本，并把占位句视为无意图。首轮视频分析也改用它。
+- **用 `intent_text` 列判断「晚到」。** 每次分析与补算都记下所依据的意图；当前意图与之不同即欠一次补算。触发点有两个：brief 落库之后（仅在确实欠补算时才排后台任务），以及视频分析完成之后，后者覆盖「分析进行中用户才打字」的顺序。
+- **模型只返回 `intentDivergence`，其余字段由服务端从原 Blueprint 复制。** 上文要求模型整份复制再做深度比对，其目的（原始观察不被改写）由此在结构上成立，不再依赖一道模型一改措辞就会失败的检查；合并后的文档仍过完整 v2 校验。
+- **补算直接写成一行 `succeeded`，attempt 固定为基准行 +1。** 期间若有重跑先占了这个编号，唯一索引让插入落败、结果丢弃，不会盖过更新的视频分析。另外读取蓝图时回退到同一支视频最近一次 `succeeded`，所以重跑或补算进行中、以及重跑失败时，Agent 与构建都不会失去蓝图。
+
 ### 6.5 时长上限
 
 参考视频时长上限 **3 分钟**，上传时用浏览器取得的 duration 直接拦截并说明原因。
@@ -472,6 +482,8 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 
 ### Phase 3：上传流程与触发时机
 
+> **已实施。** 实施说明：上传 `referenceVideo` 即设为 Active；删除 Active 视频时指向清空，不自动改指其他视频（选谁会被分析并计费，属 §12 未决的指定界面）。无 Active 的旧任务在界面上显示「尚未分析」并提供显式开始按钮，承接 §5.2 的「可重跑」。`POST .../analysis` 增加 `rerun: true`，否则成功过的分析无法重看。分析路由 `maxDuration` 设为 800 秒（**需 Vercel Pro**，Hobby 上限 300 秒会导致部署失败），运行本身在 740 秒自行中止，使超时落为 `failed` 而非卡在 `analyzing`；中止时若已有低分辨率结果则保留。
+
 浏览器取 duration（读不到时按 §6.5 放过）、3 分钟拦截、随 multipart 上送、`duration_seconds` 落库；Active Reference Video 指向；上传完成后自动打带 `assetId` 的 `POST .../analysis`，前端两处 `.at(-1)` 改成跟 Active 指向走（§6.3）；`analyze_reference_video` 退化为读取结果，同步路径与 `videoToolLocks` / `videoToolTimeoutMs` 退场。
 
 一并补上 §6.3 的两项运行时保障：`vercel.json` 里分析路由的 `maxDuration`，以及 `analyzing` / `preprocessing` 的过期兜底。
@@ -480,11 +492,15 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 
 ### Phase 4：标注层
 
+> **已实施。** 实施中修掉两处绑定问题：落库原本整份替换全部视频的标注，现只替换 Active 视频那部分；Agent 原本看到全部视频的标注，而 draft 不带 assetId，重发时会被改绑到 Active 视频，现只给 Active 视频的，并作为独立上下文字段 `gameplayAnnotations` 提供（Blueprint 文档要等分析成功才存在，之前 Agent 在此之前看不到任何标注）。常驻列表经 `GET/DELETE /api/playable-tasks/[taskId]/annotations` 读取与删除。
+
 新增 `record_gameplay_annotations` 需求工具与 `requirementToolCallSchema` 的 `annotations` 字段（§7.3）、reply schema 加 `annotations`、存储、Agent 指令、Blueprint 文档组装时挂载与 `annotationsPolicy`。
 
 验收：用户说「第 12 秒是长按」后，`gameplay-blueprint.json` 中出现对应标注且带优先声明；说「节奏要快一点」则只进 `RequirementBrief`；切换 Active Reference Video 后旧视频的标注不出现在新文档里。
 
 ### Phase 5：Intent Divergence
+
+> **已实施**，与原设计的差异见 §6.4 末尾的实施说明。前端在 brief 更新后的两分钟内轮询 `intentPending`，期间在分析卡片显示比对中的提示。
 
 意图晚到的落差补算（纯文本对比，不重看视频，见 §6.4）、`intentDivergence` 的呈现。
 
@@ -493,6 +509,8 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 验收：先上传视频、后打字说明意图的任务，与反序操作的任务，得到同样的 Blueprint 内容；用户说「我想做消消乐」而视频是连连看时，`intentDivergence` 中出现该落差。
 
 ### Phase 6：界面
+
+> **已随 Phase 3–5 落地**：常驻标注列表、分析状态文案（`preprocessing` 改为「读取视频」）、低分辨率提示与重跑、分析不可用、时长超限提示、意图落差列表。
 
 常驻标注列表、分析状态文案、时长超限错误提示。
 

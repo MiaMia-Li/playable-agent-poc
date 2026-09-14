@@ -522,6 +522,11 @@ export const playableVideoAnalyses = pgTable(
     // for. Only one channel honours the request, so this is the sole record of
     // whether an analysis ran degraded. Null until the analysis succeeds.
     mediaResolution: text('media_resolution', { enum: ['high', 'default'] }),
+    // The user intent the blueprint's `intentDivergence` was computed against,
+    // derived from the requirement brief. Comparing it with the current intent
+    // is how a late-arriving intent is detected. Null until the analysis
+    // succeeds, and on rows from before it was recorded.
+    intentText: text('intent_text'),
     blueprint: jsonb('blueprint'),
     errorCode: text('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),

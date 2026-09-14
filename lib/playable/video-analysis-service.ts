@@ -5,6 +5,7 @@ import { readGeminiApiKey, readGeminiBaseUrl } from './shared-ai-key'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
+import { deriveGameplayIntent } from './gameplay-intent'
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const reader = stream.getReader()
@@ -34,6 +35,16 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
  */
 export const VIDEO_ANALYSIS_BUDGET_MS = 740_000
 
+/**
+ * A blueprint is free model text, so it can echo anything that was in the
+ * request. Both the Gemini key and the gateway address have to be covered,
+ * not just whichever one the caller happened to pass in.
+ */
+function sanitizeBlueprint(blueprint: GameplayBlueprint): GameplayBlueprint {
+  const secrets = [readGeminiApiKey() ?? '', readGeminiBaseUrl()].filter(Boolean)
+  return gameplayBlueprintSchema.parse(JSON.parse(redactSecrets(JSON.stringify(blueprint), secrets)))
+}
+
 export interface RunVideoAnalysisInput {
   task: PlayableTaskRecord
   asset: PlayableAsset
@@ -61,9 +72,12 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
       type: 'video_gameplay_analysis_started',
       message: 'QDAI gameplay analysis started',
     })
+    // Recorded with the result, so a later change of intent can be detected
+    // and compared without watching the video again.
+    const intent = deriveGameplayIntent(input.task.requirementBrief, input.task.prompt)
     const result = await input.analyst.analyze({
       taskId: input.task.id,
-      prompt: input.task.prompt,
+      prompt: intent,
       video: {
         bytes,
         mimeType: input.asset.mimeType,
@@ -71,18 +85,8 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
       },
       abortSignal: input.abortSignal,
     })
-    // A blueprint is free model text, so it can echo anything that was in the
-    // request. Both the Gemini key and the gateway address have to be covered,
-    // not just whichever one the caller happened to pass in.
-    const sanitizedBlueprint = gameplayBlueprintSchema.parse(
-      JSON.parse(
-        redactSecrets(
-          JSON.stringify(result.blueprint),
-          [readGeminiApiKey() ?? '', readGeminiBaseUrl()].filter(Boolean),
-        ),
-      ),
-    )
-    await input.repository.completeVideoAnalysis(input.analysis.id, sanitizedBlueprint, result.mediaResolution)
+    const sanitizedBlueprint = sanitizeBlueprint(result.blueprint)
+    await input.repository.completeVideoAnalysis(input.analysis.id, sanitizedBlueprint, result.mediaResolution, intent)
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_gameplay_analysis_succeeded',
@@ -102,5 +106,75 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
         message: 'Reference video analysis failed',
       })
       .catch(() => undefined)
+  }
+}
+
+export interface RunIntentComparisonInput {
+  /** Id for the row this comparison records, if it gets to record one. */
+  id: string
+  task: PlayableTaskRecord
+  asset: PlayableAsset
+  /** The succeeded analysis being compared; its attempt number is the base. */
+  analysis: PlayableVideoAnalysisRecord
+  intent: string
+  repository: PlayableTaskRepository
+  analyst: VideoGameplayAnalyst
+  abortSignal?: AbortSignal
+}
+
+/**
+ * Recomputes intent divergence for intent that arrived after the video was
+ * analysed, so uploading first and describing later ends up where describing
+ * first would have.
+ *
+ * Only the divergence comes from the model; every other field is copied from
+ * the stored blueprint here. The spec had the model copy the whole blueprint
+ * back, guarded by a deep comparison. Copying it server side makes "the
+ * original observation was not rewritten" structural, instead of a check that
+ * fails whenever the model rewords an inference it was only meant to echo.
+ *
+ * Written as a new, already-succeeded row numbered after the analysis it
+ * builds on. If anything else claimed that number first — a re-run of the
+ * video — the insert loses and the result is dropped, since it describes a
+ * blueprint that is no longer the latest.
+ */
+export async function runIntentComparison(input: RunIntentComparisonInput): Promise<boolean> {
+  const base = input.analysis.blueprint
+  if (!base) return false
+  try {
+    const intentDivergence = await input.analyst.compareIntent({
+      blueprint: base,
+      intent: input.intent,
+      durationSeconds: input.asset.durationSeconds ?? undefined,
+      abortSignal: input.abortSignal,
+    })
+    const recorded = await input.repository.recordIntentComparison({
+      id: input.id,
+      taskId: input.task.id,
+      assetId: input.analysis.assetId,
+      pipelineVersion: input.analysis.pipelineVersion,
+      model: input.analysis.model,
+      attempt: input.analysis.attempt + 1,
+      blueprint: sanitizeBlueprint({ ...base, intentDivergence }),
+      mediaResolution: input.analysis.mediaResolution,
+      intentText: input.intent,
+    })
+    if (!recorded) return false
+    await input.repository.appendEvent({
+      taskId: input.task.id,
+      type: 'video_intent_divergence_updated',
+      message: 'Gameplay blueprint compared against the updated intent',
+    })
+    return true
+  } catch {
+    console.error('Intent divergence comparison failed')
+    await input.repository
+      .appendEvent({
+        taskId: input.task.id,
+        type: 'video_intent_divergence_failed',
+        message: 'Intent divergence comparison failed',
+      })
+      .catch(() => undefined)
+    return false
   }
 }

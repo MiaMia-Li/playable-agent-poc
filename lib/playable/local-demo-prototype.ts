@@ -1009,6 +1009,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       status: 'pending',
       blueprint: null,
       mediaResolution: null,
+      intentText: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: null,
@@ -1028,6 +1029,56 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       .at(-1)
   }
 
+  async findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses
+      .get(taskId)
+      ?.filter(
+        (candidate) =>
+          candidate.pipelineVersion === pipelineVersion &&
+          candidate.assetId === assetId &&
+          candidate.status === 'succeeded',
+      )
+      .at(-1)
+  }
+
+  async recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: GameplayBlueprint
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const analyses = this.videoAnalyses.get(input.taskId) ?? []
+    const taken = analyses.some(
+      (candidate) =>
+        candidate.assetId === input.assetId &&
+        candidate.pipelineVersion === input.pipelineVersion &&
+        candidate.model === input.model &&
+        candidate.attempt === input.attempt,
+    )
+    if (taken) return undefined
+    const now = new Date()
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      blueprint: structuredClone(input.blueprint),
+      status: 'succeeded',
+      errorCode: null,
+      createdAt: now,
+      completedAt: now,
+    }
+    analyses.push(analysis)
+    this.videoAnalyses.set(input.taskId, analyses)
+    return analysis
+  }
+
   async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
     const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
     if (analysis) analysis.status = status
@@ -1037,12 +1088,14 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     id: string,
     blueprint: GameplayBlueprint,
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+    intentText: string,
   ): Promise<void> {
     const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = structuredClone(blueprint)
     analysis.mediaResolution = mediaResolution
+    analysis.intentText = intentText
     analysis.completedAt = new Date()
   }
 

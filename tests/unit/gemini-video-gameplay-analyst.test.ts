@@ -126,3 +126,58 @@ describe('Gemini video gameplay analyst', () => {
     await expect(analyze(controller.signal)).rejects.toThrow()
   })
 })
+
+describe('Gemini intent comparison', () => {
+  const divergence = [
+    {
+      value: '视频是连连看，不是三消',
+      confidence: 0.9,
+      evidence: [{ startSeconds: 2, endSeconds: 4, observation: '连线' }],
+    },
+  ]
+
+  function compare() {
+    return new GeminiVideoGameplayAnalyst().compareIntent({
+      blueprint,
+      intent: '玩法概念：三消',
+      durationSeconds: DURATION_SECONDS,
+    })
+  }
+
+  beforeEach(() => {
+    vi.stubEnv('GEMINI_API_KEY', 'gemini-test-key')
+    generateContent.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('sends text only and returns just the divergence', async () => {
+    generateContent.mockResolvedValueOnce({ text: JSON.stringify({ intentDivergence: divergence }) })
+
+    await expect(compare()).resolves.toEqual(divergence)
+    const request = generateContent.mock.calls[0][0] as { contents: { parts: Record<string, unknown>[] }[] }
+    expect(request.contents[0].parts.every((part) => !('inlineData' in part))).toBe(true)
+  })
+
+  it('treats an off-shape reply as a spent attempt', async () => {
+    generateContent
+      .mockResolvedValueOnce({ text: '看起来有差异。' })
+      .mockResolvedValueOnce({ text: '```json\n' + JSON.stringify({ intentDivergence: divergence }) + '\n```' })
+
+    await expect(compare()).resolves.toEqual(divergence)
+    expect(generateContent).toHaveBeenCalledTimes(2)
+  })
+
+  // With no video in the request the model can only cite the blueprint's own
+  // timestamps; one past the end of the video means it made something up.
+  it('refuses divergence evidence outside the video', async () => {
+    const invented = [
+      { value: '结尾有奖励关', confidence: 0.5, evidence: [{ startSeconds: 40, endSeconds: 45, observation: '奖励' }] },
+    ]
+    generateContent.mockResolvedValue({ text: JSON.stringify({ intentDivergence: invented }) })
+
+    await expect(compare()).rejects.toThrow()
+  })
+})

@@ -78,7 +78,15 @@ interface VideoAnalysisSnapshot {
   status: VideoAnalysisStatus
   blueprint: GameplayBlueprint | null
   mediaResolution?: AppliedMediaResolution | null
+  intentPending?: boolean
 }
+
+/**
+ * How long to keep checking for an intent comparison after the brief changes.
+ * It runs after the turn with no status of its own to poll on, and a failed
+ * one leaves the comparison owed, so the wait needs an end.
+ */
+const INTENT_CHECK_WINDOW_MS = 120_000
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
   draft: 0,
@@ -130,6 +138,8 @@ export function PlayableWorkspace({
   )
   const [videoAnalysisUnavailable, setVideoAnalysisUnavailable] = useState(false)
   const [retryingVideoAnalysis, setRetryingVideoAnalysis] = useState(false)
+  const [videoAnalysisIntentPending, setVideoAnalysisIntentPending] = useState(false)
+  const [intentCheckRequestedAt, setIntentCheckRequestedAt] = useState<number>()
   const [assets, setAssets] = useState(initialAssets)
   const [activeReferenceVideoId, setActiveReferenceVideoId] = useState(initialActiveReferenceVideoId)
   // Mirrors of state read from async callbacks, which would otherwise see the
@@ -176,12 +186,19 @@ export function PlayableWorkspace({
     setVideoAnalysisStatus(analysis.status)
     setGameplayBlueprint(analysis.blueprint ?? undefined)
     setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
+    setVideoAnalysisIntentPending(Boolean(analysis.intentPending))
   }, [])
 
   const clearVideoAnalysis = useCallback(() => {
     setVideoAnalysisStatus(undefined)
     setGameplayBlueprint(undefined)
     setVideoAnalysisMediaResolution(null)
+    setVideoAnalysisIntentPending(false)
+  }, [])
+
+  const handleBrief = useCallback((nextBrief: RequirementBrief) => {
+    setBrief(nextBrief)
+    if (activeReferenceVideoIdRef.current) setIntentCheckRequestedAt(Date.now())
   }, [])
 
   const activateReferenceVideo = useCallback((assetId: string | null) => {
@@ -245,6 +262,35 @@ export function PlayableWorkspace({
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
   }, [applyVideoAnalysis, taskId, videoAnalysisStatus])
+
+  useEffect(() => {
+    if (intentCheckRequestedAt === undefined) return
+    let active = true
+    let timeout: number | undefined
+    const deadline = intentCheckRequestedAt + INTENT_CHECK_WINDOW_MS
+    const poll = async () => {
+      let pending = true
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, {
+          cache: 'no-store',
+        })
+        if (response.ok) {
+          const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
+          if (!active) return
+          if (body.analysis) applyVideoAnalysis(body.analysis)
+          pending = Boolean(body.analysis?.intentPending)
+        }
+      } catch {
+        // A transient failure keeps the check going until the window closes.
+      }
+      if (active && pending && Date.now() < deadline) timeout = window.setTimeout(poll, 3000)
+    }
+    void poll()
+    return () => {
+      active = false
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }, [applyVideoAnalysis, intentCheckRequestedAt, taskId])
 
   useEffect(() => {
     if (!['building', 'validating'].includes(phase)) return
@@ -388,7 +434,7 @@ export function PlayableWorkspace({
           brief={brief}
           onProposal={setProposalDraft}
           onRevision={setRevisionDraft}
-          onBrief={setBrief}
+          onBrief={handleBrief}
           onPhase={setPhase}
           autoSubmitInitialPrompt={initialConversation.length === 0}
           initialConversation={initialConversation}
@@ -399,6 +445,7 @@ export function PlayableWorkspace({
           onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
           videoAnalysisMediaResolution={videoAnalysisMediaResolution}
           videoAnalysisUnavailable={videoAnalysisUnavailable}
+          videoAnalysisIntentPending={videoAnalysisIntentPending}
           referenceVideoAwaitingAnalysis={Boolean(analysisTargetId) && !videoAnalysisStatus}
           retryingVideoAnalysis={retryingVideoAnalysis}
           onRetryVideoAnalysis={handleRetryVideoAnalysis}

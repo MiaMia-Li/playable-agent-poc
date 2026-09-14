@@ -43,6 +43,16 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
     latestVideoAnalysis && latestVideoAnalysis.assetId === task.activeReferenceVideoAssetId
       ? latestVideoAnalysis
       : undefined
+  // The blueprint comes from the newest succeeded attempt, so a re-run or an
+  // intent comparison in flight does not blank it on reload.
+  const blueprintAnalysis =
+    videoAnalysis && videoAnalysis.status !== 'succeeded'
+      ? await repository.findLatestSucceededVideoAnalysis(
+          task.id,
+          VIDEO_ANALYSIS_PIPELINE_VERSION,
+          videoAnalysis.assetId,
+        )
+      : videoAnalysis
   const sourceTemplateId = selectedSourceTemplate(task)
   const initialConversation = restorePlayableConversation(
     storedMessages,
@@ -81,8 +91,8 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
         durationSeconds,
       }))}
       initialVideoAnalysisStatus={videoAnalysis?.status}
-      initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
-      initialVideoAnalysisMediaResolution={videoAnalysis?.mediaResolution ?? null}
+      initialGameplayBlueprint={blueprintAnalysis?.blueprint ?? undefined}
+      initialVideoAnalysisMediaResolution={blueprintAnalysis?.mediaResolution ?? null}
       initialActiveReferenceVideoId={task.activeReferenceVideoAssetId}
       initialGameplayAnnotations={task.gameplayAnnotations.filter(
         (annotation) => annotation.assetId === task.activeReferenceVideoAssetId,

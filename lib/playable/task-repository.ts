@@ -103,6 +103,7 @@ function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): Playab
     model: row.model,
     attempt: row.attempt,
     mediaResolution: row.mediaResolution,
+    intentText: row.intentText,
     blueprint: row.blueprint ? gameplayBlueprintSchema.parse(row.blueprint) : null,
     errorCode: row.errorCode,
     createdAt: row.createdAt,
@@ -622,6 +623,66 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return analysis ? toVideoAnalysis(analysis) : undefined
   }
 
+  async findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const [analysis] = await db
+      .select()
+      .from(playableVideoAnalyses)
+      .where(
+        and(
+          eq(playableVideoAnalyses.taskId, taskId),
+          eq(playableVideoAnalyses.pipelineVersion, pipelineVersion),
+          eq(playableVideoAnalyses.assetId, assetId),
+          eq(playableVideoAnalyses.status, 'succeeded'),
+        ),
+      )
+      .orderBy(desc(playableVideoAnalyses.attempt), desc(playableVideoAnalyses.createdAt))
+      .limit(1)
+    return analysis ? toVideoAnalysis(analysis) : undefined
+  }
+
+  /**
+   * Relies on the same unique index as `claimVideoAnalysis`, but without the
+   * read-and-retry: the attempt number is fixed by the analysis the comparison
+   * was derived from, and losing the insert means that analysis is no longer
+   * the latest, so there is nothing to retry towards.
+   */
+  async recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: NonNullable<PlayableVideoAnalysisRecord['blueprint']>
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const now = new Date()
+    const [inserted] = await db
+      .insert(playableVideoAnalyses)
+      .values({
+        ...input,
+        blueprint: gameplayBlueprintSchema.parse(input.blueprint),
+        status: 'succeeded',
+        createdAt: now,
+        completedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [
+          playableVideoAnalyses.assetId,
+          playableVideoAnalyses.pipelineVersion,
+          playableVideoAnalyses.model,
+          playableVideoAnalyses.attempt,
+        ],
+      })
+      .returning()
+    return inserted ? toVideoAnalysis(inserted) : undefined
+  }
+
   async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
     await db.update(playableVideoAnalyses).set({ status }).where(eq(playableVideoAnalyses.id, id))
   }
@@ -630,6 +691,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     id: string,
     blueprint: PlayableVideoAnalysisRecord['blueprint'],
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+    intentText: string,
   ): Promise<void> {
     if (!blueprint) throw new Error('Gameplay blueprint is required')
     await db
@@ -638,6 +700,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         status: 'succeeded',
         blueprint: gameplayBlueprintSchema.parse(blueprint),
         mediaResolution,
+        intentText,
         completedAt: new Date(),
       })
       .where(eq(playableVideoAnalyses.id, id))

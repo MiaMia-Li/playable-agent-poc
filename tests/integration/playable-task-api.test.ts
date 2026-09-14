@@ -420,6 +420,7 @@ class MemoryRepository implements PlayableTaskRepository {
       status: 'pending',
       blueprint: null,
       mediaResolution: null,
+      intentText: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: null,
@@ -437,6 +438,53 @@ class MemoryRepository implements PlayableTaskRepository {
       .at(-1)
   }
 
+  async findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses
+      .filter(
+        (analysis) =>
+          analysis.taskId === taskId &&
+          analysis.pipelineVersion === pipelineVersion &&
+          analysis.assetId === assetId &&
+          analysis.status === 'succeeded',
+      )
+      .at(-1)
+  }
+
+  async recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: GameplayBlueprint
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined> {
+    const taken = this.videoAnalyses.some(
+      (analysis) =>
+        analysis.assetId === input.assetId &&
+        analysis.pipelineVersion === input.pipelineVersion &&
+        analysis.model === input.model &&
+        analysis.attempt === input.attempt,
+    )
+    if (taken) return undefined
+    const now = new Date()
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      status: 'succeeded',
+      errorCode: null,
+      createdAt: now,
+      completedAt: now,
+    }
+    this.videoAnalyses.push(analysis)
+    return analysis
+  }
+
   async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
     const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
     if (analysis) analysis.status = status
@@ -446,12 +494,14 @@ class MemoryRepository implements PlayableTaskRepository {
     id: string,
     blueprint: GameplayBlueprint,
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+    intentText: string,
   ): Promise<void> {
     const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = blueprint
     analysis.mediaResolution = mediaResolution
+    analysis.intentText = intentText
     analysis.completedAt = new Date()
   }
 
@@ -517,6 +567,7 @@ function createHarness() {
   const videoAnalyst = {
     model: 'gemini-test',
     analyze: vi.fn(async () => ({ blueprint: gameplayBlueprint, mediaResolution: 'high' as const })),
+    compareIntent: vi.fn(async (): Promise<GameplayBlueprint['intentDivergence']> => []),
   }
   const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
   let authenticatedUserId: string | undefined = 'user-1'
@@ -703,6 +754,7 @@ describe('playable task API', () => {
       model: 'model',
       attempt: 1,
       mediaResolution: null,
+      intentText: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -1009,6 +1061,7 @@ describe('playable task API', () => {
       model: 'model',
       attempt: 1,
       mediaResolution: 'high',
+      intentText: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date(),
@@ -1037,9 +1090,10 @@ describe('playable task API', () => {
     expect(toolResult).toEqual({ status: 'succeeded', blueprint: gameplayBlueprint })
     // The tool is a lookup now. Holding the NDJSON stream open for a Gemini
     // round trip is exactly what this change removed, so the analyst must not
-    // be reachable from the message path at all.
+    // be reachable from the message path at all. The one thing a turn may
+    // schedule is a text-only intent comparison, which never sends the video.
+    await Promise.all(harness.scheduled.map((work) => work()))
     expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
-    expect(harness.scheduled).toHaveLength(0)
   })
 
   it('tells the agent no analysis exists yet rather than starting one', async () => {
@@ -1136,6 +1190,7 @@ describe('playable task API', () => {
       model: harness.videoAnalyst.model,
       attempt: 1,
       mediaResolution: 'default',
+      intentText: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date(),
@@ -1151,7 +1206,11 @@ describe('playable task API', () => {
 
     const rerun = await post({ assetId: video.id, rerun: true })
     expect(rerun.status).toBe(202)
-    await expect(rerun.json()).resolves.toMatchObject({ analysis: { attempt: 2, status: 'pending' } })
+    // The previous blueprint rides along, so neither the card nor the agent
+    // loses it while the re-run is in flight.
+    await expect(rerun.json()).resolves.toMatchObject({
+      analysis: { attempt: 2, status: 'pending', blueprint: gameplayBlueprint, mediaResolution: 'default' },
+    })
 
     const whileRunning = await post({ assetId: video.id, rerun: true })
     expect(whileRunning.status).toBe(202)
@@ -1162,6 +1221,66 @@ describe('playable task API', () => {
     await expect(
       harness.repository.findLatestVideoAnalysis('owned', VIDEO_ANALYSIS_PIPELINE_VERSION),
     ).resolves.toMatchObject({ attempt: 2, status: 'succeeded', mediaResolution: 'high' })
+  })
+
+  // Uploading first means the video is analysed before anyone says what they
+  // want. The comparison has to catch up once they do, without watching the
+  // video again and without touching what was observed.
+  it('compares a finished analysis against intent that arrives later, leaving the observation untouched', async () => {
+    const video = referenceVideo('video-intent')
+    harness.repository.assets.push(video)
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-before-intent',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: harness.videoAnalyst.model,
+      attempt: 1,
+      mediaResolution: 'high',
+      intentText: '',
+      blueprint: gameplayBlueprint,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+    const divergence = [{ value: '视频是连连看，不是三消', confidence: 0.9, evidence: [] }]
+    harness.videoAnalyst.compareIntent.mockResolvedValueOnce(divergence)
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValue({
+      ...confirmationReply,
+      brief: createRequirementBrief('我想做一个三消'),
+    })
+    const send = async () =>
+      (
+        await harness.handlers.message(
+          request('/api/playable-tasks/owned/messages', 'POST', { message: '我想做一个三消' }),
+          { params: Promise.resolve({ taskId: 'owned' }) },
+        )
+      ).text()
+
+    await send()
+    expect(harness.scheduled).toHaveLength(1)
+    await harness.scheduled[0]()
+
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
+    expect(harness.videoAnalyst.compareIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ blueprint: gameplayBlueprint, intent: expect.stringContaining('三消') }),
+    )
+    await expect(
+      harness.repository.findLatestVideoAnalysis('owned', VIDEO_ANALYSIS_PIPELINE_VERSION),
+    ).resolves.toMatchObject({
+      attempt: 2,
+      status: 'succeeded',
+      mediaResolution: 'high',
+      intentText: expect.stringContaining('三消'),
+      blueprint: { ...gameplayBlueprint, intentDivergence: divergence },
+    })
+
+    // The same intent again owes nothing.
+    await send()
+    expect(harness.scheduled).toHaveLength(1)
+    expect(harness.videoAnalyst.compareIntent).toHaveBeenCalledOnce()
   })
 
   // Drafts come back without an asset id and are bound to the active video on
@@ -1319,6 +1438,7 @@ describe('playable task API', () => {
       model: 'model',
       attempt: 1,
       mediaResolution: null,
+      intentText: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date(),

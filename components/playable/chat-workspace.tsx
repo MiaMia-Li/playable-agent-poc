@@ -129,6 +129,8 @@ interface ChatWorkspaceProps {
   videoAnalysisMediaResolution?: AppliedMediaResolution | null
   /** No Gemini key is configured, so there is nothing to wait for or retry. */
   videoAnalysisUnavailable?: boolean
+  /** The brief changed since the blueprint was compared against it; a comparison is under way. */
+  videoAnalysisIntentPending?: boolean
   /**
    * A reference video exists with no current analysis: a task from before the
    * v2 pipeline, or one whose active video was deleted. Offered as an explicit
@@ -319,6 +321,7 @@ export function ChatWorkspace({
   onVideoAnalysisToolStatus,
   videoAnalysisMediaResolution,
   videoAnalysisUnavailable = false,
+  videoAnalysisIntentPending = false,
   referenceVideoAwaitingAnalysis = false,
   retryingVideoAnalysis = false,
   onRetryVideoAnalysis,
@@ -949,6 +952,9 @@ export function ChatWorkspace({
                       ))}
                     </ul>
                   </div>
+                )}
+                {videoAnalysisIntentPending && (
+                  <p className="text-muted-foreground text-xs">正在对照你最新的需求，检查视频与描述的差异…</p>
                 )}
                 {videoAnalysisMediaResolution === 'default' && (
                   <p className="text-muted-foreground text-xs">

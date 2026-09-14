@@ -42,7 +42,8 @@ import { isPlayableResourceAssetSlot } from './asset-policy'
 import { createRequirementBrief } from './requirement-tools'
 import type { AppliedMediaResolution, VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
-import { runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
+import { runIntentComparison, runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
+import { deriveGameplayIntent } from './gameplay-intent'
 import { PlayableBuildExecutionError } from './sandbox-runner'
 import {
   deliveryProfileIdFor,
@@ -83,6 +84,26 @@ const RUNNING_ANALYSIS_STATUSES: ReadonlySet<VideoAnalysisStatus> = new Set(['pe
  * slow run is never mistaken for an abandoned one.
  */
 const STALE_ANALYSIS_MS = 15 * 60 * 1000
+
+/**
+ * An intent comparison runs in the background of the message route, which has
+ * no raised `maxDuration`. It is text only and far quicker than a video run,
+ * so it is cut off well inside the platform default.
+ */
+const INTENT_COMPARISON_BUDGET_MS = 240_000
+
+/**
+ * The analysis a task currently has for its active video, as three views that
+ * used to be one. `latest` carries the status the user sees; `source` is the
+ * newest succeeded attempt, which the blueprint is read from so a re-run or an
+ * intent comparison never leaves the agent without one; `intentPending` says
+ * the brief has moved on since `source` was compared against it.
+ */
+interface CurrentVideoAnalysis {
+  latest: PlayableVideoAnalysisRecord
+  source?: PlayableVideoAnalysisRecord
+  intentPending: boolean
+}
 
 export interface PlayableTaskRecord {
   id: string
@@ -127,6 +148,12 @@ export interface PlayableVideoAnalysisRecord {
   model: string
   attempt: number
   mediaResolution: AppliedMediaResolution | null
+  /**
+   * The intent this blueprint's divergence was computed against. Null for
+   * rows written before it was recorded, which are treated as "unknown" and
+   * so compared again once any intent exists.
+   */
+  intentText: string | null
   blueprint: GameplayBlueprint | null
   errorCode: string | null
   createdAt: Date
@@ -244,11 +271,38 @@ export interface PlayableTaskRepository {
     rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>
   findLatestVideoAnalysis(taskId: string, pipelineVersion: string): Promise<PlayableVideoAnalysisRecord | undefined>
+  /**
+   * What the blueprint is read from while a newer attempt is running or has
+   * failed. Without it every re-run, and every intent comparison, would leave
+   * the agent and the build without a blueprint until it finished.
+   */
+  findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined>
+  /**
+   * Inserts an already-succeeded attempt at exactly `attempt`, returning
+   * undefined if that number is taken. The fixed number is the guard: it only
+   * lands if nothing was claimed after the analysis it was derived from.
+   */
+  recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: GameplayBlueprint
+    mediaResolution: AppliedMediaResolution | null
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined>
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
   completeVideoAnalysis(
     id: string,
     blueprint: GameplayBlueprint,
     mediaResolution: AppliedMediaResolution | null,
+    intentText: string,
   ): Promise<void>
   failVideoAnalysis(id: string, errorCode: string): Promise<void>
   createResearchRun?(input: {
@@ -428,20 +482,23 @@ function activeGameplayAnnotations(task: PlayableTaskRecord): GameplayAnnotation
   return assetId ? task.gameplayAnnotations.filter((annotation) => annotation.assetId === assetId) : []
 }
 
-function safeVideoAnalysis(analysis: PlayableVideoAnalysisRecord | undefined) {
-  if (!analysis) return null
+function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
+  if (!current) return null
+  const { latest, source } = current
   return {
-    id: analysis.id,
-    assetId: analysis.assetId,
-    status: videoAnalysisStatusSchema.parse(analysis.status),
-    attempt: analysis.attempt,
+    id: latest.id,
+    assetId: latest.assetId,
+    status: videoAnalysisStatusSchema.parse(latest.status),
+    attempt: latest.attempt,
     // Surfaced so the UI can say the analysis ran degraded and offer a re-run.
     // Without it, a low-resolution result is indistinguishable from a good one.
-    mediaResolution: analysis.mediaResolution,
-    blueprint: analysis.blueprint ? gameplayBlueprintSchema.parse(analysis.blueprint) : null,
-    errorCode: analysis.errorCode,
-    createdAt: analysis.createdAt.toISOString(),
-    completedAt: analysis.completedAt?.toISOString() ?? null,
+    // Taken from the blueprint's own attempt, since that is what it describes.
+    mediaResolution: source?.mediaResolution ?? null,
+    blueprint: source?.blueprint ? gameplayBlueprintSchema.parse(source.blueprint) : null,
+    intentPending: current.intentPending,
+    errorCode: latest.errorCode,
+    createdAt: latest.createdAt.toISOString(),
+    completedAt: latest.completedAt?.toISOString() ?? null,
   }
 }
 
@@ -1009,15 +1066,33 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
    * so without this the row sits in `analyzing` forever and the UI spins. The
    * gap has always existed; analysing on upload just makes it easy to hit.
    */
-  const readCurrentAnalysis = async (task: PlayableTaskRecord, assetId: string | null) => {
-    const latest = await dependencies.repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION)
+  const readCurrentAnalysis = async (
+    task: PlayableTaskRecord,
+    assetId: string | null,
+  ): Promise<CurrentVideoAnalysis | undefined> => {
+    const found = await dependencies.repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION)
     // The active video can change, and the latest analysis may belong to the
     // one it replaced. That is "not analysed yet", not a result.
-    if (!latest || !assetId || latest.assetId !== assetId) return undefined
-    if (!RUNNING_ANALYSIS_STATUSES.has(latest.status)) return latest
-    if (Date.now() - latest.createdAt.getTime() < STALE_ANALYSIS_MS) return latest
-    await dependencies.repository.failVideoAnalysis(latest.id, 'analysis_abandoned').catch(() => undefined)
-    return { ...latest, status: 'failed' as const, errorCode: 'analysis_abandoned' }
+    if (!found || !assetId || found.assetId !== assetId) return undefined
+    let latest = found
+    if (RUNNING_ANALYSIS_STATUSES.has(found.status) && Date.now() - found.createdAt.getTime() >= STALE_ANALYSIS_MS) {
+      await dependencies.repository.failVideoAnalysis(found.id, 'analysis_abandoned').catch(() => undefined)
+      latest = { ...found, status: 'failed', errorCode: 'analysis_abandoned' }
+    }
+    const source =
+      latest.status === 'succeeded'
+        ? latest
+        : await dependencies.repository.findLatestSucceededVideoAnalysis(
+            task.id,
+            VIDEO_ANALYSIS_PIPELINE_VERSION,
+            assetId,
+          )
+    // Only owed against a settled result. A running attempt records whatever
+    // intent was current when it started, and is reconciled when it finishes.
+    const intent = deriveGameplayIntent(task.requirementBrief, task.prompt)
+    const intentPending =
+      latest.status === 'succeeded' && Boolean(latest.blueprint) && intent !== '' && intent !== latest.intentText
+    return { latest, source, intentPending }
   }
 
   /**
@@ -1027,12 +1102,62 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
    * video, so an unfiltered join would describe the old video's timeline.
    */
   const gameplayBlueprintDocumentFor = async (task: PlayableTaskRecord) => {
-    const analysis = await readCurrentAnalysis(task, task.activeReferenceVideoAssetId)
-    if (analysis?.status !== 'succeeded' || !analysis.blueprint) return undefined
+    const source = (await readCurrentAnalysis(task, task.activeReferenceVideoAssetId))?.source
+    if (!source?.blueprint) return undefined
     return toGameplayBlueprintDocument(
-      gameplayBlueprintSchema.parse(analysis.blueprint),
-      task.gameplayAnnotations.filter((annotation) => annotation.assetId === analysis.assetId),
+      gameplayBlueprintSchema.parse(source.blueprint),
+      task.gameplayAnnotations.filter((annotation) => annotation.assetId === source.assetId),
     )
+  }
+
+  const intentComparisonsInFlight = new Set<string>()
+
+  /**
+   * Brings intent divergence up to date with the brief (spec section 6.4). Run
+   * after a brief is stored and after a video analysis finishes, which between
+   * them cover uploading before describing as well as the reverse. Text only
+   * and never re-reads the video, so it is cheap enough to run on every change.
+   */
+  const reconcileIntentDivergence = async (taskId: string, userId: string) => {
+    const analyst = dependencies.videoAnalyst
+    if (!analyst) return
+    const task = await dependencies.repository.findOwnedTask(taskId, userId)
+    if (!task) return
+    const current = await readCurrentAnalysis(task, task.activeReferenceVideoAssetId)
+    if (!current?.intentPending) return
+    const base = current.latest
+    // Collapses a burst of brief updates in one process into one comparison;
+    // the next update after it lands will see whether the intent moved again.
+    if (intentComparisonsInFlight.has(base.id)) return
+    intentComparisonsInFlight.add(base.id)
+    try {
+      const asset = await dependencies.repository.findOwnedAsset(task.id, userId, base.assetId)
+      if (!asset) return
+      await runIntentComparison({
+        id: dependencies.generateId(),
+        task,
+        asset,
+        analysis: base,
+        intent: deriveGameplayIntent(task.requirementBrief, task.prompt),
+        repository: dependencies.repository,
+        analyst,
+        abortSignal: AbortSignal.timeout(INTENT_COMPARISON_BUDGET_MS),
+      })
+    } finally {
+      intentComparisonsInFlight.delete(base.id)
+    }
+  }
+
+  const scheduleIntentReconciliation = (taskId: string, userId: string) => {
+    try {
+      dependencies.schedule(() =>
+        reconcileIntentDivergence(taskId, userId).catch(() => {
+          console.error('Intent divergence reconciliation failed')
+        }),
+      )
+    } catch {
+      console.error('Unable to schedule intent divergence reconciliation')
+    }
   }
 
   /**
@@ -1208,11 +1333,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     const asset = await dependencies.repository.findOwnedAsset(input.task.id, input.userId, input.call.assetId)
     if (!asset || asset.slot !== 'referenceVideo') return { status: 'unavailable', reason: 'asset_unavailable' }
 
-    const latest = await readCurrentAnalysis(input.task, asset.id)
-    if (!latest) return { status: 'unavailable', reason: 'analysis_not_started' }
-    if (latest.status === 'succeeded' && latest.blueprint) {
-      const result = { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(latest.blueprint) }
-      input.cache.set(cacheKey, result)
+    const current = await readCurrentAnalysis(input.task, asset.id)
+    if (!current) return { status: 'unavailable', reason: 'analysis_not_started' }
+    const { latest, source } = current
+    // A blueprint from an earlier attempt is still an observation of this
+    // video, so a re-run in progress does not take it away from the agent.
+    if (source?.blueprint) {
+      const result = { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(source.blueprint) }
+      if (source === latest) input.cache.set(cacheKey, result)
       return result
     }
     if (latest.status === 'failed') return { status: 'analysis_failed', reason: latest.errorCode ?? 'analysis_failed' }
@@ -1520,6 +1648,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 nextBrief,
               )
               if (!briefUpdated) throw new Error('Task phase conflict')
+              access.task.requirementBrief = nextBrief
+              // Checked here rather than in the background job so a turn that
+              // owes no comparison schedules nothing at all.
+              const analysisAfterBrief = await readCurrentAnalysis(
+                access.task,
+                access.task.activeReferenceVideoAssetId,
+              ).catch(() => undefined)
+              if (analysisAfterBrief?.intentPending) scheduleIntentReconciliation(access.task.id, access.userId)
               for (const tool of validatedReply.tools ?? []) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
@@ -1657,9 +1793,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       if (request.method === 'GET') {
-        const latest = await readCurrentAnalysis(access.task, access.task.activeReferenceVideoAssetId)
+        const current = await readCurrentAnalysis(access.task, access.task.activeReferenceVideoAssetId)
         return Response.json(
-          { analysis: safeVideoAnalysis(latest) },
+          { analysis: safeVideoAnalysis(current) },
           { headers: { 'Cache-Control': 'private, no-store' } },
         )
       }
@@ -1685,18 +1821,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (activeId && video.id !== activeId) return jsonError(409, 'Reference video is not the active one')
       if (!activeId) await dependencies.repository.setActiveReferenceVideo(access.task.id, access.userId, video.id)
 
-      const latest = await readCurrentAnalysis(access.task, video.id)
+      const current = await readCurrentAnalysis(access.task, video.id)
+      const latest = current?.latest
       if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
         return Response.json(
-          { analysis: safeVideoAnalysis(latest) },
+          { analysis: safeVideoAnalysis(current) },
           { status: latest.status === 'succeeded' ? 200 : 202 },
         )
       }
       const claim = await claimVideoAnalysis(access.task.id, video.id, dependencies.videoAnalyst.model, rerun)
       const analysis = claim.analysis
+      // The previous blueprint rides along with the new attempt's status, so a
+      // re-run shows as "in progress" without the card going blank.
+      const claimedView: CurrentVideoAnalysis = {
+        latest: analysis,
+        source: analysis.status === 'succeeded' ? analysis : (current?.source ?? current?.latest),
+        intentPending: false,
+      }
+      if (claimedView.source?.status !== 'succeeded') claimedView.source = undefined
       if (!claim.claimed) {
         return Response.json(
-          { analysis: safeVideoAnalysis(analysis) },
+          { analysis: safeVideoAnalysis(claimedView) },
           { status: analysis.status === 'succeeded' ? 200 : 202 },
         )
       }
@@ -1716,12 +1861,18 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             analyst: dependencies.videoAnalyst!,
             abortSignal: AbortSignal.timeout(VIDEO_ANALYSIS_BUDGET_MS),
           })
+          // Covers describing while the video was still being analysed: the
+          // run used the intent current when it started, and the brief may
+          // have moved on since.
+          await reconcileIntentDivergence(access.task.id, access.userId).catch(() => {
+            console.error('Intent divergence reconciliation failed')
+          })
         })
       } catch {
         await dependencies.repository.failVideoAnalysis(analysis.id, 'schedule_failed')
         return jsonError(500, 'Unable to schedule video analysis')
       }
-      return Response.json({ analysis: safeVideoAnalysis(analysis) }, { status: 202 })
+      return Response.json({ analysis: safeVideoAnalysis(claimedView) }, { status: 202 })
     },
 
     /**
