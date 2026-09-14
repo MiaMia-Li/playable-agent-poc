@@ -2,6 +2,8 @@ import type { BuildActivityDetail } from './build-activity-detail'
 
 // 步骤标题固定，详情只接收宿主过滤后的公开信息。未知事件仍忽略。
 export const buildActivityLabels = {
+  stage_started: '阶段开始',
+  stage_completed: '阶段结束',
   transferring: '正在传输构建文件',
   agent_message: 'Agent 说明',
   reasoning_summary: '思考摘要',

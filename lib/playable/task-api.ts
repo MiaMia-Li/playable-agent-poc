@@ -2,6 +2,7 @@ import { sourceTemplateFile } from './build-skill'
 import { mergeReasoning } from './reasoning-history'
 import { sanitizeBuildActivityDetail } from './build-activity-detail'
 import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
+import { createBuildTimingReporter } from './build-timing'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -853,6 +854,9 @@ function artifactPrefix(task: PlayableTaskRecord, buildId: string): string {
 export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies): Promise<void> {
   const { task, apiKey, mediaApiKey, buildId, repository, agent, artifactStore } = dependencies
   const generationApiKey = mediaApiKey ?? apiKey
+  // 已失去构建归属的旧 worker 不得向新一轮追加计时或进度事件。
+  const ownedBuild = await repository.findBuild(task.id, buildId)
+  if (ownedBuild && !['building', 'validating'].includes(ownedBuild.status)) return
   if (!task.confirmation) {
     await recordBuildFailure(repository, task.id, buildId)
     return
@@ -875,7 +879,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       .map(([, value]) => value ?? ''),
   ]
   let activityQueue = Promise.resolve()
-  const onActivity: BuildActivityCallback = (activity, detail) => {
+  const persistActivity: BuildActivityCallback = (activity, detail) => {
     if (!Object.hasOwn(buildActivityLabels, activity)) return
     const message = detail
       ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
@@ -892,6 +896,9 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         console.error('Unable to persist build activity')
       })
   }
+  const timing = createBuildTimingReporter(persistActivity)
+  const onActivity = timing.activity
+  timing.start('environment')
   let stage: ConfirmedBuildStage = 'confirmation'
   try {
     if (
@@ -985,6 +992,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     if (redactSecrets(result.html) !== result.html) throw new Error('Artifact contains a credential')
     const validating = await repository.compareAndSetPhase(task.id, buildId, 'building', 'validating')
     if (!validating) {
+      timing.finish()
+      await activityQueue
       await recordBuildFailure(repository, task.id, buildId)
       return
     }
@@ -995,6 +1004,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const productionConfig = createProductionConfig(sanitizedConfirmation)
     const assetManifest = result.assetManifest ?? createAssetSourceManifest(sanitizedConfirmation, assets)
     stage = 'artifact_store'
+    timing.start('publish')
     console.log('Storing playable artifacts')
     await artifactStore.put(`${prefix}/production-config.json`, JSON.stringify(productionConfig), 'application/json')
     await artifactStore.put(`${prefix}/asset-manifest.json`, JSON.stringify(assetManifest), 'application/json')
@@ -1011,10 +1021,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     stage = 'publish'
     const published = await repository.publishArtifact(task.id, buildId, 'validating', playableKey, validationReport)
     if (!published) {
+      timing.finish()
+      await activityQueue
       await recordBuildFailure(repository, task.id, buildId)
       return
     }
     console.log('Playable artifacts published')
+    timing.finish()
+    await activityQueue
     await repository
       .appendEvent({
         taskId: task.id,
@@ -1024,10 +1038,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       })
       .catch(() => undefined)
   } catch (cause) {
+    timing.finish()
     await activityQueue
     logConfirmedBuildFailure(stage, cause)
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   } finally {
+    timing.finish()
+    await activityQueue
     stopHeartbeat()
   }
 }

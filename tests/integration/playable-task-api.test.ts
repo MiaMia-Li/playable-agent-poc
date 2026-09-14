@@ -2077,16 +2077,20 @@ describe('playable task API', () => {
     })
     const events = await harness.repository.listEvents(task.id)
     expect(events.map((event) => event.type)).toEqual([
+      'build_activity_stage_started',
       'build_activity_command_started',
       'build_activity_command_failed',
+      'build_activity_stage_completed',
       'build_failed',
     ])
     expect(JSON.stringify(events)).not.toContain('private diagnostic')
     expect(JSON.stringify(events)).not.toContain('sk-test-secret')
-    expect(JSON.parse(events[0].message!)).toMatchObject({
-      version: 1,
-      detail: { input: 'echo [已隐藏]', output: '检查完成' },
-    })
+    expect(JSON.parse(events.find((event) => event.type === 'build_activity_command_started')!.message!)).toMatchObject(
+      {
+        version: 1,
+        detail: { input: 'echo [已隐藏]', output: '检查完成' },
+      },
+    )
     const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
       params: Promise.resolve({ taskId: 'owned' }),
     })

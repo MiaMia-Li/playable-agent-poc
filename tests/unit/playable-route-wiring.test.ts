@@ -14,6 +14,7 @@ const infrastructure = vi.hoisted(() => {
     repository: {
       createTask: vi.fn(),
       findOwnedTask: vi.fn(),
+      findBuild: vi.fn(),
       appendMessage: vi.fn(),
       setAwaitingConfirmation: vi.fn(),
       claimBuild: vi.fn(),
