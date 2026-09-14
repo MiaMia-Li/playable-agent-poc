@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
 import { deliveryProfileIdFor, getDeliveryProfile } from '@/lib/playable/delivery-standards'
+import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
 import { getPlayableMode } from '@/lib/playable/template-registry'
 
 const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = {
@@ -32,14 +33,37 @@ interface BuildConfirmationDialogProps {
   confirmation: ConfirmationProposal
 }
 
-export function BuildConfirmationSummary({ buildId, confirmation }: BuildConfirmationDialogProps) {
+function BuildRouteBadges({ confirmation }: Pick<BuildConfirmationDialogProps, 'confirmation'>) {
+  if (confirmation.sourceTemplateId) {
+    const sourceTemplate = PLAYABLE_TEMPLATES.find((template) => template.id === confirmation.sourceTemplateId)
+
+    return (
+      <>
+        <Badge variant="secondary">{sourceTemplate?.label ?? '已选模板'}</Badge>
+        <Badge variant="outline">基于模板修改</Badge>
+      </>
+    )
+  }
+
+  if (confirmation.routing.match === 'freeform') {
+    return <Badge variant="outline">{routingLabels.freeform}</Badge>
+  }
+
   const mode = getPlayableMode(confirmation.mode)
 
   return (
+    <>
+      <Badge variant="secondary">{mode.label}</Badge>
+      <Badge variant="outline">{routingLabels[confirmation.routing.match]}</Badge>
+    </>
+  )
+}
+
+export function BuildConfirmationSummary({ buildId, confirmation }: BuildConfirmationDialogProps) {
+  return (
     <div>
       <div className="flex flex-wrap gap-1.5">
-        <Badge variant="secondary">{mode.label}</Badge>
-        <Badge variant="outline">{routingLabels[confirmation.routing.match]}</Badge>
+        <BuildRouteBadges confirmation={confirmation} />
       </div>
       <div className="mt-2">
         <BuildConfirmationDialog buildId={buildId} confirmation={confirmation} />
@@ -50,7 +74,6 @@ export function BuildConfirmationSummary({ buildId, confirmation }: BuildConfirm
 
 export function BuildConfirmationDialog({ buildId, confirmation }: BuildConfirmationDialogProps) {
   const presentation = confirmation.presentation ?? defaultConfirmationPresentation
-  const mode = getPlayableMode(confirmation.mode)
   const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(confirmation.delivery))
 
   return (
@@ -71,8 +94,7 @@ export function BuildConfirmationDialog({ buildId, confirmation }: BuildConfirma
             <section className="grid gap-2 px-4 py-3.5 sm:grid-cols-[6rem_minmax(0,1fr)] sm:gap-4">
               <h3 className="text-muted-foreground text-xs font-medium">构建方案</h3>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="secondary">{mode.label}</Badge>
-                <Badge variant="outline">{routingLabels[confirmation.routing.match]}</Badge>
+                <BuildRouteBadges confirmation={confirmation} />
               </div>
             </section>
 
