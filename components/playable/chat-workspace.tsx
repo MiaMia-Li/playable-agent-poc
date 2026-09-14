@@ -22,6 +22,7 @@ import {
 import type {
   ClarificationOption,
   ConfirmationProposal,
+  GameplayAnnotation,
   GameplayBlueprint,
   PlayableTaskPhase,
   RequirementBrief,
@@ -42,12 +43,20 @@ import {
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
+import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
+import {
+  assetUploadErrorMessage,
+  assetUploadForm,
+  isReferenceVideoTooLong,
+  REFERENCE_VIDEO_TOO_LONG_MESSAGE,
+} from '@/lib/playable/reference-video-client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable, isConfirmationReady } from './confirmation-table'
 import { ResearchResultCard } from './research-result-card'
+import { GameplayAnnotationList } from './gameplay-annotation-list'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 
 const stages = [
@@ -81,6 +90,20 @@ const requirementToolLabels: Record<string, string> = {
   offer_market_research: '建议市场搜索',
   search_market_references: '搜索市场参考',
 }
+type ToolStatus = 'started' | 'completed' | 'pending' | 'failed'
+const toolStatusLabels: Record<ToolStatus, string> = {
+  started: '进行中',
+  completed: '完成',
+  pending: '尚未完成',
+  failed: '失败',
+}
+const videoAnalysisStatusLabels: Record<VideoAnalysisStatus, string> = {
+  pending: '等待分析',
+  preprocessing: '读取视频',
+  analyzing: '理解玩法',
+  succeeded: '蓝图已生成',
+  failed: '分析失败',
+}
 const defaultResourceTreatments: Record<string, string> = {
   tileFaces: '使用系统提供的牌面素材',
   backgroundBoard: '使用系统提供的背景与棋盘',
@@ -110,7 +133,36 @@ interface ChatWorkspaceProps {
   videoAnalysisStatus?: VideoAnalysisStatus
   gameplayBlueprint?: GameplayBlueprint
   onAssetsChange?: (assets: SafePlayableAsset[]) => void
-  onVideoAnalysisToolStatus?: (status: 'started' | 'completed' | 'failed') => void
+  onVideoAnalysisToolStatus?: (status: ToolStatus) => void
+  /**
+   * Holds a message until the active video's analysis has settled, so the
+   * agent proposes with the blueprint rather than without it. Calls
+   * `onWaiting` first when there is something to wait for. Rejects on abort.
+   */
+  waitForVideoAnalysis?: (signal: AbortSignal, onWaiting: () => void) => Promise<void>
+  /**
+   * What the last successful run actually got. `default` means the gateway
+   * ignored the resolution request, which the user is told so a re-run is an
+   * informed choice rather than a guess.
+   */
+  videoAnalysisMediaResolution?: AppliedMediaResolution | null
+  /** No Gemini key is configured, so there is nothing to wait for or retry. */
+  videoAnalysisUnavailable?: boolean
+  /** The brief changed since the blueprint was compared against it; a comparison is under way. */
+  videoAnalysisIntentPending?: boolean
+  /**
+   * A reference video exists with no current analysis: a task from before the
+   * v2 pipeline, or one whose active video was deleted. Offered as an explicit
+   * start because each run is billed.
+   */
+  referenceVideoAwaitingAnalysis?: boolean
+  retryingVideoAnalysis?: boolean
+  onRetryVideoAnalysis?: (options: { rerun: boolean }) => void
+  /** The active video's stored annotations, with ids, as the user can delete them. */
+  gameplayAnnotations?: GameplayAnnotation[]
+  onAnnotations?: (annotations: GameplayAnnotation[]) => void
+  onDeleteAnnotation?: (annotation: GameplayAnnotation) => void
+  deletingAnnotationId?: string
 }
 
 interface ConversationAttachment {
@@ -288,6 +340,17 @@ export function ChatWorkspace({
   gameplayBlueprint,
   onAssetsChange,
   onVideoAnalysisToolStatus,
+  waitForVideoAnalysis,
+  videoAnalysisMediaResolution,
+  videoAnalysisUnavailable = false,
+  videoAnalysisIntentPending = false,
+  referenceVideoAwaitingAnalysis = false,
+  retryingVideoAnalysis = false,
+  onRetryVideoAnalysis,
+  gameplayAnnotations = [],
+  onAnnotations,
+  onDeleteAnnotation,
+  deletingAnnotationId,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -304,7 +367,7 @@ export function ChatWorkspace({
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
   const [completedTools, setCompletedTools] = useState<string[]>([])
-  const [toolStatuses, setToolStatuses] = useState<Record<string, 'started' | 'completed' | 'failed'>>({})
+  const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
@@ -370,11 +433,39 @@ export function ChatWorkspace({
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
       let terminalEventReceived = false
+      let requestSent = false
       streamController.current = controller
       setSending(true)
       setCompletedTools([])
       setToolStatuses({})
       setError('')
+      const updateAssistant = (next: Partial<ConversationMessage>) => {
+        setConversation((items) => {
+          const existing = items.find((item) => item.id === assistantId)
+          if (!existing) {
+            return [
+              ...items,
+              {
+                id: assistantId,
+                createdAt: new Date().toISOString(),
+                role: 'assistant',
+                content: next.content ?? '',
+                status: next.status ?? 'streaming',
+                reasoning: next.reasoning,
+                options: next.options,
+                request: next.request,
+                research: next.research,
+                adoptedSelection: next.adoptedSelection,
+              },
+            ]
+          }
+          return items.map((item) =>
+            item.id === assistantId
+              ? { ...item, ...next, reasoning: mergeReasoning(item.reasoning, next.reasoning) }
+              : item,
+          )
+        })
+      }
       try {
         let resolvedAttachments = attachmentSnapshot
         let uploadFailed = false
@@ -386,15 +477,13 @@ export function ChatWorkspace({
           try {
             const slot = referenceSlotForMimeType(attachment.file.type)
             if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
-            const body = new FormData()
-            body.set('slot', slot)
-            body.set('file', attachment.file)
+            const body = await assetUploadForm(slot, attachment.file)
             const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
               method: 'POST',
               body,
               signal: controller.signal,
             })
-            if (!uploadResponse.ok) throw new Error('素材上传失败')
+            if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '素材上传失败'))
             const result = (await uploadResponse.json()) as { asset: SafePlayableAsset }
             resolvedAttachments = resolvedAttachments.map((item) =>
               item.id === attachment.id ? { ...item, status: 'uploaded', asset: result.asset } : item,
@@ -443,6 +532,18 @@ export function ChatWorkspace({
         if (appendToConversation) {
           setConversation((items) => [...items, { id, role: 'user', content, status: 'sending', attachments }])
         }
+        // A video uploaded just now, here or on the home page, is still being
+        // analysed. The agent only reads analyses, so sending now would get a
+        // proposal written without the blueprint.
+        if (waitForVideoAnalysis) {
+          let waited = false
+          await waitForVideoAnalysis(controller.signal, () => {
+            waited = true
+            updateAssistant({ content: '参考视频分析中，完成后自动发送…', status: 'streaming' })
+          })
+          if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
+        }
+        requestSent = true
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -462,33 +563,6 @@ export function ChatWorkspace({
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-        const updateAssistant = (next: Partial<ConversationMessage>) => {
-          setConversation((items) => {
-            const existing = items.find((item) => item.id === assistantId)
-            if (!existing) {
-              return [
-                ...items,
-                {
-                  id: assistantId,
-                  createdAt: new Date().toISOString(),
-                  role: 'assistant',
-                  content: next.content ?? '',
-                  status: next.status ?? 'streaming',
-                  reasoning: next.reasoning,
-                  options: next.options,
-                  request: next.request,
-                  research: next.research,
-                  adoptedSelection: next.adoptedSelection,
-                },
-              ]
-            }
-            return items.map((item) =>
-              item.id === assistantId
-                ? { ...item, ...next, reasoning: mergeReasoning(item.reasoning, next.reasoning) }
-                : item,
-            )
-          })
-        }
         const handleLine = (line: string) => {
           if (!line.trim()) return
           let event: {
@@ -504,6 +578,7 @@ export function ChatWorkspace({
             tool?: string
             stage?: string
             research?: MarketResearchReport
+            annotations?: GameplayAnnotation[]
           }
           try {
             event = JSON.parse(line)
@@ -518,13 +593,18 @@ export function ChatWorkspace({
             })
           } else if (event.type === 'research_progress' && event.message) {
             updateAssistant({ content: event.message, status: 'streaming' })
-          } else if (['tool_started', 'tool_completed', 'tool_failed'].includes(event.type) && event.tool) {
-            const status = event.type.slice('tool_'.length) as 'started' | 'completed' | 'failed'
+          } else if (
+            ['tool_started', 'tool_completed', 'tool_pending', 'tool_failed'].includes(event.type) &&
+            event.tool
+          ) {
+            const status = event.type.slice('tool_'.length) as ToolStatus
             setToolStatuses((items) => ({ ...items, [event.tool!]: status }))
             if (status === 'completed') {
               setCompletedTools((items) => (items.includes(event.tool!) ? items : [...items, event.tool!]))
             }
             if (event.tool === 'analyze_reference_video') onVideoAnalysisToolStatus?.(status)
+          } else if (event.type === 'annotations' && event.annotations) {
+            onAnnotations?.(event.annotations)
           } else if (event.type === 'research' && event.message && event.research) {
             terminalEventReceived = true
             updateAssistant({
@@ -608,7 +688,12 @@ export function ChatWorkspace({
           if (controller.signal.aborted) setError('已停止生成确认方案')
           else setError(cause instanceof Error ? cause.message : '请求失败，请稍后重试')
           setConversation((items) =>
-            items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item)),
+            requestSent
+              ? items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item))
+              : // Stopped while waiting for the analysis: nothing reached the agent.
+                items.flatMap((item) =>
+                  item.id === assistantId ? [] : item.id === id ? [{ ...item, status: 'failed' as const }] : [item],
+                ),
           )
         }
         return false
@@ -627,9 +712,11 @@ export function ChatWorkspace({
       onProposal,
       onRevision,
       onVideoAnalysisToolStatus,
+      onAnnotations,
       sending,
       taskId,
       updateSelectedAssets,
+      waitForVideoAnalysis,
     ],
   )
 
@@ -671,14 +758,12 @@ export function ChatWorkspace({
     try {
       for (const file of acceptedFiles) {
         if (!playableAssetAccept(slot).split(',').includes(file.type)) throw new Error('素材格式不受支持')
-        const body = new FormData()
-        body.set('slot', slot)
-        body.set('file', file)
+        const body = await assetUploadForm(slot, file)
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
           method: 'POST',
           body,
         })
-        if (!response.ok) throw new Error('素材上传失败')
+        if (!response.ok) throw new Error(await assetUploadErrorMessage(response, '素材上传失败'))
         const result = (await response.json()) as { asset: SafePlayableAsset }
         uploaded.push(result.asset)
       }
@@ -703,7 +788,26 @@ export function ChatWorkspace({
     }
   }
 
+  /**
+   * Staging stays synchronous so a message sent straight after picking still
+   * carries its attachments. The duration read is asynchronous, so an overlong
+   * video is taken back out once it is known; if the user sends first, the
+   * upload itself refuses the same video with the same message.
+   */
+  async function evictOverlongComposerVideos(files: File[]) {
+    const videos = files.filter((file) => referenceSlotForMimeType(file.type) === 'referenceVideo')
+    if (videos.length === 0) return
+    const checks = await Promise.all(videos.map(async (file) => ((await isReferenceVideoTooLong(file)) ? file : null)))
+    const overlong = new Set(checks.filter((file): file is File => file !== null))
+    if (overlong.size === 0) return
+    setComposerAttachments((items) =>
+      items.filter((attachment) => attachment.status !== 'staged' || !overlong.has(attachment.file)),
+    )
+    setError(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
+  }
+
   function stageComposerFiles(files: File[]) {
+    void evictOverlongComposerVideos(files)
     setComposerAttachments((items) => {
       const localOnlyCount = items.filter((attachment) => !attachment.asset).length
       const remainingCapacity = Math.max(
@@ -886,37 +990,81 @@ export function ChatWorkspace({
           </p>
         </section>
 
-        {videoAnalysisStatus && (
+        {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
           <section aria-label="参考视频分析" className="space-y-2 rounded-xl border p-3">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold">QDAI 视频玩法分析</h2>
-              <Badge variant={videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}>
-                {videoAnalysisStatus === 'pending'
-                  ? '等待分析'
-                  : videoAnalysisStatus === 'preprocessing'
-                    ? '提取关键画面'
-                    : videoAnalysisStatus === 'analyzing'
-                      ? '理解玩法'
-                      : videoAnalysisStatus === 'succeeded'
-                        ? '蓝图已生成'
-                        : '分析失败'}
+              <Badge
+                variant={videoAnalysisUnavailable || videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}
+              >
+                {videoAnalysisUnavailable
+                  ? '分析不可用'
+                  : videoAnalysisStatus
+                    ? videoAnalysisStatusLabels[videoAnalysisStatus]
+                    : '尚未分析'}
               </Badge>
             </div>
-            {gameplayBlueprint ? (
+            {videoAnalysisUnavailable ? (
+              <p className="text-muted-foreground text-xs">
+                参考视频分析暂不可用，将根据文字需求继续，必要时会追问玩法细节。
+              </p>
+            ) : gameplayBlueprint ? (
               <>
                 <p className="text-muted-foreground text-xs leading-5">{gameplayBlueprint.summary}</p>
                 {gameplayBlueprint.uncertainties.length > 0 && (
                   <p className="text-xs">待确认：{gameplayBlueprint.uncertainties.join('、')}</p>
                 )}
+                {gameplayBlueprint.intentDivergence.length > 0 && (
+                  <div className="text-xs">
+                    <p className="font-medium">视频与你的描述不一致：</p>
+                    <ul className="text-muted-foreground mt-1 list-disc space-y-0.5 pl-4">
+                      {gameplayBlueprint.intentDivergence.map((divergence, index) => (
+                        <li key={index}>{divergence.value}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {videoAnalysisIntentPending && (
+                  <p className="text-muted-foreground text-xs">正在对照你最新的需求，检查视频与描述的差异…</p>
+                )}
+                {videoAnalysisMediaResolution === 'default' && (
+                  <p className="text-muted-foreground text-xs">
+                    本次分析在较低分辨率下完成，画面中的小字可能没有识别完整，可以重新分析。
+                  </p>
+                )}
               </>
             ) : (
               <p className="text-muted-foreground text-xs">
-                {videoAnalysisStatus === 'failed'
-                  ? '将继续使用文字需求，你也可以重新上传参考视频。'
-                  : '正在把参考视频转换为可供玩法 Agent 使用的结构化蓝图。'}
+                {!videoAnalysisStatus
+                  ? '这支参考视频还没有可用的玩法分析。'
+                  : videoAnalysisStatus === 'failed'
+                    ? '将继续使用文字需求，你也可以重新分析参考视频。'
+                    : '正在把参考视频转换为可供玩法 Agent 使用的结构化蓝图。'}
               </p>
             )}
+            {!videoAnalysisUnavailable &&
+              onRetryVideoAnalysis &&
+              (!videoAnalysisStatus || videoAnalysisStatus === 'failed' || videoAnalysisStatus === 'succeeded') && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={retryingVideoAnalysis}
+                  onClick={() => onRetryVideoAnalysis({ rerun: videoAnalysisStatus === 'succeeded' })}
+                >
+                  {retryingVideoAnalysis ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+                  {videoAnalysisStatus ? '重新分析' : '分析参考视频'}
+                </Button>
+              )}
           </section>
+        )}
+
+        {(gameplayAnnotations.length > 0 || videoAnalysisStatus || referenceVideoAwaitingAnalysis) && (
+          <GameplayAnnotationList
+            annotations={gameplayAnnotations}
+            deletingId={deletingAnnotationId}
+            onDelete={onDeleteAnnotation}
+          />
         )}
 
         {Object.keys(toolStatuses).length > 0 && (
@@ -924,7 +1072,7 @@ export function ChatWorkspace({
             {Object.entries(toolStatuses).map(([tool, status]) => (
               <Badge key={tool} variant={status === 'failed' ? 'destructive' : 'secondary'}>
                 {requirementToolLabels[tool] ?? '业务工具'}
-                {status === 'started' ? '进行中' : status === 'completed' ? '完成' : '失败'}
+                {toolStatusLabels[status]}
               </Badge>
             ))}
           </section>

@@ -194,6 +194,7 @@ export function createRequirementAgentPrompt(
       uploadedAssets: input.assets ?? [],
       attachedAssetIds: input.attachedAssetIds ?? [],
       gameplayBlueprint: input.gameplayBlueprint ?? null,
+      gameplayAnnotations: input.annotations ?? [],
       currentArtifact: {
         hasArtifact: Boolean(input.hasArtifact),
         pendingRevision: input.pendingRevision ?? null,

@@ -3,6 +3,7 @@ import { redactSecrets } from './redact'
 export type ExternalRequestSource =
   | 'Codex agent'
   | 'Codex CLI'
+  | 'Gemini'
   | 'OpenAI'
   | 'OpenRouter'
   | 'Vercel Blob'

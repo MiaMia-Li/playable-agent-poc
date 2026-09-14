@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
-import { readSharedPlayableAIKey } from './shared-ai-key'
+import { readGeminiApiKey, readSharedPlayableAIKey } from './shared-ai-key'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
@@ -18,8 +18,7 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
-import { CodexCliVideoGameplayAnalyst, OpenAIVideoGameplayAnalyst } from './video-gameplay-analyst'
-import { LocalFfmpegVideoPreprocessor, SandboxFfmpegVideoPreprocessor } from './video-preprocessor'
+import { GeminiVideoGameplayAnalyst } from './video-gameplay-analyst'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 import { OpenAIMarketResearchAgent } from './research/openai-market-research-agent'
@@ -35,21 +34,17 @@ const playableAgent = localDemo
   : localCodex
     ? new CodexCliPlayableAgent()
     : new CodexPlayableAgent()
-const videoAnalyst = localDemo
-  ? undefined
-  : localCodex
-    ? new CodexCliVideoGameplayAnalyst()
-    : new OpenAIVideoGameplayAnalyst()
+// Wired in every mode, including local demo. Availability is decided by
+// whether a Gemini key is configured, not by which runtime is active, so that
+// "no key, no analysis" means the same thing everywhere. Leaving this
+// undefined is the single signal the handlers read; they do not look at the
+// environment themselves.
+const videoAnalyst = readGeminiApiKey() ? new GeminiVideoGameplayAnalyst() : undefined
 const imageAnalyst = localDemo
   ? undefined
   : localCodex
     ? new CodexCliReferenceImageAnalyst()
     : new OpenAIReferenceImageAnalyst()
-const videoPreprocessor = localDemo
-  ? undefined
-  : localCodex
-    ? new LocalFfmpegVideoPreprocessor()
-    : new SandboxFfmpegVideoPreprocessor()
 const marketResearchAgent = localDemo ? localDemoRuntime.marketResearchAgent : new OpenAIMarketResearchAgent()
 
 const authenticate = localDemo
@@ -69,7 +64,6 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   mediaGenerator: localDemo ? localDemoRuntime.mediaGenerator : undefined,
   imageAnalyst,
   videoAnalyst,
-  videoPreprocessor,
   marketResearchAgent,
   generateId,
 })
@@ -79,6 +73,9 @@ export const playableAssetHandler = createPlayableAssetHandler({
   findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
   saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
   listAssets: (taskId, userId) => playableTaskRepository.listAssets(taskId, userId),
+  activateReferenceVideo: async (taskId, userId, assetId) => {
+    await playableTaskRepository.setActiveReferenceVideo(taskId, userId, assetId)
+  },
   store: playableArtifactStore,
   generateId,
 })
@@ -93,4 +90,12 @@ const playableAssetAccessDependencies = {
 }
 
 export const playableAssetContentHandler = createPlayableAssetContentHandler(playableAssetAccessDependencies)
-export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler(playableAssetAccessDependencies)
+export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler({
+  ...playableAssetAccessDependencies,
+  releaseReferenceVideo: async (taskId, userId, assetId) => {
+    const task = await playableTaskRepository.findOwnedTask(taskId, userId)
+    if (task?.activeReferenceVideoAssetId === assetId) {
+      await playableTaskRepository.setActiveReferenceVideo(taskId, userId, null)
+    }
+  },
+})

@@ -11,6 +11,7 @@ import { ArrowRight, Loader2, Paperclip } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
 import type {
   ConfirmationProposal,
+  GameplayAnnotation,
   GameplayBlueprint,
   PlayableTaskPhase,
   RequirementBrief,
@@ -31,6 +32,14 @@ import {
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
+import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
+import {
+  assetUploadErrorMessage,
+  assetUploadForm,
+  isReferenceVideoTooLong,
+  REFERENCE_VIDEO_TOO_LONG_MESSAGE,
+  requestReferenceVideoAnalysis,
+} from '@/lib/playable/reference-video-client'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { PLAYABLE_TEMPLATES, templatePrompts, type PlayableTemplateId } from '@/lib/playable/template-catalog'
 import { usePlayableRecentTasks } from './recent-tasks-context'
@@ -59,6 +68,30 @@ interface PlayableWorkspaceProps {
   initialAssets?: SafePlayableAsset[]
   initialVideoAnalysisStatus?: VideoAnalysisStatus
   initialGameplayBlueprint?: GameplayBlueprint
+  initialVideoAnalysisMediaResolution?: AppliedMediaResolution | null
+  /** The server's pointer, which analysis and the blueprint are read through. */
+  initialActiveReferenceVideoId?: string | null
+  /** Already filtered to the active video by the page. */
+  initialGameplayAnnotations?: GameplayAnnotation[]
+}
+
+interface VideoAnalysisSnapshot {
+  assetId?: string
+  status: VideoAnalysisStatus
+  blueprint: GameplayBlueprint | null
+  mediaResolution?: AppliedMediaResolution | null
+  intentPending?: boolean
+}
+
+/**
+ * How long to keep checking for an intent comparison after the brief changes.
+ * It runs after the turn with no status of its own to poll on, and a failed
+ * one leaves the comparison owed, so the wait needs an end.
+ */
+const INTENT_CHECK_WINDOW_MS = 120_000
+
+function isVideoAnalysisInFlight(status: VideoAnalysisStatus | undefined): boolean {
+  return status === 'pending' || status === 'preprocessing' || status === 'analyzing'
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -90,6 +123,9 @@ export function PlayableWorkspace({
   initialAssets = [],
   initialVideoAnalysisStatus,
   initialGameplayBlueprint,
+  initialVideoAnalysisMediaResolution = null,
+  initialActiveReferenceVideoId = null,
+  initialGameplayAnnotations = [],
 }: PlayableWorkspaceProps) {
   const [buildEvents, setBuildEvents] = useState<BuildTimelineEvent[]>([])
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
@@ -104,12 +140,144 @@ export function PlayableWorkspace({
   const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
     initialVideoAnalysisStatus,
   )
+  // Read synchronously by a message waiting on the analysis: the upload that
+  // starts one happens inside the same send, before any re-render.
+  const videoAnalysisStatusRef = useRef(initialVideoAnalysisStatus)
+  const videoAnalysisWaiters = useRef(new Set<() => void>())
+  const updateVideoAnalysisStatus = useCallback((status: VideoAnalysisStatus | undefined) => {
+    videoAnalysisStatusRef.current = status
+    setVideoAnalysisStatus(status)
+    if (isVideoAnalysisInFlight(status)) return
+    for (const settle of videoAnalysisWaiters.current) settle()
+    videoAnalysisWaiters.current.clear()
+  }, [])
+  const waitForVideoAnalysis = useCallback((signal: AbortSignal, onWaiting: () => void) => {
+    if (!isVideoAnalysisInFlight(videoAnalysisStatusRef.current)) return Promise.resolve()
+    onWaiting()
+    return new Promise<void>((resolve, reject) => {
+      const settle = () => {
+        signal.removeEventListener('abort', abort)
+        resolve()
+      }
+      const abort = () => {
+        videoAnalysisWaiters.current.delete(settle)
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      if (signal.aborted) return abort()
+      videoAnalysisWaiters.current.add(settle)
+      signal.addEventListener('abort', abort, { once: true })
+    })
+  }, [])
   const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
+  const [videoAnalysisMediaResolution, setVideoAnalysisMediaResolution] = useState<AppliedMediaResolution | null>(
+    initialVideoAnalysisMediaResolution,
+  )
+  const [videoAnalysisUnavailable, setVideoAnalysisUnavailable] = useState(false)
+  const [retryingVideoAnalysis, setRetryingVideoAnalysis] = useState(false)
+  const [videoAnalysisIntentPending, setVideoAnalysisIntentPending] = useState(false)
+  const [intentCheckRequestedAt, setIntentCheckRequestedAt] = useState<number>()
   const [assets, setAssets] = useState(initialAssets)
-  const latestReferenceVideoId = useRef(initialAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id)
+  const [activeReferenceVideoId, setActiveReferenceVideoId] = useState(initialActiveReferenceVideoId)
+  // Mirrors of state read from async callbacks, which would otherwise see the
+  // values from the render that created them.
+  const activeReferenceVideoIdRef = useRef(initialActiveReferenceVideoId)
+  const assetsRef = useRef(initialAssets)
+  const [gameplayAnnotations, setGameplayAnnotations] = useState(initialGameplayAnnotations)
+  const [deletingAnnotationId, setDeletingAnnotationId] = useState<string>()
+
+  const refreshAnnotations = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/annotations`, {
+        cache: 'no-store',
+      })
+      if (!response.ok) return
+      const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+      if (body.annotations) setGameplayAnnotations(body.annotations)
+    } catch {
+      // The list stays as it was; the next agent turn resends it anyway.
+    }
+  }, [taskId])
+
+  const handleDeleteAnnotation = useCallback(
+    async (annotation: GameplayAnnotation) => {
+      setDeletingAnnotationId(annotation.id)
+      try {
+        const response = await fetch(
+          `/api/playable-tasks/${encodeURIComponent(taskId)}/annotations?id=${encodeURIComponent(annotation.id)}`,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) return
+        const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+        if (body.annotations) setGameplayAnnotations(body.annotations)
+      } catch {
+        // Left in the list, which is the honest outcome of a delete that failed.
+      } finally {
+        setDeletingAnnotationId(undefined)
+      }
+    },
+    [taskId],
+  )
+
+  const applyVideoAnalysis = useCallback(
+    (analysis: VideoAnalysisSnapshot) => {
+      setGameplayBlueprint(analysis.blueprint ?? undefined)
+      setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
+      setVideoAnalysisIntentPending(Boolean(analysis.intentPending))
+      updateVideoAnalysisStatus(analysis.status)
+    },
+    [updateVideoAnalysisStatus],
+  )
+
+  const clearVideoAnalysis = useCallback(() => {
+    setGameplayBlueprint(undefined)
+    setVideoAnalysisMediaResolution(null)
+    setVideoAnalysisIntentPending(false)
+    updateVideoAnalysisStatus(undefined)
+  }, [updateVideoAnalysisStatus])
+
+  const handleBrief = useCallback((nextBrief: RequirementBrief) => {
+    setBrief(nextBrief)
+    if (activeReferenceVideoIdRef.current) setIntentCheckRequestedAt(Date.now())
+  }, [])
+
+  const activateReferenceVideo = useCallback((assetId: string | null) => {
+    activeReferenceVideoIdRef.current = assetId
+    setActiveReferenceVideoId(assetId)
+    // Annotations are bound to the video they describe; the previous video's
+    // must not be shown against this one's timeline.
+    setGameplayAnnotations([])
+  }, [])
+
+  const startVideoAnalysis = useCallback(
+    async (assetId: string, rerun: boolean) => {
+      setRetryingVideoAnalysis(true)
+      try {
+        const response = await requestReferenceVideoAnalysis(taskId, assetId, { rerun })
+        // Another upload may have taken over while this was in flight; its own
+        // request owns the state now.
+        if (activeReferenceVideoIdRef.current !== assetId) return
+        if (response.status === 503) {
+          clearVideoAnalysis()
+          setVideoAnalysisUnavailable(true)
+          return
+        }
+        if (!response.ok) {
+          updateVideoAnalysisStatus('failed')
+          return
+        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
+        if (body.analysis) applyVideoAnalysis(body.analysis)
+      } catch {
+        if (activeReferenceVideoIdRef.current === assetId) updateVideoAnalysisStatus('failed')
+      } finally {
+        setRetryingVideoAnalysis(false)
+      }
+    },
+    [applyVideoAnalysis, clearVideoAnalysis, taskId, updateVideoAnalysisStatus],
+  )
 
   useEffect(() => {
-    if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
+    if (!isVideoAnalysisInFlight(videoAnalysisStatus)) return
     let active = true
     let timeout: number | undefined
     const poll = async () => {
@@ -118,12 +286,9 @@ export function PlayableWorkspace({
           cache: 'no-store',
         })
         if (!response.ok) return
-        const body = (await response.json()) as {
-          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
-        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (!active || !body.analysis) return
-        setVideoAnalysisStatus(body.analysis.status)
-        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+        applyVideoAnalysis(body.analysis)
       } catch {
         // Keep polling after transient analysis status failures.
       } finally {
@@ -135,7 +300,36 @@ export function PlayableWorkspace({
       active = false
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
-  }, [taskId, videoAnalysisStatus])
+  }, [applyVideoAnalysis, taskId, videoAnalysisStatus])
+
+  useEffect(() => {
+    if (intentCheckRequestedAt === undefined) return
+    let active = true
+    let timeout: number | undefined
+    const deadline = intentCheckRequestedAt + INTENT_CHECK_WINDOW_MS
+    const poll = async () => {
+      let pending = true
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, {
+          cache: 'no-store',
+        })
+        if (response.ok) {
+          const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
+          if (!active) return
+          if (body.analysis) applyVideoAnalysis(body.analysis)
+          pending = Boolean(body.analysis?.intentPending)
+        }
+      } catch {
+        // A transient failure keeps the check going until the window closes.
+      }
+      if (active && pending && Date.now() < deadline) timeout = window.setTimeout(poll, 3000)
+    }
+    void poll()
+    return () => {
+      active = false
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }, [applyVideoAnalysis, intentCheckRequestedAt, taskId])
 
   useEffect(() => {
     // 非草稿阶段首次读取历史记录；只有活跃构建持续轮询，待确认时刷新也不能丢失旧构建。
@@ -187,23 +381,68 @@ export function PlayableWorkspace({
     }
   }, [phase, taskId])
 
-  const handleAssetsChange = useCallback((nextAssets: SafePlayableAsset[]) => {
-    const nextReferenceVideoId = nextAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id
-    if (nextReferenceVideoId !== latestReferenceVideoId.current) {
-      latestReferenceVideoId.current = nextReferenceVideoId
-      setVideoAnalysisStatus(undefined)
-      setGameplayBlueprint(undefined)
-    }
-    setAssets(nextAssets)
-  }, [])
+  /**
+   * Follows the server's active pointer rather than guessing from the asset
+   * list: an upload makes its video active and a delete of the active video
+   * clears it, so those are the only two transitions mirrored here. A new
+   * upload starts analysis straight away, so the user's typing time is spent
+   * analysing rather than waiting after they send.
+   */
+  const handleAssetsChange = useCallback(
+    (nextAssets: SafePlayableAsset[]) => {
+      const knownIds = new Set(assetsRef.current.map((asset) => asset.id))
+      const uploadedVideo = nextAssets
+        .filter((asset) => asset.slot === 'referenceVideo' && !knownIds.has(asset.id))
+        .at(-1)
+      assetsRef.current = nextAssets
+      setAssets(nextAssets)
+      if (uploadedVideo) {
+        activateReferenceVideo(uploadedVideo.id)
+        clearVideoAnalysis()
+        updateVideoAnalysisStatus('pending')
+        void startVideoAnalysis(uploadedVideo.id, false)
+        return
+      }
+      const activeId = activeReferenceVideoIdRef.current
+      if (activeId && !nextAssets.some((asset) => asset.id === activeId)) {
+        activateReferenceVideo(null)
+        clearVideoAnalysis()
+      }
+    },
+    [activateReferenceVideo, clearVideoAnalysis, startVideoAnalysis, updateVideoAnalysisStatus],
+  )
+
+  // With no active video — a task from before v2, or after deleting the active
+  // one — the newest remaining video is what an explicit start targets. The
+  // request names it, and the route makes it active, so this is a choice the
+  // user makes by pressing the button rather than one made on their behalf.
+  const analysisTargetId =
+    activeReferenceVideoId ?? assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id ?? null
+  const handleRetryVideoAnalysis = useCallback(
+    ({ rerun }: { rerun: boolean }) => {
+      if (!analysisTargetId) return
+      if (activeReferenceVideoIdRef.current === analysisTargetId) {
+        void startVideoAnalysis(analysisTargetId, rerun)
+        return
+      }
+      // An existing video may already have annotations from before it lost
+      // the active slot. They can only be read once the route has made it
+      // active again, so the refresh waits for that request.
+      activateReferenceVideo(analysisTargetId)
+      void startVideoAnalysis(analysisTargetId, rerun).then(refreshAnnotations)
+    },
+    [activateReferenceVideo, analysisTargetId, refreshAnnotations, startVideoAnalysis],
+  )
   const handleVideoAnalysisToolStatus = useCallback(
-    async (status: 'started' | 'completed' | 'failed') => {
+    async (status: 'started' | 'completed' | 'pending' | 'failed') => {
+      // The analysis is still running and its own polling reports the outcome.
+      if (status === 'pending') return
       if (status === 'started') {
-        setVideoAnalysisStatus('analyzing')
+        updateVideoAnalysisStatus('analyzing')
         return
       }
       if (status === 'failed') {
-        setVideoAnalysisStatus('failed')
+        updateVideoAnalysisStatus('failed')
         return
       }
       try {
@@ -211,23 +450,20 @@ export function PlayableWorkspace({
           cache: 'no-store',
         })
         if (!response.ok) {
-          setVideoAnalysisStatus('failed')
+          updateVideoAnalysisStatus('failed')
           return
         }
-        const body = (await response.json()) as {
-          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
-        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (!body.analysis) {
-          setVideoAnalysisStatus('failed')
+          updateVideoAnalysisStatus('failed')
           return
         }
-        setVideoAnalysisStatus(body.analysis.status)
-        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+        applyVideoAnalysis(body.analysis)
       } catch {
-        setVideoAnalysisStatus('failed')
+        updateVideoAnalysisStatus('failed')
       }
     },
-    [taskId],
+    [applyVideoAnalysis, taskId, updateVideoAnalysisStatus],
   )
 
   return (
@@ -244,7 +480,7 @@ export function PlayableWorkspace({
           brief={brief}
           onProposal={setProposalDraft}
           onRevision={setRevisionDraft}
-          onBrief={setBrief}
+          onBrief={handleBrief}
           onPhase={setPhase}
           autoSubmitInitialPrompt={initialConversation.length === 0}
           initialConversation={initialConversation}
@@ -253,6 +489,17 @@ export function PlayableWorkspace({
           gameplayBlueprint={gameplayBlueprint}
           onAssetsChange={handleAssetsChange}
           onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
+          waitForVideoAnalysis={waitForVideoAnalysis}
+          videoAnalysisMediaResolution={videoAnalysisMediaResolution}
+          videoAnalysisUnavailable={videoAnalysisUnavailable}
+          videoAnalysisIntentPending={videoAnalysisIntentPending}
+          referenceVideoAwaitingAnalysis={Boolean(analysisTargetId) && !videoAnalysisStatus}
+          retryingVideoAnalysis={retryingVideoAnalysis}
+          onRetryVideoAnalysis={handleRetryVideoAnalysis}
+          gameplayAnnotations={gameplayAnnotations}
+          onAnnotations={setGameplayAnnotations}
+          onDeleteAnnotation={(annotation) => void handleDeleteAnnotation(annotation)}
+          deletingAnnotationId={deletingAnnotationId}
         />
         <PlayablePreview
           taskId={taskId}
@@ -301,7 +548,16 @@ export function PlayableHome({
   const attachmentUrls = useRef(new Set<string>())
   const attachmentsRef = useRef<HomeAttachment[]>([])
   const creatingRef = useRef(false)
-  const retryRef = useRef<{ fingerprint: string; taskId: string; uploadedIds: Set<string> } | undefined>(undefined)
+  const retryRef = useRef<
+    | {
+        fingerprint: string
+        taskId: string
+        uploadedIds: Set<string>
+        /** Kept across a retry so a video uploaded on the first try still gets analysed. */
+        referenceVideoAssetId?: string
+      }
+    | undefined
+  >(undefined)
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<HomeAttachment[]>([])
   const [creating, setCreating] = useState(false)
@@ -357,15 +613,24 @@ export function PlayableHome({
         if (retry.uploadedIds.has(id)) continue
         const slot = referenceSlotForMimeType(file.type)
         if (!slot) throw new Error('参考素材格式不受支持')
-        const uploadBody = new FormData()
-        uploadBody.set('slot', slot)
-        uploadBody.set('file', file)
+        const uploadBody = await assetUploadForm(slot, file)
         const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(retry.taskId)}/assets`, {
           method: 'POST',
           body: uploadBody,
         })
-        if (!uploadResponse.ok) throw new Error('参考素材上传失败')
+        if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '参考素材上传失败'))
+        if (slot === 'referenceVideo') {
+          const body = (await uploadResponse.json().catch(() => undefined)) as { asset?: { id?: string } } | undefined
+          if (body?.asset?.id) retry.referenceVideoAssetId = body.asset.id
+        }
         retry.uploadedIds.add(id)
+      }
+      // Started before navigating so the task page opens on an analysis that
+      // is already under way. Not awaited past the 202: the run itself is in
+      // the background, and a refusal here only means the task page will offer
+      // to start it instead.
+      if (retry.referenceVideoAssetId) {
+        await requestReferenceVideoAnalysis(retry.taskId, retry.referenceVideoAssetId).catch(() => undefined)
       }
       retryRef.current = undefined
       router.push(`/tasks/${retry.taskId}`)
@@ -435,6 +700,25 @@ export function PlayableHome({
     const next = [...attachmentsRef.current, ...accepted]
     attachmentsRef.current = next
     setAttachments(next)
+    void evictOverlongVideos(accepted)
+  }
+
+  /**
+   * Staging stays synchronous so the picker feels immediate; the duration read
+   * that follows is asynchronous, so an overlong video is taken back out once
+   * it is known. Creating before this settles is still safe, because the upload
+   * itself refuses the same video.
+   */
+  async function evictOverlongVideos(candidates: HomeAttachment[]) {
+    const videos = candidates.filter(({ file }) => referenceSlotForMimeType(file.type) === 'referenceVideo')
+    if (videos.length === 0) return
+    const overlong = await Promise.all(
+      videos.map(async ({ id, file }) => ((await isReferenceVideoTooLong(file)) ? id : null)),
+    )
+    const overlongIds = overlong.filter((id): id is string => id !== null)
+    if (overlongIds.length === 0) return
+    for (const id of overlongIds) removeAttachment(id)
+    setError(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
   }
 
   function removeAttachment(id: string) {

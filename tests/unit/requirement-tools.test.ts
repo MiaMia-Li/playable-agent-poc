@@ -138,25 +138,27 @@ describe('requirement domain tools', () => {
     expect(second).toEqual(first)
   })
 
-  it.each(['unavailable', 'pending', 'analysis_failed'] as const)(
-    'treats a structured %s tool result as failed without discarding its static reason',
-    async (status) => {
+  it.each([
+    { toolResult: { status: 'unavailable', reason: 'asset_unavailable' }, progress: 'tool_failed' },
+    { toolResult: { status: 'analysis_failed', reason: 'analysis_failed' }, progress: 'tool_failed' },
+    { toolResult: { status: 'unavailable', reason: 'analysis_pending' }, progress: 'tool_pending' },
+    { toolResult: { status: 'pending', reason: 'analysis_pending' }, progress: 'tool_pending' },
+  ] as const)(
+    'treats a structured $toolResult.status ($toolResult.reason) result as failed and reports $progress',
+    async ({ toolResult, progress }) => {
       const onProgress = vi.fn()
       const [result] = await executeRequirementAnalysisTools({
         calls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null }],
         options: {
-          executeTool: async () => ({ status, reason: status === 'pending' ? 'analysis_pending' : status }),
+          executeTool: async () => toolResult,
           onProgress,
         },
         cache: new Map(),
       })
 
-      expect(result).toMatchObject({
-        status: 'failed',
-        result: { status, reason: expect.any(String) },
-      })
+      expect(result).toMatchObject({ status: 'failed', result: toolResult })
       expect(onProgress).toHaveBeenLastCalledWith({
-        type: 'tool_failed',
+        type: progress,
         toolCall: { name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null },
       })
     },
@@ -217,6 +219,7 @@ describe('requirement domain tools', () => {
           {
             name: 'offer_market_research',
             brief: null,
+            annotations: null,
             request: {
               type: 'approval',
               question: '是否开始搜索？',
@@ -245,7 +248,16 @@ describe('requirement domain tools', () => {
       plan: {
         message: '我是试玩创作助手，可以与你对话整理需求并构建试玩。',
         reasoning: '这是能力咨询，不是游戏需求。',
-        calls: [{ name: 'respond_to_user', brief: null, request: null, confirmation: null, revision: null }],
+        calls: [
+          {
+            name: 'respond_to_user',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+        ],
       },
     })
 
@@ -265,8 +277,22 @@ describe('requirement domain tools', () => {
           message: '我可以帮你创作试玩。',
           reasoning: '这是能力咨询。',
           calls: [
-            { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-            { name: 'respond_to_user', brief: null, request: null, confirmation: null, revision: null },
+            {
+              name: 'list_playable_capabilities',
+              annotations: null,
+              brief: null,
+              request: null,
+              confirmation: null,
+              revision: null,
+            },
+            {
+              name: 'respond_to_user',
+              annotations: null,
+              brief: null,
+              request: null,
+              confirmation: null,
+              revision: null,
+            },
           ],
         },
       }),
@@ -281,10 +307,18 @@ describe('requirement domain tools', () => {
         message: '请选择最重要的体验方向。',
         reasoning: '体验优先级会影响实现。',
         calls: [
-          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+          {
+            name: 'update_requirement_brief',
+            annotations: null,
+            brief,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
           {
             name: 'ask_user',
             brief: null,
+            annotations: null,
             confirmation: null,
             revision: null,
             request: {
@@ -317,12 +351,34 @@ describe('requirement domain tools', () => {
         message: '方案可以开始构建。',
         reasoning: '已完成能力匹配和交付检查。',
         calls: [
-          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
-          { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-          { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+          {
+            name: 'update_requirement_brief',
+            annotations: null,
+            brief,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'list_playable_capabilities',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'validate_implementation_route',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
           {
             name: 'submit_confirmation',
             brief: null,
+            annotations: null,
             request: null,
             confirmation: confirmation(brief),
             revision: null,
@@ -347,12 +403,34 @@ describe('requirement domain tools', () => {
         message: '方案可以开始构建。',
         reasoning: '核心玩法需要自由生成。',
         calls: [
-          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
-          { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-          { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+          {
+            name: 'update_requirement_brief',
+            annotations: null,
+            brief,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'list_playable_capabilities',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'validate_implementation_route',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
           {
             name: 'submit_confirmation',
             brief: null,
+            annotations: null,
             request: null,
             confirmation: proposedConfirmation,
             revision: null,
@@ -379,12 +457,34 @@ describe('requirement domain tools', () => {
         message: 'The plan is ready to build.',
         reasoning: 'The core gameplay requires freeform generation.',
         calls: [
-          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
-          { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-          { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
+          {
+            name: 'update_requirement_brief',
+            annotations: null,
+            brief,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'list_playable_capabilities',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
+          {
+            name: 'validate_implementation_route',
+            annotations: null,
+            brief: null,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
           {
             name: 'submit_confirmation',
             brief: null,
+            annotations: null,
             request: null,
             confirmation: proposedConfirmation,
             revision: null,
@@ -418,10 +518,18 @@ describe('requirement domain tools', () => {
         message: '我会移除顶部标题，其他内容保持不变。',
         reasoning: '这是一个范围明确的局部修改。',
         calls: [
-          { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+          {
+            name: 'update_requirement_brief',
+            annotations: null,
+            brief,
+            request: null,
+            confirmation: null,
+            revision: null,
+          },
           {
             name: 'list_playable_capabilities',
             brief: null,
+            annotations: null,
             request: null,
             confirmation: null,
             revision: null,
@@ -429,6 +537,7 @@ describe('requirement domain tools', () => {
           {
             name: 'submit_revision',
             brief: null,
+            annotations: null,
             request: null,
             confirmation: confirmation(brief),
             revision: {
@@ -457,10 +566,18 @@ describe('requirement domain tools', () => {
           message: '方案完成。',
           reasoning: '准备构建。',
           calls: [
-            { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
+            {
+              name: 'update_requirement_brief',
+              annotations: null,
+              brief,
+              request: null,
+              confirmation: null,
+              revision: null,
+            },
             {
               name: 'submit_confirmation',
               brief: null,
+              annotations: null,
               request: null,
               confirmation: confirmation(brief),
               revision: null,
@@ -507,6 +624,7 @@ it('requires an explicit parameter decision from the model while accepting legac
         {
           name: 'submit_revision',
           brief: null,
+          annotations: null,
           request: null,
           confirmation: null,
           revision: { strategy: 'patch', summary: 'title', changes: ['title'], preserved: ['gameplay'] },
