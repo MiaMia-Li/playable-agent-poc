@@ -1,7 +1,8 @@
 import type { BuildActivityCallback } from './build-activity'
 import type {
   ConfirmationProposal,
-  GameplayBlueprint,
+  GameplayAnnotation,
+  GameplayBlueprintDocument,
   PlayableAgentReply,
   RequirementBrief,
   RevisionProposal,
@@ -81,7 +82,8 @@ export interface AgentInput {
   brief?: RequirementBrief | null
   assets?: SafePlayableAsset[]
   attachedAssetIds?: string[]
-  gameplayBlueprint?: GameplayBlueprint
+  gameplayBlueprint?: GameplayBlueprintDocument
+  annotations?: GameplayAnnotation[]
   hasArtifact?: boolean
   pendingRevision?: RevisionProposal | null
   referenceSelection?: ResolvedReferenceSelection
@@ -116,6 +118,7 @@ export type AgentToolProgress = AgentReplyProgress &
   (
     | { type: 'tool_started'; toolCall: RequirementAnalysisToolCall }
     | { type: 'tool_completed'; toolCall: RequirementAnalysisToolCall }
+    | { type: 'tool_pending'; toolCall: RequirementAnalysisToolCall }
     | { type: 'tool_failed'; toolCall: RequirementAnalysisToolCall }
   )
 
@@ -145,7 +148,7 @@ export interface ConfirmedBuildInput {
   apiKey: string
   confirmation: ConfirmationProposal
   assets?: PlayableBuildAsset[]
-  gameplayBlueprint?: GameplayBlueprint
+  gameplayBlueprint?: GameplayBlueprintDocument
   revision?: RevisionProposal
   baseHtml?: string
 }

@@ -2,14 +2,18 @@ import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
   createPlayableAssetContentHandler,
+  createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
   MAX_ASSET_BYTES,
+  type PlayableAsset,
 } from '@/lib/playable/task-assets'
+import { MAX_REFERENCE_VIDEO_SECONDS } from '@/lib/playable/asset-policy'
 
-function uploadRequest(file: File, slot = 'audio') {
+function uploadRequest(file: File, slot = 'audio', durationSeconds?: number) {
   const form = new FormData()
   form.set('slot', slot)
   form.set('file', file)
+  if (durationSeconds !== undefined) form.set('durationSeconds', String(durationSeconds))
   return new NextRequest('https://app.example/api/playable-tasks/owned/assets', { method: 'POST', body: form })
 }
 
@@ -20,15 +24,17 @@ function harness(owner = 'user-1') {
     get: vi.fn(),
     delete: vi.fn(async () => undefined),
   }
+  const activateReferenceVideo = vi.fn(async () => undefined)
   const handler = createPlayableAssetHandler({
     authenticate: async () => owner,
     findOwnedTask: async (taskId, userId) => taskId === 'owned' && userId === 'user-1',
     saveAsset: async (asset) => void metadata.push(asset),
     listAssets: async () => [],
+    activateReferenceVideo,
     store,
     generateId: () => 'asset-1',
   })
-  return { handler, metadata, store }
+  return { handler, metadata, store, activateReferenceVideo }
 }
 
 describe('playable asset upload', () => {
@@ -42,7 +48,14 @@ describe('playable asset upload', () => {
     expect(response.status).toBe(201)
     const body = await response.json()
     expect(body).toEqual({
-      asset: { id: 'asset-1', slot: 'audio', filename: 'sound.mp3', mimeType: 'audio/mpeg', size: 3 },
+      asset: {
+        id: 'asset-1',
+        slot: 'audio',
+        filename: 'sound.mp3',
+        mimeType: 'audio/mpeg',
+        size: 3,
+        durationSeconds: null,
+      },
     })
     expect(store.put).toHaveBeenCalledWith(
       'users/user-1/tasks/owned/assets/asset-1',
@@ -66,7 +79,7 @@ describe('playable asset upload', () => {
       context,
     )
     const videoResponse = await videoHarness.handler(
-      uploadRequest(new File(['video'], 'reference.webm', { type: 'video/webm' }), 'referenceVideo'),
+      uploadRequest(new File(['video'], 'reference.webm', { type: 'video/webm' }), 'referenceVideo', 24),
       context,
     )
 
@@ -79,6 +92,7 @@ describe('playable asset upload', () => {
         filename: 'reference.webp',
         mimeType: 'image/webp',
         size: 5,
+        durationSeconds: null,
       },
     })
     await expect(videoResponse.json()).resolves.toEqual({
@@ -88,8 +102,82 @@ describe('playable asset upload', () => {
         filename: 'reference.webm',
         mimeType: 'video/webm',
         size: 5,
+        durationSeconds: 24,
       },
     })
+  })
+
+  // The browser names the uploaded video in the analysis request that follows,
+  // and the route refuses one that is not active, so the upload has to move
+  // the pointer before that request can arrive.
+  it('makes an uploaded reference video the active one, and leaves images alone', async () => {
+    const imageHarness = harness()
+    const videoHarness = harness()
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    await imageHarness.handler(
+      uploadRequest(new File(['image'], 'reference.png', { type: 'image/png' }), 'referenceImage'),
+      context,
+    )
+    await videoHarness.handler(
+      uploadRequest(new File(['video'], 'reference.mp4', { type: 'video/mp4' }), 'referenceVideo', 12),
+      context,
+    )
+
+    expect(imageHarness.activateReferenceVideo).not.toHaveBeenCalled()
+    expect(videoHarness.activateReferenceVideo).toHaveBeenCalledWith('owned', 'user-1', 'asset-1')
+  })
+
+  it('does not activate a reference video it refused to store', async () => {
+    const videoHarness = harness()
+
+    await videoHarness.handler(
+      uploadRequest(
+        new File(['video'], 'long.mp4', { type: 'video/mp4' }),
+        'referenceVideo',
+        MAX_REFERENCE_VIDEO_SECONDS + 1,
+      ),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(videoHarness.activateReferenceVideo).not.toHaveBeenCalled()
+  })
+
+  // The limit is about what the analysis pipeline can usefully read, so it is
+  // enforced on the browser-reported duration at upload rather than after a
+  // long video has already been stored and paid for.
+  it('refuses a reference video longer than the analysis limit and names the limit', async () => {
+    const videoHarness = harness()
+
+    const response = await videoHarness.handler(
+      uploadRequest(
+        new File(['video'], 'long.webm', { type: 'video/webm' }),
+        'referenceVideo',
+        MAX_REFERENCE_VIDEO_SECONDS + 1,
+      ),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(413)
+    await expect(response.json()).resolves.toEqual({
+      error: 'Video too long',
+      maxDurationSeconds: MAX_REFERENCE_VIDEO_SECONDS,
+    })
+    expect(videoHarness.store.put).not.toHaveBeenCalled()
+  })
+
+  // An unreadable duration must not be treated as zero or as a violation: the
+  // browser reports Infinity or NaN for some streamed containers.
+  it('stores a reference video whose duration the browser could not report', async () => {
+    const videoHarness = harness()
+
+    const response = await videoHarness.handler(
+      uploadRequest(new File(['video'], 'streamed.webm', { type: 'video/webm' }), 'referenceVideo', Infinity),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(201)
+    await expect(response.json()).resolves.toMatchObject({ asset: { durationSeconds: null } })
   })
 
   it('uses indistinguishable 404s for missing and foreign tasks', async () => {
@@ -121,6 +209,58 @@ describe('playable asset upload', () => {
   })
 })
 
+describe('playable asset delete', () => {
+  function asset(slot: PlayableAsset['slot']): PlayableAsset {
+    return {
+      id: 'asset-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot,
+      filename: 'x',
+      mimeType: slot === 'referenceVideo' ? 'video/mp4' : 'image/png',
+      size: 1,
+      storageKey: 'asset-key',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+  }
+
+  function deleteHarness(stored: PlayableAsset) {
+    const releaseReferenceVideo = vi.fn(async () => undefined)
+    const handler = createPlayableAssetDeleteHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => stored,
+      deleteOwnedAsset: async () => stored,
+      releaseReferenceVideo,
+      store: { put: vi.fn(), get: vi.fn(), delete: vi.fn(async () => undefined) },
+    })
+    return { handler, releaseReferenceVideo }
+  }
+
+  const context = { params: Promise.resolve({ taskId: 'owned', assetId: 'asset-1' }) }
+  const deleteRequest = () =>
+    new NextRequest('https://app.example/api/playable-tasks/owned/assets/asset-1', { method: 'DELETE' })
+
+  // Left pointing at a deleted video, the task would keep feeding that video's
+  // blueprint to the agent and the build.
+  it('releases the active pointer when a reference video is deleted', async () => {
+    const { handler, releaseReferenceVideo } = deleteHarness(asset('referenceVideo'))
+
+    const response = await handler(deleteRequest(), context)
+
+    expect(response.status).toBe(204)
+    expect(releaseReferenceVideo).toHaveBeenCalledWith('owned', 'user-1', 'asset-1')
+  })
+
+  it('does not touch the active pointer when another kind of asset is deleted', async () => {
+    const { handler, releaseReferenceVideo } = deleteHarness(asset('referenceImage'))
+
+    await handler(deleteRequest(), context)
+
+    expect(releaseReferenceVideo).not.toHaveBeenCalled()
+  })
+})
+
 describe('playable asset content', () => {
   it('encodes Unicode filenames in the content disposition header', async () => {
     const handler = createPlayableAssetContentHandler({
@@ -134,6 +274,7 @@ describe('playable asset content', () => {
         mimeType: 'image/png',
         size: 3,
         storageKey: 'asset-key',
+        durationSeconds: null,
         createdAt: new Date(),
       }),
       deleteOwnedAsset: async () => undefined,

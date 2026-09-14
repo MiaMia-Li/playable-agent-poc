@@ -17,6 +17,7 @@ import type {
 } from './playable-agent-adapter'
 import type {
   ConfirmationProposal,
+  GameplayAnnotation,
   GameplayBlueprint,
   PlayableAgentReply,
   PlayableTaskPhase,
@@ -731,10 +732,26 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       confirmation: null,
       pendingRevision: null,
       latestArtifactKey: null,
+      activeReferenceVideoAssetId: null,
+      gameplayAnnotations: [],
       createdAt: new Date(),
     }
     this.tasks.set(task.id, task)
     return task
+  }
+
+  async updateGameplayAnnotations(taskId: string, userId: string, annotations: GameplayAnnotation[]): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.gameplayAnnotations = structuredClone(annotations)
+    return true
+  }
+
+  async setActiveReferenceVideo(taskId: string, userId: string, assetId: string | null): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.activeReferenceVideoAssetId = assetId
+    return true
   }
 
   async findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined> {
@@ -994,29 +1011,105 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return asset
   }
 
-  async createVideoAnalysis(input: {
+  /**
+   * The in-memory twin of the database claim. There is no concurrency to lose
+   * to here, so the attempt counter is derived by counting rather than by
+   * racing on a unique index.
+   */
+  async claimVideoAnalysis(input: {
     id: string
     taskId: string
     assetId: string
     pipelineVersion: string
     model: string
-  }): Promise<PlayableVideoAnalysisRecord> {
+    rerun?: boolean
+  }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const { rerun = false, ...values } = input
+    const analyses = this.videoAnalyses.get(input.taskId) ?? []
+    const previous = analyses.filter(
+      (candidate) =>
+        candidate.assetId === input.assetId &&
+        candidate.pipelineVersion === input.pipelineVersion &&
+        candidate.model === input.model,
+    )
+    const latest = previous.at(-1)
+    if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
+      return { analysis: latest, claimed: false }
+    }
     const analysis: PlayableVideoAnalysisRecord = {
-      ...input,
+      ...values,
+      attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
+      mediaResolution: null,
+      intentText: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: null,
     }
+    analyses.push(analysis)
+    this.videoAnalyses.set(input.taskId, analyses)
+    return { analysis, claimed: true }
+  }
+
+  async findLatestVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses
+      .get(taskId)
+      ?.filter((candidate) => candidate.pipelineVersion === pipelineVersion)
+      .at(-1)
+  }
+
+  async findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses
+      .get(taskId)
+      ?.filter(
+        (candidate) =>
+          candidate.pipelineVersion === pipelineVersion &&
+          candidate.assetId === assetId &&
+          candidate.status === 'succeeded',
+      )
+      .at(-1)
+  }
+
+  async recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: GameplayBlueprint
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined> {
     const analyses = this.videoAnalyses.get(input.taskId) ?? []
+    const taken = analyses.some(
+      (candidate) =>
+        candidate.assetId === input.assetId &&
+        candidate.pipelineVersion === input.pipelineVersion &&
+        candidate.model === input.model &&
+        candidate.attempt === input.attempt,
+    )
+    if (taken) return undefined
+    const now = new Date()
+    const analysis: PlayableVideoAnalysisRecord = {
+      ...input,
+      blueprint: structuredClone(input.blueprint),
+      status: 'succeeded',
+      errorCode: null,
+      createdAt: now,
+      completedAt: now,
+    }
     analyses.push(analysis)
     this.videoAnalyses.set(input.taskId, analyses)
     return analysis
-  }
-
-  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
-    return this.videoAnalyses.get(taskId)?.at(-1)
   }
 
   async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
@@ -1024,11 +1117,18 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     if (analysis) analysis.status = status
   }
 
-  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+  async completeVideoAnalysis(
+    id: string,
+    blueprint: GameplayBlueprint,
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+    intentText: string,
+  ): Promise<void> {
     const analysis = [...this.videoAnalyses.values()].flat().find((candidate) => candidate.id === id)
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = structuredClone(blueprint)
+    analysis.mediaResolution = mediaResolution
+    analysis.intentText = intentText
     analysis.completedAt = new Date()
   }
 
