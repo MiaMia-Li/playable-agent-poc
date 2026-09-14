@@ -1,7 +1,8 @@
 # 参考视频分析 v2：Gemini 原生视频与玩法标注
 
 > 文档基线：2026-09-11，2026-09-14 按网关实测结果修订，并对照代码库复核过一次可行性
-> 状态：待实施（**Verification Pass 暂缓，本期只做首轮分析**）
+> 2026-09-14 二次修订：Phase 0 执行完毕，结果推翻 §0 对 `generationConfig` 的判断，见 §0.1
+> 状态：Phase 0 完成，Phase 1 起实施中（**Verification Pass 暂缓，本期只做首轮分析**）
 > 相关决策：[ADR 0001](./adr/0001-gemini-direct-for-video-analysis.md)、[ADR 0002](./adr/0002-layered-gameplay-blueprint.md)
 > 前置约束：[AI 网关 Gemini 能力申请](./gateway-gemini-api-requests.md)
 > 术语以根目录 `CONTEXT.md` 为准
@@ -24,6 +25,49 @@
 **净结论：本次改动仍然值得做，但价值构成变了。** 原设计的卖点是「高帧率首轮 + 定向复查」；实际能拿到的是「1 fps 原生采样 + 音轨 + 高分辨率 + 去掉 ffmpeg 沙箱」。相对现状（0.67 fps、640px、音轨全丢、每次开沙箱装 ffmpeg）仍是明确的一级提升，且删掉的代码远多于新增的。
 
 已申请网关修复的项目（`videoMetadata` 透传、Files API、`countTokens` 路由）若日后放通，Verification Pass 可按 §7.5 原样恢复，本文保留其设计。
+
+## 0.1 Phase 0 实测结果（2026-09-14）
+
+Phase 0 已执行完毕，`scripts/check-gemini-video-analysis.ts` 可复现全部结论。它推翻了上表中「`generationConfig.mediaResolution` 稳定生效」这一条，并顺带确定了结构化输出的可行形状。
+
+### 网关有两类通道，其中一类整体丢弃 `generationConfig`
+
+上表把丢弃范围判定为「只发生在 `parts[]` 层」，这是采样不足造成的。扩大采样后，**`generationConfig` 整体也会被部分通道丢弃**，受影响的不只是 `mediaResolution`，还包括 `responseMimeType` 与 `responseJsonSchema`。
+
+两类通道可由响应里 `usageMetadata.trafficType` 是否存在完全区分，10 次连发无一例外：
+
+| | 通道 A（含 `trafficType`） | 通道 B（不含） |
+| --- | --- | --- |
+| `mediaResolution: HIGH` | 生效，6 秒视频 VIDEO token = 1584 | 丢弃，退回默认 = 396 |
+| `responseJsonSchema` | 生效，输出符合 schema | 丢弃，返回代码围栏包裹的 JSON 甚至散文 |
+| 命中率 | 约 37% | 约 63% |
+
+采样率与音轨处理**不受通道影响**，1 fps 与 25 tokens/秒两条结论仍然成立。
+
+**这一条为什么不适用 §6.2 对 `fps` 的那句判断。** §6.2 说「偶尔生效比稳定不生效更糟」，理由是同一支视频在不同次分析间得到不同结果，而没有任何地方能看出发生了哪一种。这里恰恰相反：`trafficType` 与 VIDEO token 数都能在事后判定本次到底跑在哪个分辨率上。**可观测，所以可以重试、也可以记录**。处理方式见 §6.2。
+
+网关侧已按此另提申请（该文档的请求零），优先级高于原请求一：它破坏的是结构化输出的正确性，而非采样密度。
+
+### 结构化输出可用，但要剥掉边界关键字
+
+§9 列了四类可能被拒的键，实测用二分法逐一验证，**只有数值与长度边界这一类真的被拒**：
+
+| 键 | 通道 A 是否接受 |
+| --- | --- |
+| 顶层 `$schema` | 接受 |
+| `z.literal` 产生的 `const` | 接受 |
+| `z.strictObject` 产生的 `additionalProperties: false` | 接受 |
+| `minLength` / `maxLength` / `minimum` / `maximum` / `minItems` / `maxItems` | **拒绝，返回 400 `Request contains an invalid argument`** |
+
+所以生产代码的转换只需剥掉这六个边界关键字，`version: 2` 这个 literal 与 strict 约束都能保留在发给模型的 schema 里。剥掉之后完整的 v2 blueprint schema 被接受，输出通过 zod 校验。
+
+§9 关于「剥掉 `format` 是空操作」的判断得到确认：`toJSONSchema(gameplayBlueprintSchema)` 不产生任何 `format` 键。
+
+### 其余检查
+
+- **耗时**：6 秒视频 1.4 MiB，端到端 15.8 到 25.1 秒。仍需按最坏情况留余量，且重试会成倍放大，见 §6.3。
+- **接近上限的文件**：**本期不测**。3 分钟时长上限在实践中会先于 100 MiB 撞到，该项与 Gemini 无关，留待 §12 的大文件上传路径一并决定。`MAX_REFERENCE_VIDEO_BYTES` 保持 100 MiB 不变。
+- **Files API**：复探仍为 405 / 404，内联路径依旧是唯一选择。
 
 ## 1. 目标
 
@@ -69,9 +113,12 @@
 
 ### 4.2 `playable_video_analyses`
 
-| 列        | 类型                      | 说明                     |
-| --------- | ------------------------- | ------------------------ |
-| `attempt` | `integer`，非空，默认 `1` | 区分同一支视频的多次分析 |
+| 列                  | 类型                      | 说明                                                     |
+| ------------------- | ------------------------- | -------------------------------------------------------- |
+| `attempt`           | `integer`，非空，默认 `1` | 区分同一支视频的多次分析                                 |
+| `media_resolution`  | `text`，可空              | 本次实际生效的分辨率，`high` 或 `default`，见 §6.2 的通道彩票 |
+
+`media_resolution` 只在成功时写入，失败行留空。它是 provenance 而非配置：记的是「这次实际得到了什么」，不是「这次要求了什么」——后者永远是 `HIGH`，记下来没有信息量。
 
 **唯一索引必须重建。** 现有 `playable_video_analyses_asset_pipeline_model_unique` 建在 `(asset_id, pipeline_version, model)` 上，`claimVideoAnalysis` 用 `onConflictDoNothing` 搭配它做原子抢占，且只在 `status = 'failed'` 时允许重新抢占（`task-repository.ts` 的三段式 insert / update / select 即为此）。这意味着**成功过的分析在结构上不可能重跑**。
 
@@ -221,7 +268,7 @@ new GoogleGenAI({
 
 **`fps` 不可控，固定为 1。** `parts[]` 层的 `videoMetadata` 会被网关随机丢弃——同一请求连发五次，VIDEO token 数实测为 `396, 396, 1584, 396, 396`，即 `fps: 4` 只在其中一次生效。**不要发送 `videoMetadata`**：偶尔生效比稳定不生效更糟，它会让同一支视频在不同次分析间得到不同结果，而没有任何地方能看出发生了哪一种。
 
-**唯一可用的旋钮是 `generationConfig.mediaResolution`**，实测稳定生效。既然只有一趟分析、又只剩这一个旋钮，就把它开到 `HIGH`：
+**唯一可用的旋钮是 `generationConfig.mediaResolution`，而它只在约 37% 的请求上生效**（§0.1）。仍然把它开到 `HIGH`：
 
 | 配置           | 视频 tokens/秒 | 音频 tokens/秒 | 60 秒  | 180 秒（上限） |
 | -------------- | -------------- | -------------- | ------ | -------------- |
@@ -231,6 +278,20 @@ new GoogleGenAI({
 选 `HIGH` 的理由不是「越高越好」，而是分辨率正好补偿了丢掉的帧率所不能补偿的那一类信息：分数、计数器、按钮文字、教学提示这些**静止的 UI 小字**，恰恰是判断「这是什么游戏」的关键证据，且不依赖高帧率就能读到。快速手势这类需要高帧率才看得见的信息，无论怎么调分辨率都拿不回来——那部分缺口由 §7 的标注层补。
 
 最坏情况 52,020 tokens 远在上下文与成本的舒适区内，不构成约束。
+
+#### 通道彩票的处理：有限重试，降级可见
+
+分析器**优先重试直到落在通道 A**，重试耗尽则接受通道 B 的结果，并把本次实际生效的分辨率记录下来。三段都必要，理由分别是：
+
+- **重试**，因为通道 A 同时带来 `HIGH` 分辨率与 schema 强制，两者都拿不到替代品。命中率 37% 意味着期望约 2.7 次，重试上限取 4 次时仍有约 16% 的概率全部落空，所以不能只重试。
+- **不硬失败**，因为落到通道 B 并不代表分析不可用：输出仍然是对同一支视频的观察，只是分辨率较低且未受 schema 约束。为一次运气不好就让用户拿不到任何 Blueprint，代价高于收益。§8 的硬失败针对的是 Gemini 整体不可用，不是这个。
+- **记录**，因为这是这条降级路径唯一的诚实出口。`playable_video_analyses` 增加一列记录实际生效的分辨率（§4.2），前端据此提示「本次分析在较低分辨率下完成，可重跑」，重跑入口就是既有的 `POST .../analysis`。不记录就退化成 §6.2 反对 `fps` 的那种情形——结果有差异而没有任何地方看得出来。
+
+判定通道用响应里的 `usageMetadata.trafficType` 是否存在。它并非为此设计（网关申请里已要求提供正式标识），所以**不能只靠它**：再用 VIDEO token 数独立验证一次，`时长(秒) × 264` 命中即为 `HIGH`。两者取交集，避免网关某天改动 `trafficType` 的语义后静默误判。
+
+通道 B 的输出没有经过 schema 约束，实测多数会被代码围栏包裹，少数直接是散文。因此解析要先剥围栏再 `JSON.parse`，失败就算作一次失败的尝试继续重试，而不是当场放弃。
+
+**重试的代价主要是耗时，不是 token。** 落空的尝试跑在默认分辨率上，180 秒视频约 16,380 tokens，比通道 A 的 52,020 便宜得多；但每次尝试都要重传整个内联文件（§6.1 无 Files API），大文件上这一段远比生成本身贵。因此重试上限必须与 §6.3 的 `maxDuration` 一起定，而不是各定各的。
 
 **禁止调用 `:countTokens` 做预估。** 网关把该端点错误路由到 `generateContent`，返回 200 和一份完整生成结果，即「为了省钱而预估」反而触发一次完整计费生成，且无任何报错。所幸采样固定 1 fps 之后 token 数完全可算：`时长(秒) × (264 + 25)`，比调接口更准。
 
@@ -373,7 +434,9 @@ Gemini 不可用（未配置 Key、额度耗尽、API 错误）时**硬失败**�
 
 ## 9. 分阶段实施
 
-### Phase 0：垂直切片（不接产品流程）
+### Phase 0：垂直切片（不接产品流程）— 已完成
+
+> **结论见 §0.1。** 通道彩票为新发现，已改变 §6.2；结构化输出只需剥掉六个边界关键字；接近上限的文件一项按 §12 决定不测。以下为原计划，保留备查。
 
 独立跑通 `Vercel Blob → base64 inlineData → generateContent(static, mediaResolution=HIGH) → 结构化输出`，产出一个能对真实参考视频运行的脚本（`scripts/check-gemini-video-analysis.ts`）。
 
