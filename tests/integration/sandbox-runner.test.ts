@@ -870,17 +870,17 @@ describe('runPlayableBuild', () => {
 
   it('propagates cancellation during the master integrity sweep and destroys the sandbox', async () => {
     const sandbox = await createLocalSandbox()
-    const readBinaryFile = sandbox.readBinaryFile.bind(sandbox)
+    const run = sandbox.run.bind(sandbox)
     const started = deferred()
     let agentFinished = false
-    sandbox.readBinaryFile = async (options) => {
-      if (agentFinished && options.path.includes(`${path.sep}skill-master${path.sep}`)) {
+    sandbox.run = async (options) => {
+      if (agentFinished && options.env?.PLAYABLE_MASTER_HASHES) {
         started.resolve()
         await new Promise<void>((_resolve, reject) => {
           options.abortSignal?.addEventListener('abort', () => reject(new Error('integrity aborted')), { once: true })
         })
       }
-      return readBinaryFile(options)
+      return run(options)
     }
     const controller = new AbortController()
     const build = runPlayableBuild(buildInput('center_collision', 'sk-integrity-cancel-test'), {

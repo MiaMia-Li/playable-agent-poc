@@ -1,3 +1,4 @@
+import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { readBuildSkillFiles } from './build-skill'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import path from 'node:path'
@@ -72,11 +73,6 @@ export class PlayableBuildExecutionError extends Error {
     super(cause instanceof Error ? cause.message : 'Playable build execution failed', { cause })
     this.name = 'PlayableBuildExecutionError'
   }
-}
-
-interface SkillFile {
-  relativePath: string
-  content: Uint8Array
 }
 
 function safeWorkspaceFilename(id: string, filename: string): string {
@@ -180,23 +176,6 @@ async function requireSuccessfulCommand(
   if (result.exitCode !== 0) throw new Error(failureMessage)
 }
 
-async function assertMasterUnchanged(
-  sandbox: PlayableSandbox,
-  masterRoot: string,
-  files: SkillFile[],
-  abortSignal?: AbortSignal,
-) {
-  for (const file of files) {
-    const copied = await sandbox.readBinaryFile({
-      path: path.join(masterRoot, file.relativePath),
-      abortSignal,
-    })
-    if (copied === null || !Buffer.from(copied).equals(Buffer.from(file.content))) {
-      throw new Error('Skill master was modified')
-    }
-  }
-}
-
 export async function runPlayableBuild(
   input: ConfirmedBuildInput,
   dependencies: RunPlayableBuildDependencies,
@@ -218,9 +197,9 @@ export async function runPlayableBuild(
   try {
     sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
     const sandboxRoot = sandbox.defaultWorkingDirectory
-    const masterRoot = path.join(sandboxRoot, 'skill-master')
     const workspace = path.join(sandboxRoot, 'work')
     stage = 'workspace'
+    input.onActivity?.('transferring')
     if (serializedConfirmation.includes(input.apiKey)) {
       throw new Error('Confirmation contains a credential')
     }
@@ -228,13 +207,7 @@ export async function runPlayableBuild(
       throw new Error('Confirmation contains a credential')
     }
     await dependencies.logger?.info('Preparing isolated playable workspace')
-    for (const file of skillFiles) {
-      await sandbox.writeBinaryFile({
-        path: path.join(masterRoot, file.relativePath),
-        content: file.content,
-        abortSignal: dependencies.abortSignal,
-      })
-    }
+    await uploadWorkspaceBundle(sandbox, skillFiles, dependencies.abortSignal)
     await requireSuccessfulCommand(
       sandbox,
       { command: 'cp -R skill-master work', workingDirectory: sandboxRoot, abortSignal: dependencies.abortSignal },
@@ -341,7 +314,7 @@ export async function runPlayableBuild(
       abortSignal: dependencies.abortSignal,
     })
     stage = 'integrity'
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
+    await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
     input.onActivity?.('validating')
@@ -375,7 +348,7 @@ export async function runPlayableBuild(
     if (hasExternalResourceReference(html)) throw new Error('Playable artifact contains an external resource')
     if (!hasResponsiveViewport(html)) throw new Error('Playable artifact is missing responsive viewport support')
 
-    await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
+    await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
     return {
       html,
       assetManifest,

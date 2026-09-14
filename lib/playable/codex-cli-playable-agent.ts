@@ -213,6 +213,7 @@ function safeWorkspaceFilename(id: string, filename: string): string {
 
 async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: string): Promise<string> {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'playable-codex-work-'))
+  input.onActivity?.('transferring')
   for (const file of await readBuildSkillFiles(input.confirmation, skillRoot)) {
     const target = path.join(workspace, file.relativePath)
     await mkdir(path.dirname(target), { recursive: true })

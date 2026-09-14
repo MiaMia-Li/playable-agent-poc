@@ -206,6 +206,7 @@ describe('CodexCliPlayableAgent', () => {
     await expect(new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build(input)).resolves.toBe(result)
     expect(onActivity.mock.calls.map(([activity]) => activity)).toEqual([
       'preparing',
+      'transferring',
       'agent_started',
       'command_started',
       'command_completed',
