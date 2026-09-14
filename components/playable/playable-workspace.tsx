@@ -34,11 +34,10 @@ import {
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 import {
-  assetUploadErrorMessage,
-  assetUploadForm,
   isReferenceVideoTooLong,
   REFERENCE_VIDEO_TOO_LONG_MESSAGE,
   requestReferenceVideoAnalysis,
+  uploadPlayableAsset,
 } from '@/lib/playable/reference-video-client'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { PLAYABLE_TEMPLATES, templatePrompts, type PlayableTemplateId } from '@/lib/playable/template-catalog'
@@ -609,16 +608,10 @@ export function PlayableHome({
         if (retry.uploadedIds.has(id)) continue
         const slot = referenceSlotForMimeType(file.type)
         if (!slot) throw new Error('参考素材格式不受支持')
-        const uploadBody = await assetUploadForm(slot, file)
-        const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(retry.taskId)}/assets`, {
-          method: 'POST',
-          body: uploadBody,
+        const uploadedAsset = await uploadPlayableAsset(retry.taskId, slot, file, {
+          fallbackMessage: '参考素材上传失败',
         })
-        if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '参考素材上传失败'))
-        if (slot === 'referenceVideo') {
-          const body = (await uploadResponse.json().catch(() => undefined)) as { asset?: { id?: string } } | undefined
-          if (body?.asset?.id) retry.referenceVideoAssetId = body.asset.id
-        }
+        if (slot === 'referenceVideo') retry.referenceVideoAssetId = uploadedAsset.id
         retry.uploadedIds.add(id)
       }
       // Started before navigating so the task page opens on an analysis that

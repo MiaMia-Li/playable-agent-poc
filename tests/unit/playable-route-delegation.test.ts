@@ -14,11 +14,15 @@ const handlers = vi.hoisted(() => ({
   versions: vi.fn(async () => new Response(null)),
   artifact: vi.fn(async () => new Response(null)),
   asset: vi.fn(async () => new Response(null, { status: 201 })),
+  assetUploadToken: vi.fn(async () => new Response(null)),
+  assetUploadComplete: vi.fn(async () => new Response(null, { status: 201 })),
 }))
 
 vi.mock('@/lib/playable/task-route-handlers', () => ({
   playableTaskHandlers: handlers,
   playableAssetHandler: handlers.asset,
+  playableAssetUploadTokenHandler: handlers.assetUploadToken,
+  playableAssetUploadCompleteHandler: handlers.assetUploadComplete,
 }))
 
 import { GET as list, POST as create } from '@/app/api/playable-tasks/route'
@@ -31,6 +35,8 @@ import { GET as events } from '@/app/api/playable-tasks/[taskId]/events/route'
 import { GET as versions } from '@/app/api/playable-tasks/[taskId]/versions/route'
 import { GET as artifact } from '@/app/api/playable-tasks/[taskId]/artifact/route'
 import { POST as asset } from '@/app/api/playable-tasks/[taskId]/assets/route'
+import { POST as assetUploadToken } from '@/app/api/playable-tasks/[taskId]/assets/uploads/route'
+import { POST as assetUploadComplete } from '@/app/api/playable-tasks/[taskId]/assets/uploads/complete/route'
 
 describe('playable route module delegation', () => {
   it('delegates all playable route modules to the shared handlers', async () => {
@@ -43,6 +49,8 @@ describe('playable route module delegation', () => {
     await rename(request, context)
     await remove(request, context)
     await asset(request, context)
+    await assetUploadToken(request, context)
+    await assetUploadComplete(request, context)
     await message(request, context)
     await confirm(request, context)
     await review(request, context)
@@ -56,6 +64,8 @@ describe('playable route module delegation', () => {
     expect(handlers.rename).toHaveBeenCalledWith(request, context)
     expect(handlers.remove).toHaveBeenCalledWith(request, context)
     expect(handlers.asset).toHaveBeenCalledWith(request, context)
+    expect(handlers.assetUploadToken).toHaveBeenCalledWith(request, context)
+    expect(handlers.assetUploadComplete).toHaveBeenCalledWith(request, context)
     expect(handlers.message).toHaveBeenCalledWith(request, context)
     expect(handlers.confirm).toHaveBeenCalledWith(request, context)
     expect(handlers.review).toHaveBeenCalledWith(request, context)
