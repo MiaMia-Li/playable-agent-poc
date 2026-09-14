@@ -1,7 +1,7 @@
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
-import { readGeminiApiKey, readGeminiBaseUrl } from './shared-ai-key'
+import { readVideoAnalysisSecrets } from './shared-ai-key'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
@@ -37,11 +37,11 @@ export const VIDEO_ANALYSIS_BUDGET_MS = 740_000
 
 /**
  * A blueprint is free model text, so it can echo anything that was in the
- * request. Both the Gemini key and the gateway address have to be covered,
+ * request. Every backend's key, and the gateway address, have to be covered,
  * not just whichever one the caller happened to pass in.
  */
 function sanitizeBlueprint(blueprint: GameplayBlueprint): GameplayBlueprint {
-  const secrets = [readGeminiApiKey() ?? '', readGeminiBaseUrl()].filter(Boolean)
+  const secrets = readVideoAnalysisSecrets()
   return gameplayBlueprintSchema.parse(JSON.parse(redactSecrets(JSON.stringify(blueprint), secrets)))
 }
 

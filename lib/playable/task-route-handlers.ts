@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
-import { readGeminiApiKey, readSharedPlayableAIKey } from './shared-ai-key'
+import { readSharedPlayableAIKey } from './shared-ai-key'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
@@ -18,7 +18,7 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
-import { GeminiVideoGameplayAnalyst } from './video-gameplay-analyst'
+import { createVideoGameplayAnalyst } from './video-analysis-backend'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 import { OpenAIMarketResearchAgent } from './research/openai-market-research-agent'
@@ -34,12 +34,12 @@ const playableAgent = localDemo
   : localCodex
     ? new CodexCliPlayableAgent()
     : new CodexPlayableAgent()
-// Wired in every mode, including local demo. Availability is decided by
-// whether a Gemini key is configured, not by which runtime is active, so that
+// Wired in every mode, including local demo. Availability is decided by the
+// configured backend and its key, not by which runtime is active, so that
 // "no key, no analysis" means the same thing everywhere. Leaving this
 // undefined is the single signal the handlers read; they do not look at the
 // environment themselves.
-const videoAnalyst = readGeminiApiKey() ? new GeminiVideoGameplayAnalyst() : undefined
+const videoAnalyst = createVideoGameplayAnalyst()
 const imageAnalyst = localDemo
   ? undefined
   : localCodex
