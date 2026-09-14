@@ -151,6 +151,8 @@ async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): 
       : {}
   const provider = createVercelSandbox({
     runtime: 'node24',
+    // 与确认接口的 30 分钟预算一致，避免 Sandbox 默认期限提前终止 Agent。
+    timeout: 30 * 60 * 1000,
     ports: [4000],
     fetch: createExternalErrorLoggingFetch('Vercel Sandbox', [
       process.env.SANDBOX_VERCEL_TOKEN ?? '',
