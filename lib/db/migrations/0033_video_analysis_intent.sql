@@ -1,0 +1,1 @@
+ALTER TABLE "playable_video_analyses" ADD COLUMN "intent_text" text;

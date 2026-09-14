@@ -8,6 +8,7 @@ import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/p
 import { publicPlayableSession } from '@/lib/playable/public-access'
 import { restorePlayableConversation } from '@/lib/playable/conversation'
 import { safeValidationSummary } from '@/lib/playable/task-api'
+import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-analyst'
 
 interface TaskPageProps {
   params: Promise<{
@@ -28,14 +29,30 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets, videoAnalysis, builds, events, referenceSelections] = await Promise.all([
+  const [storedMessages, initialAssets, latestVideoAnalysis, builds, events, referenceSelections] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
-    repository.findLatestVideoAnalysis(task.id),
+    repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION),
     repository.listBuilds(task.id),
     repository.listEvents(task.id),
     repository.listReferenceSelections?.(task.id, session.user.id) ?? Promise.resolve([]),
   ])
+  // The newest analysis may belong to a video that is no longer active. That is
+  // "not analysed yet" for the page, the same rule the analysis route applies.
+  const videoAnalysis =
+    latestVideoAnalysis && latestVideoAnalysis.assetId === task.activeReferenceVideoAssetId
+      ? latestVideoAnalysis
+      : undefined
+  // The blueprint comes from the newest succeeded attempt, so a re-run or an
+  // intent comparison in flight does not blank it on reload.
+  const blueprintAnalysis =
+    videoAnalysis && videoAnalysis.status !== 'succeeded'
+      ? await repository.findLatestSucceededVideoAnalysis(
+          task.id,
+          VIDEO_ANALYSIS_PIPELINE_VERSION,
+          videoAnalysis.assetId,
+        )
+      : videoAnalysis
   const sourceTemplateId = selectedSourceTemplate(task)
   const initialConversation = restorePlayableConversation(
     storedMessages,
@@ -65,15 +82,21 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
       initialRevision={task.pendingRevision ?? undefined}
       initialBrief={task.requirementBrief ?? undefined}
       initialConversation={initialConversation}
-      initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size }) => ({
+      initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size, durationSeconds }) => ({
         id,
         slot,
         filename,
         mimeType,
         size,
+        durationSeconds,
       }))}
       initialVideoAnalysisStatus={videoAnalysis?.status}
-      initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
+      initialGameplayBlueprint={blueprintAnalysis?.blueprint ?? undefined}
+      initialVideoAnalysisMediaResolution={blueprintAnalysis?.mediaResolution ?? null}
+      initialActiveReferenceVideoId={task.activeReferenceVideoAssetId}
+      initialGameplayAnnotations={task.gameplayAnnotations.filter(
+        (annotation) => annotation.assetId === task.activeReferenceVideoAssetId,
+      )}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialBuildId={version}

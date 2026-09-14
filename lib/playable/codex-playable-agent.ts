@@ -163,6 +163,10 @@ async function createProposal(
     uploadedAssets: input.assets ?? [],
     attachedAssetIds: input.attachedAssetIds ?? [],
     gameplayBlueprint: input.gameplayBlueprint ?? null,
+    // Supplied on its own because the blueprint document only exists once an
+    // analysis has succeeded, and the agent resends the whole list: without
+    // this it would erase annotations recorded before the analysis finished.
+    gameplayAnnotations: input.annotations ?? [],
     currentArtifact: {
       hasArtifact: Boolean(input.hasArtifact),
       pendingRevision: input.pendingRevision ?? null,
