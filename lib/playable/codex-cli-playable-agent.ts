@@ -1,8 +1,9 @@
+import { readBuildSkillFiles } from './build-skill'
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
 import { reportCliBuildActivity } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { toJSONSchema, z } from 'zod'
@@ -212,7 +213,11 @@ function safeWorkspaceFilename(id: string, filename: string): string {
 
 async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: string): Promise<string> {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'playable-codex-work-'))
-  await cp(skillRoot, workspace, { recursive: true })
+  for (const file of await readBuildSkillFiles(input.confirmation, skillRoot)) {
+    const target = path.join(workspace, file.relativePath)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.content)
+  }
   await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation, null, 2), 'utf8')
   if (input.revision) {
     await writeFile(path.join(workspace, 'revision-plan.json'), JSON.stringify(input.revision, null, 2), 'utf8')

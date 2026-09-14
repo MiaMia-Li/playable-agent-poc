@@ -1,5 +1,5 @@
+import { readBuildSkillFiles } from './build-skill'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
-import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
@@ -10,8 +10,6 @@ import { confirmationProposalSchema } from './schemas'
 import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { PLAYABLE_SANDBOX_TOOLS_VERSION, PLAYABLE_TOOLS_CHECK } from './sandbox-tools'
-
-const DEFAULT_SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 interface SandboxCommandOptions {
   command: string
@@ -79,27 +77,6 @@ export class PlayableBuildExecutionError extends Error {
 interface SkillFile {
   relativePath: string
   content: Uint8Array
-}
-
-async function readSkillFiles(root: string, directory = root): Promise<SkillFile[]> {
-  const entries = await readdir(directory, { withFileTypes: true })
-  const files = await Promise.all(
-    entries.map(async (entry): Promise<SkillFile[]> => {
-      if (isFilesystemMetadata(entry.name, entry.isDirectory())) return []
-      const absolutePath = path.join(directory, entry.name)
-      if (entry.isDirectory()) return readSkillFiles(root, absolutePath)
-      if (!entry.isFile()) return []
-      return [
-        { relativePath: path.relative(root, absolutePath), content: new Uint8Array(await readFile(absolutePath)) },
-      ]
-    }),
-  )
-  return files.flat().sort((left, right) => left.relativePath.localeCompare(right.relativePath))
-}
-
-function isFilesystemMetadata(name: string, directory: boolean): boolean {
-  if (directory && ['.git', '.svn', '__MACOSX'].includes(name)) return true
-  return name === '.DS_Store' || name === 'Thumbs.db' || name === 'desktop.ini' || name.startsWith('._')
 }
 
 function safeWorkspaceFilename(id: string, filename: string): string {
@@ -232,7 +209,7 @@ export async function runPlayableBuild(
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
 
   dependencies.abortSignal?.throwIfAborted()
-  const skillFiles = await readSkillFiles(dependencies.skillRoot ?? DEFAULT_SKILL_ROOT)
+  const skillFiles = await readBuildSkillFiles(confirmation, dependencies.skillRoot)
   const createSandbox = dependencies.createSandbox ?? createPlayableSandbox
   let sandbox: PlayableSandbox | undefined
   let operationError: unknown

@@ -1,3 +1,4 @@
+import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import type { BuildActivityCallback } from './build-activity'
 import { createHarnessActivityReporter } from './build-activity-detail'
@@ -37,7 +38,7 @@ import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel }
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 const CODEX_INSTRUCTIONS = [
-  'Follow the supplied Mahjong playable Skill exactly.',
+  'Follow the supplied gameplay-specific playable Skill exactly.',
   'Collect requirements over multiple turns. Ask one focused clarification at a time and never repeat information already answered in conversation history.',
   'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the available gameplay templates as concise selectable options.',
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
@@ -118,6 +119,7 @@ async function readTextSkillFiles(root: string, directory = root): Promise<Array
   const nested = await Promise.all(
     entries.map(async (entry): Promise<Array<{ path: string; content: string }>> => {
       const absolutePath = path.join(directory, entry.name)
+      if (entry.isDirectory() && ['assets', 'agents'].includes(entry.name)) return []
       if (entry.isDirectory()) return readTextSkillFiles(root, absolutePath)
       if (!entry.isFile() || !/\.(?:md|json|mjs|html|ya?ml)$/i.test(entry.name)) return []
       return [
@@ -131,14 +133,21 @@ async function readTextSkillFiles(root: string, directory = root): Promise<Array
   return nested.flat().sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function loadSkill(root: string): Promise<HarnessV1Skill> {
-  const files = await readTextSkillFiles(root)
+async function loadSkill(
+  root: string,
+  confirmation: Pick<ConfirmedBuildInput['confirmation'], 'sourceTemplateId' | 'routing' | 'mode'>,
+): Promise<HarnessV1Skill> {
+  // Harness 只注册文字指令；二进制素材和 HTML 已由工作区打包传输，不再重复上传。
+  const files = (await Promise.all(buildSkillRoots(confirmation, root).map((root) => readTextSkillFiles(root))))
+    .flat()
+    .filter((file) => !file.path.startsWith('assets/') && includeBuildSkillFile(file.path, confirmation))
+  const entry = await buildSkillEntry(confirmation)
   const skill = files.find((file) => file.path === 'SKILL.md')
   if (!skill) throw new Error('Playable Skill instructions are missing')
   return {
-    name: 'mahjong-pair-match-playable',
-    description: 'Build one validated Mahjong pair-match playable from a registered mode.',
-    content: skill.content,
+    name: entry.name,
+    description: entry.description,
+    content: root === SKILL_ROOT ? entry.content : skill.content,
     files: files.filter((file) => file !== skill),
   }
 }
@@ -286,7 +295,11 @@ export async function executeBuildAgent(
   mode?: ConfirmedBuildInput['confirmation']['mode'],
   onActivity?: BuildActivityCallback,
 ) {
-  const skill = await loadSkill(skillRoot)
+  const skill = await loadSkill(skillRoot, {
+    sourceTemplateId,
+    routing: { match: route, confidence: 1, differences: [] },
+    mode: mode ?? 'gravity_fill',
+  })
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
   let session
   try {

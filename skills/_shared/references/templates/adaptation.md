@@ -23,6 +23,15 @@ Also verify offline loading, responsive portrait/landscape layout, initial mute 
 
 ## Keep acceptance bounded
 
+Run browser acceptance through `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs`.
+Write only the scenario module: export a default async function receiving `{ page, context, check, capture, clickCanvas }`.
+Use real inputs, bounded `page.waitForFunction` waits and `check('requirement', observedCondition)` assertions for
+every requested change; `clickCanvas(x, y)` takes normalized coordinates from 0 to 1. `capture('stage')` records a
+stage screenshot. The runner supplies offline loading, request/console collection, popup blocking, orientation
+screenshots and an artifact-hash-bound JSON report in `work/browser-acceptance/`. It fails when the scenario has
+no assertions. Inspect its screenshots and include any required layout/mute/CTA assertions in the scenario;
+the runner does not prove those game-specific properties automatically. Every invocation is timed by the host.
+
 - Before testing, collect the requested changes into one short checklist. For a patch, focus gameplay assertions on those changes and the transitions they affect; keep the delivery smoke checks above. Do not explore unrelated game branches.
 - Use one browser session to collect gameplay state, console/network failures, and portrait/landscape screenshots. Review these same screenshots for visual acceptance rather than replaying the game for a separate final review.
 - Wait for observable engine states with explicit timeouts derived from the expected animation duration. On timeout, capture the current state and diagnose the failed transition before retrying; do not repeatedly replay the whole sequence with longer sleeps. Never skip animations or force success states in the delivered game to make a test pass.

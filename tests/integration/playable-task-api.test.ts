@@ -1,3 +1,4 @@
+import { sourceTemplateFile } from '@/lib/playable/build-skill'
 import { readFile } from 'node:fs/promises'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { templatePrompts } from '@/lib/playable/template-catalog'
@@ -2116,10 +2117,7 @@ describe('playable task API', () => {
       expect(harness.agent.build).toHaveBeenCalledWith(
         expect.objectContaining({
           confirmation: selected,
-          baseHtml: await readFile(
-            `skills/mahjong-pair-match-playable/assets/templates/${sourceTemplateId}/source.html`,
-            'utf8',
-          ),
+          baseHtml: await readFile(sourceTemplateFile(sourceTemplateId), 'utf8'),
         }),
       )
       expect(createProductionConfig(selected).core.sourceTemplateId).toBe(sourceTemplateId)
@@ -2200,10 +2198,7 @@ describe('playable task API', () => {
     expect(harness.agent.build).toHaveBeenCalledWith(
       expect.objectContaining({
         revision: expect.objectContaining({ strategy: 'regenerate' }),
-        baseHtml: await readFile(
-          'skills/mahjong-pair-match-playable/assets/templates/balloon_master/source.html',
-          'utf8',
-        ),
+        baseHtml: await readFile(sourceTemplateFile('balloon_master'), 'utf8'),
       }),
     )
   })
@@ -2229,10 +2224,7 @@ describe('playable task API', () => {
           sourceTemplateId: 'zeus_scatter',
           routing: confirmation.routing,
         }),
-        baseHtml: await readFile(
-          'skills/mahjong-pair-match-playable/assets/templates/zeus_scatter/source.html',
-          'utf8',
-        ),
+        baseHtml: await readFile(sourceTemplateFile('zeus_scatter'), 'utf8'),
       }),
     )
   })

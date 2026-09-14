@@ -1,6 +1,6 @@
 # 彩球转盘消除 (`balloon_master`)
 
-Source: `assets/templates/balloon_master/source.html`. Read [adaptation.md](adaptation.md) before editing.
+Source: `assets/templates/balloon_master/source.html`. Read the shared `references/templates/adaptation.md` supplied by the platform before editing.
 
 ## Original interaction and code entry
 
@@ -13,3 +13,13 @@ The business script contains configuration keys `rowCount`, `slotCount`, `shellC
 ## Acceptance
 
 Rotate horizontally and verify alignment updates the central match state. Test downward swipes in both eligible and ineligible states against the source/confirmed rules, then verify peeling reveals the next shell exactly once. Check input during animations, remaining-shell geometry, the approved shell count, and end-card timing. This is not a slot machine or a tap-to-pair Mahjong game.
+
+## Source provenance
+
+Source: `BalloonMaster/release/single-html/index.html`, supplied on 2026-09-11. This Laya single-HTML build already includes the project's AppLovin finalizer. The original project is unchanged.
+
+Template adaptations: title `Balloon Master Playable`, static bootstrap error logging, and the same conditional in-memory localStorage fallback as Zeus Scatter for sandboxed previews. All engine, scene, image and audio resources remain embedded. Preserve the 720 × 1280 layout, horizontal disc rotation, central color-column matching, downward swipe to peel a shell, and end card after two shells.
+
+To reproduce, copy the finalized source HTML, apply these three adaptations, validate with the source project's `tools/validate-playable.mjs` in a temporary project copy, and keep public and build-workspace HTML copies identical. The cover PNG is a 360 × 640 screenshot of the idle sandboxed game.
+
+Final HTML: 1,409,447 bytes. SHA-256: `a4886f5d8500e24ce32202a24e73eed5e9b17c1aa4c9a026ca0264ae5c4b0354`.

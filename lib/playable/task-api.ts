@@ -1,3 +1,4 @@
+import { sourceTemplateFile } from './build-skill'
 import { mergeReasoning } from './reasoning-history'
 import { sanitizeBuildActivityDetail } from './build-activity-detail'
 import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
@@ -908,16 +909,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       : undefined
     let baseHtml: string | undefined
     if (sanitizedConfirmation.sourceTemplateId && revision?.strategy !== 'patch') {
-      baseHtml = await readFile(
-        path.join(
-          process.cwd(),
-          MAHJONG_PLAYABLE_PLUGIN.skillRoot,
-          'assets/templates',
-          sanitizedConfirmation.sourceTemplateId,
-          'source.html',
-        ),
-        'utf8',
-      )
+      baseHtml = await readFile(sourceTemplateFile(sanitizedConfirmation.sourceTemplateId), 'utf8')
     }
     if (revision?.strategy === 'patch') {
       stage = 'base_artifact'

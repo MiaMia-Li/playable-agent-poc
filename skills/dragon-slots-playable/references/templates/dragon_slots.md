@@ -1,6 +1,6 @@
 # 金龙麻将转轴 (`dragon_slots`)
 
-Source: `assets/templates/dragon_slots/source.html`. Read [adaptation.md](adaptation.md) before editing.
+Source: `assets/templates/dragon_slots/source.html`. Read the shared `references/templates/adaptation.md` supplied by the platform before editing.
 
 ## Original interaction and code entry
 
@@ -15,3 +15,13 @@ Modify the round/result data and corresponding clear/refill transitions inside t
 Exercise Spin from the requested starting round. Check symbol outcomes, stopping/falling order, elimination, refill, multipliers, and when another Spin becomes available. Verify a clear fires once and the next stage waits for its animation to finish.
 
 If the confirmed request specifies a scripted sequence (for example full red-center tiles, full wilds, mixed upper half with wild lower half, then mixed tiles), map each stage to explicit board results and clear masks and verify them in order. Apply this example only when requested; do not impose it on other builds. Confirm the actual source symbol ID for red-center and wild tiles instead of guessing from their names.
+
+## Source provenance
+
+Imported on 2026-09-11, unchanged from the supplied source.
+
+| Template | Source | SHA-256 |
+| --- | --- | --- |
+| dragon_slots | https://h5test.dominotest.net/h5domino/superplay/applovin21_201.html | b47741d95a9128036628f448614249590d7474257b42fa8fcc00a04df3e6357b |
+
+The original AppLovin bridge may report a missing host SDK during browser previews. Preserve gameplay and perform the delivery checks against the confirmed store URL.
