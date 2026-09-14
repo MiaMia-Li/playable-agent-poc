@@ -22,10 +22,12 @@ import type {
 } from '@/lib/playable/schemas'
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
+import type { GameplayAnnotation } from '@/lib/playable/schemas'
 import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 import type { ReferenceImageAnalysis } from '@/lib/playable/reference-image-analyst'
 import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
+import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-analyst'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
@@ -64,7 +66,7 @@ const patchRevision: RevisionPlan = {
 }
 
 const gameplayBlueprint: GameplayBlueprint = {
-  version: 1,
+  version: 2,
   summary: '点击相同目标后消除。',
   orientation: 'portrait',
   controls: [
@@ -79,6 +81,8 @@ const gameplayBlueprint: GameplayBlueprint = {
   progression: [],
   tutorial: [],
   endCard: null,
+  audio: [],
+  intentDivergence: [],
   visualStyle: '卡通风格',
   uncertainties: [],
   overallConfidence: 0.88,
@@ -142,9 +146,25 @@ class MemoryRepository implements PlayableTaskRepository {
       confirmation: null,
       pendingRevision: null,
       latestArtifactKey: null,
+      activeReferenceVideoAssetId: null,
+      gameplayAnnotations: [],
     }
     this.tasks.set(task.id, task)
     return task
+  }
+
+  async updateGameplayAnnotations(taskId: string, userId: string, annotations: GameplayAnnotation[]): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.gameplayAnnotations = annotations
+    return true
+  }
+
+  async setActiveReferenceVideo(taskId: string, userId: string, assetId: string | null): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task) return false
+    task.activeReferenceVideoAssetId = assetId
+    return true
   }
 
   async findOwnedTask(taskId: string, userId: string): Promise<PlayableTaskRecord | undefined> {
@@ -374,27 +394,43 @@ class MemoryRepository implements PlayableTaskRepository {
     return this.assets.splice(index, 1)[0]
   }
 
-  async createVideoAnalysis(input: {
+  async claimVideoAnalysis(input: {
     id: string
     taskId: string
     assetId: string
     pipelineVersion: string
     model: string
-  }): Promise<PlayableVideoAnalysisRecord> {
+  }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const latest = this.videoAnalyses
+      .filter(
+        (candidate) =>
+          candidate.assetId === input.assetId &&
+          candidate.pipelineVersion === input.pipelineVersion &&
+          candidate.model === input.model,
+      )
+      .at(-1)
+    if (latest && latest.status !== 'failed') return { analysis: latest, claimed: false }
     const analysis: PlayableVideoAnalysisRecord = {
       ...input,
+      attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
+      mediaResolution: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: null,
     }
     this.videoAnalyses.push(analysis)
-    return analysis
+    return { analysis, claimed: true }
   }
 
-  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
-    return this.videoAnalyses.filter((analysis) => analysis.taskId === taskId).at(-1)
+  async findLatestVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
+    return this.videoAnalyses
+      .filter((analysis) => analysis.taskId === taskId && analysis.pipelineVersion === pipelineVersion)
+      .at(-1)
   }
 
   async updateVideoAnalysisStatus(id: string, status: PlayableVideoAnalysisRecord['status']): Promise<void> {
@@ -402,11 +438,16 @@ class MemoryRepository implements PlayableTaskRepository {
     if (analysis) analysis.status = status
   }
 
-  async completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void> {
+  async completeVideoAnalysis(
+    id: string,
+    blueprint: GameplayBlueprint,
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+  ): Promise<void> {
     const analysis = this.videoAnalyses.find((candidate) => candidate.id === id)
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = blueprint
+    analysis.mediaResolution = mediaResolution
     analysis.completedAt = new Date()
   }
 
@@ -430,6 +471,8 @@ function createHarness() {
     confirmation: null,
     pendingRevision: null,
     latestArtifactKey: null,
+    activeReferenceVideoAssetId: null,
+    gameplayAnnotations: [],
   })
   repository.tasks.set('foreign', {
     id: 'foreign',
@@ -440,6 +483,8 @@ function createHarness() {
     confirmation,
     pendingRevision: null,
     latestArtifactKey: 'users/user-2/tasks/foreign/build/playable.html',
+    activeReferenceVideoAssetId: null,
+    gameplayAnnotations: [],
   })
 
   const scheduled: Array<() => Promise<void>> = []
@@ -465,14 +510,10 @@ function createHarness() {
       artifacts.delete(key)
     }),
   }
-  const videoPreprocessor = {
-    preprocess: vi.fn(async () => ({
-      durationSeconds: 3,
-      sampleRate: 1,
-      frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
-    })),
+  const videoAnalyst = {
+    model: 'gemini-test',
+    analyze: vi.fn(async () => ({ blueprint: gameplayBlueprint, mediaResolution: 'high' as const })),
   }
-  const videoAnalyst = { analyze: vi.fn(async () => gameplayBlueprint) }
   const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
@@ -484,7 +525,6 @@ function createHarness() {
     repository,
     agent,
     artifactStore,
-    videoPreprocessor,
     videoAnalyst,
     imageAnalyst,
     schedule: scheduler,
@@ -500,7 +540,6 @@ function createHarness() {
     scheduled,
     agent,
     artifactStore,
-    videoPreprocessor,
     videoAnalyst,
     imageAnalyst,
     artifacts,
@@ -550,7 +589,7 @@ describe('playable task API', () => {
     expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401, 401, 401, 401, 401])
   })
 
-  it('preprocesses a reference video and persists a gameplay blueprint before requirement planning', async () => {
+  it('analyses the named reference video and persists a gameplay blueprint before requirement planning', async () => {
     const video: PlayableAsset = {
       id: 'video-1',
       taskId: 'owned',
@@ -560,22 +599,31 @@ describe('playable task API', () => {
       mimeType: 'video/mp4',
       size: 1,
       storageKey: 'private-video',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(video)
     harness.artifacts.set(video.storageKey, new Uint8Array([1]))
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
 
-    const queued = await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST'), context)
+    const queued = await harness.handlers.analysis(
+      request('/api/playable-tasks/owned/analysis', 'POST', { assetId: video.id }),
+      context,
+    )
 
     expect(queued.status).toBe(202)
+    // Naming the video is also what makes it the active one, which is the
+    // binding the blueprint and its annotations are read through afterwards.
+    expect(harness.repository.tasks.get('owned')?.activeReferenceVideoAssetId).toBe(video.id)
     expect(harness.scheduled).toHaveLength(1)
     await harness.scheduled[0]()
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
-    await expect(harness.repository.findLatestVideoAnalysis('owned')).resolves.toMatchObject({
+    await expect(
+      harness.repository.findLatestVideoAnalysis('owned', VIDEO_ANALYSIS_PIPELINE_VERSION),
+    ).resolves.toMatchObject({
       status: 'succeeded',
       blueprint: gameplayBlueprint,
+      mediaResolution: 'high',
     })
 
     const messageResponse = await harness.handlers.message(
@@ -584,7 +632,7 @@ describe('playable task API', () => {
     )
     await messageResponse.text()
     expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
-      expect.objectContaining({ gameplayBlueprint }),
+      expect.objectContaining({ gameplayBlueprint: expect.objectContaining(gameplayBlueprint) }),
       expect.any(Object),
     )
   })
@@ -600,6 +648,7 @@ describe('playable task API', () => {
         mimeType: 'video/mp4',
         size: 1,
         storageKey: 'old-video',
+        durationSeconds: null,
         createdAt: new Date('2026-01-01T00:00:00Z'),
       },
       {
@@ -611,6 +660,7 @@ describe('playable task API', () => {
         mimeType: 'video/mp4',
         size: 1,
         storageKey: 'new-video',
+        durationSeconds: null,
         createdAt: new Date('2026-01-02T00:00:00Z'),
       },
     )
@@ -619,13 +669,17 @@ describe('playable task API', () => {
       taskId: 'owned',
       assetId: 'video-old',
       status: 'succeeded',
-      pipelineVersion: 'v1',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
       model: 'model',
+      attempt: 1,
+      mediaResolution: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       completedAt: new Date('2026-01-01T00:01:00Z'),
     })
+
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-new')
 
     const response = await harness.handlers.message(
       request('/api/playable-tasks/owned/messages', 'POST', { message: '使用新视频制作试玩' }),
@@ -649,6 +703,7 @@ describe('playable task API', () => {
       mimeType: 'image/png',
       size: 2,
       storageKey: 'private-image-key',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(image)
@@ -708,6 +763,7 @@ describe('playable task API', () => {
         mimeType: 'image/png',
         size: 1,
         storageKey: 'image-a-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
       {
@@ -719,6 +775,7 @@ describe('playable task API', () => {
         mimeType: 'image/png',
         size: 1,
         storageKey: 'image-b-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
       {
@@ -730,6 +787,7 @@ describe('playable task API', () => {
         mimeType: 'image/png',
         size: 1,
         storageKey: 'old-image-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
       ...['video-a', 'video-b'].map(
@@ -742,6 +800,7 @@ describe('playable task API', () => {
           mimeType: 'video/mp4',
           size: 1,
           storageKey: `${id}-key`,
+          durationSeconds: null,
           createdAt: new Date(),
         }),
       ),
@@ -779,11 +838,14 @@ describe('playable task API', () => {
         images: [expect.objectContaining({ assetId: 'image-a' }), expect.objectContaining({ assetId: 'image-b' })],
       }),
     )
-    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
     expect(results[1]).toEqual(results[0])
     expect(results[2]).toEqual({ status: 'unavailable', reason: 'budget_exceeded' })
     expect(results[3]).toEqual({ status: 'unavailable', reason: 'asset_not_attached' })
-    expect(results[5]).toEqual({ status: 'unavailable', reason: 'budget_exceeded' })
+    // Reading a blueprint is free, so the video tool carries no budget and the
+    // second attached video answers for itself rather than being cut off.
+    expect(results[4]).toEqual({ status: 'unavailable', reason: 'analysis_not_started' })
+    expect(results[5]).toEqual({ status: 'unavailable', reason: 'analysis_not_started' })
   })
 
   it('rejects non-owned and wrong-slot assets requested by reference tools without reading private bytes', async () => {
@@ -797,6 +859,7 @@ describe('playable task API', () => {
         mimeType: 'image/png',
         size: 1,
         storageKey: 'foreign-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
       {
@@ -808,6 +871,7 @@ describe('playable task API', () => {
         mimeType: 'audio/mpeg',
         size: 1,
         storageKey: 'audio-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
     )
@@ -853,6 +917,7 @@ describe('playable task API', () => {
       mimeType: 'image/png',
       size: 1,
       storageKey: 'secret-storage-path',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(image)
@@ -889,7 +954,7 @@ describe('playable task API', () => {
     expect(body).not.toContain('provider credential')
   })
 
-  it('awaits a newly requested video analysis and returns the blueprint to the next agent decision', async () => {
+  it('reports the analysis upload already started instead of starting one itself', async () => {
     const video: PlayableAsset = {
       id: 'video-tool',
       taskId: 'owned',
@@ -899,10 +964,26 @@ describe('playable task API', () => {
       mimeType: 'video/mp4',
       size: 1,
       storageKey: 'video-tool-key',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(video)
     harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-tool',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: 'model',
+      attempt: 1,
+      mediaResolution: 'high',
+      blueprint: gameplayBlueprint,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
     let toolResult: unknown
     vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
       toolResult = await options?.executeTool?.({
@@ -924,12 +1005,53 @@ describe('playable task API', () => {
     ).text()
 
     expect(toolResult).toEqual({ status: 'succeeded', blueprint: gameplayBlueprint })
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
-    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    // The tool is a lookup now. Holding the NDJSON stream open for a Gemini
+    // round trip is exactly what this change removed, so the analyst must not
+    // be reachable from the message path at all.
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
     expect(harness.scheduled).toHaveLength(0)
   })
 
-  it('claims one analysis when the agent tool and legacy POST race for the same video', async () => {
+  it('tells the agent no analysis exists yet rather than starting one', async () => {
+    const video: PlayableAsset = {
+      id: 'video-unstarted',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'video-unstarted-key',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    let toolResult: unknown
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
+      toolResult = await options?.executeTool?.({
+        name: 'analyze_reference_video',
+        assetIds: [],
+        assetId: video.id,
+      })
+      return confirmationReply
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '分析视频',
+          attachmentIds: [video.id],
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(toolResult).toEqual({ status: 'unavailable', reason: 'analysis_not_started' })
+    expect(harness.repository.videoAnalyses).toHaveLength(0)
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
+  })
+
+  it('claims a single analysis when two POSTs race for the same video', async () => {
     const video: PlayableAsset = {
       id: 'video-race',
       taskId: 'owned',
@@ -939,33 +1061,20 @@ describe('playable task API', () => {
       mimeType: 'video/mp4',
       size: 1,
       storageKey: 'video-race-key',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(video)
     harness.artifacts.set(video.storageKey, new Uint8Array([1]))
-    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (_input, options) => {
-      await options?.executeTool?.({
-        name: 'analyze_reference_video',
-        assetIds: [],
-        assetId: video.id,
-      })
-      return confirmationReply
-    })
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const post = () =>
+      harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST', { assetId: video.id }), context)
 
-    const message = await harness.handlers.message(
-      request('/api/playable-tasks/owned/messages', 'POST', {
-        message: '分析视频',
-        attachmentIds: [video.id],
-      }),
-      context,
-    )
-    const post = harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST'), context)
-    await Promise.all([message.text(), post])
+    const [first, second] = await Promise.all([post(), post()])
     await Promise.all(harness.scheduled.map((work) => work()))
 
+    expect([first.status, second.status]).toEqual([202, 202])
     expect(harness.repository.videoAnalyses).toHaveLength(1)
-    expect(harness.videoPreprocessor.preprocess).toHaveBeenCalledOnce()
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
   })
 
@@ -980,6 +1089,7 @@ describe('playable task API', () => {
         mimeType: 'video/mp4',
         size: 1,
         storageKey: 'foreign-video-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
       {
@@ -991,6 +1101,7 @@ describe('playable task API', () => {
         mimeType: 'audio/mpeg',
         size: 1,
         storageKey: 'audio-key',
+        durationSeconds: null,
         createdAt: new Date(),
       },
     )
@@ -1017,7 +1128,7 @@ describe('playable task API', () => {
       { status: 'unavailable', reason: 'asset_unavailable' },
     ])
     expect(harness.repository.videoAnalyses).toHaveLength(0)
-    expect(harness.videoPreprocessor.preprocess).not.toHaveBeenCalled()
+    expect(harness.videoAnalyst.analyze).not.toHaveBeenCalled()
   })
 
   it('reuses succeeded video analysis and returns a structured pending result without creating duplicates', async () => {
@@ -1030,6 +1141,7 @@ describe('playable task API', () => {
       mimeType: 'video/mp4',
       size: 1,
       storageKey: 'video-cache-key',
+      durationSeconds: null,
       createdAt: new Date(),
     }
     harness.repository.assets.push(video)
@@ -1061,8 +1173,10 @@ describe('playable task API', () => {
       taskId: 'owned',
       assetId: video.id,
       status: 'succeeded',
-      pipelineVersion: 'v1',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
       model: 'model',
+      attempt: 1,
+      mediaResolution: null,
       blueprint: gameplayBlueprint,
       errorCode: null,
       createdAt: new Date(),
@@ -1218,6 +1332,7 @@ describe('playable task API', () => {
       mimeType: 'image/png',
       size: 3,
       storageKey: 'private-current-image',
+      durationSeconds: null,
       createdAt: new Date(0),
     })
 
@@ -1527,6 +1642,7 @@ describe('playable task API', () => {
       mimeType: 'audio/mpeg',
       size: 3,
       storageKey: 'private-storage-key',
+      durationSeconds: null,
       createdAt: new Date(0),
     })
 
@@ -1544,7 +1660,16 @@ describe('playable task API', () => {
           { role: 'assistant', content: '请选择玩法' },
         ],
         confirmation,
-        assets: [{ id: 'asset-1', slot: 'audio', filename: 'farm.mp3', mimeType: 'audio/mpeg', size: 3 }],
+        assets: [
+          {
+            id: 'asset-1',
+            slot: 'audio',
+            filename: 'farm.mp3',
+            mimeType: 'audio/mpeg',
+            size: 3,
+            durationSeconds: null,
+          },
+        ],
       }),
       expect.objectContaining({ onProgress: expect.any(Function) }),
     )
@@ -1738,6 +1863,7 @@ describe('playable task API', () => {
       mimeType: 'audio/mpeg',
       size: 3,
       storageKey: 'private-key',
+      durationSeconds: null,
       createdAt: new Date(),
     })
     const accepted = await harness.handlers.confirm(
@@ -2056,6 +2182,7 @@ describe('playable task API', () => {
     const storageKey = 'users/user-1/tasks/owned/assets/asset-1'
     harness.repository.assets.push({
       id: 'asset-1',
+      durationSeconds: null,
       taskId: 'owned',
       userId: 'user-1',
       slot: 'audio',
@@ -2075,6 +2202,7 @@ describe('playable task API', () => {
       mimeType: 'video/mp4',
       size: 3,
       storageKey: referenceStorageKey,
+      durationSeconds: null,
       createdAt: new Date(0),
     })
     harness.artifacts.set(storageKey, new Uint8Array([1, 2, 3]))

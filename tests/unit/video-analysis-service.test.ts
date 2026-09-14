@@ -3,9 +3,10 @@ import type { GameplayBlueprint } from '@/lib/playable/schemas'
 import type { PlayableVideoAnalysisRecord, PlayableTaskRecord } from '@/lib/playable/task-api'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import { runVideoAnalysis } from '@/lib/playable/video-analysis-service'
+import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
-  version: 1,
+  version: 2,
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
   controls: [{ value: '点击', confidence: 0.9, evidence: [] }],
@@ -18,6 +19,8 @@ const blueprint: GameplayBlueprint = {
   progression: [],
   tutorial: [],
   endCard: null,
+  audio: [],
+  intentDivergence: [],
   visualStyle: '卡通',
   uncertainties: [],
   overallConfidence: 0.88,
@@ -31,6 +34,8 @@ const task: PlayableTaskRecord = {
   requirementBrief: null,
   confirmation: null,
   latestArtifactKey: null,
+  activeReferenceVideoAssetId: 'asset-1',
+  gameplayAnnotations: [],
 }
 
 const asset: PlayableAsset = {
@@ -42,6 +47,7 @@ const asset: PlayableAsset = {
   mimeType: 'video/mp4',
   size: 1,
   storageKey: 'private-reference',
+  durationSeconds: 12,
   createdAt: new Date(),
 }
 
@@ -50,8 +56,10 @@ const analysis: PlayableVideoAnalysisRecord = {
   taskId: task.id,
   assetId: asset.id,
   status: 'pending',
-  pipelineVersion: 'v1',
+  pipelineVersion: 'qdai-video-v2',
   model: 'model',
+  attempt: 1,
+  mediaResolution: null,
   blueprint: null,
   errorCode: null,
   createdAt: new Date(),
@@ -67,36 +75,30 @@ function stream(bytes: Uint8Array) {
   })
 }
 
-function harness() {
+function harness(mediaResolution: AppliedMediaResolution = 'high') {
   const repository = {
     updateVideoAnalysisStatus: vi.fn(async (_id: string, _status: PlayableVideoAnalysisRecord['status']) => undefined),
     appendEvent: vi.fn(async (_event: { taskId: string; type: string; message: string }) => undefined),
-    completeVideoAnalysis: vi.fn(async (_id: string, _blueprint: GameplayBlueprint) => undefined),
+    completeVideoAnalysis: vi.fn(
+      async (_id: string, _blueprint: GameplayBlueprint, _mediaResolution: AppliedMediaResolution) => undefined,
+    ),
     failVideoAnalysis: vi.fn(async (_id: string, _errorCode: string) => undefined),
   }
   const artifactStore = { get: vi.fn(async () => stream(new Uint8Array([1]))) }
-  const preprocessed = {
-    durationSeconds: 2,
-    sampleRate: 1,
-    frames: [{ timestampSeconds: 0, mimeType: 'image/jpeg' as const, bytes: new Uint8Array([2]) }],
-  }
-  const preprocessor = { preprocess: vi.fn(async () => preprocessed) }
-  const analyst = { analyze: vi.fn(async () => blueprint) }
-  return { repository, artifactStore, preprocessor, analyst, preprocessed }
+  const analyst = { model: 'gemini-test', analyze: vi.fn(async () => ({ blueprint, mediaResolution })) }
+  return { repository, artifactStore, analyst }
 }
 
 describe('QDAI video analysis service', () => {
-  it('preprocesses private video bytes and persists the structured blueprint', async () => {
+  it('hands the raw video bytes to the analyst and persists the structured blueprint', async () => {
     const dependencies = harness()
 
     const result = await runVideoAnalysis({
       task,
       asset,
       analysis,
-      apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
     })
 
@@ -105,17 +107,40 @@ describe('QDAI video analysis service', () => {
       'preprocessing',
       'analyzing',
     ])
-    expect(dependencies.preprocessor.preprocess).toHaveBeenCalledWith(
-      expect.objectContaining({ taskId: task.id, mimeType: 'video/mp4', video: new Uint8Array([1]) }),
-    )
     expect(dependencies.analyst.analyze).toHaveBeenCalledWith(
-      expect.objectContaining({ video: dependencies.preprocessed }),
+      expect.objectContaining({
+        taskId: task.id,
+        video: { bytes: new Uint8Array([1]), mimeType: 'video/mp4', durationSeconds: 12 },
+      }),
     )
-    expect(dependencies.repository.completeVideoAnalysis).toHaveBeenCalledWith(analysis.id, blueprint)
+    expect(dependencies.repository.completeVideoAnalysis).toHaveBeenCalledWith(analysis.id, blueprint, 'high')
     expect(dependencies.repository.failVideoAnalysis).not.toHaveBeenCalled()
   })
 
-  it('passes the caller cancellation signal through preprocessing and analysis', async () => {
+  // The applied resolution decides what the success event tells the user, so a
+  // degraded run has to stay distinguishable from a clean one after the fact.
+  it('records the resolution the analyst actually got and says so in the event', async () => {
+    const dependencies = harness('default')
+
+    await runVideoAnalysis({
+      task,
+      asset,
+      analysis,
+      repository: dependencies.repository as never,
+      artifactStore: dependencies.artifactStore as never,
+      analyst: dependencies.analyst,
+    })
+
+    expect(dependencies.repository.completeVideoAnalysis).toHaveBeenCalledWith(analysis.id, blueprint, 'default')
+    expect(dependencies.repository.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'video_gameplay_analysis_succeeded',
+        message: 'Gameplay blueprint is ready, analysed at reduced resolution',
+      }),
+    )
+  })
+
+  it('passes the caller cancellation signal through to the analyst', async () => {
     const dependencies = harness()
     const controller = new AbortController()
 
@@ -123,17 +148,12 @@ describe('QDAI video analysis service', () => {
       task,
       asset,
       analysis,
-      apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
       abortSignal: controller.signal,
     })
 
-    expect(dependencies.preprocessor.preprocess).toHaveBeenCalledWith(
-      expect.objectContaining({ abortSignal: controller.signal }),
-    )
     expect(dependencies.analyst.analyze).toHaveBeenCalledWith(
       expect.objectContaining({ abortSignal: controller.signal }),
     )
@@ -141,16 +161,14 @@ describe('QDAI video analysis service', () => {
 
   it('records a static failure code without leaking the underlying error', async () => {
     const dependencies = harness()
-    dependencies.preprocessor.preprocess.mockRejectedValueOnce(new Error('private path and details'))
+    dependencies.analyst.analyze.mockRejectedValueOnce(new Error('private path and details'))
 
     const result = await runVideoAnalysis({
       task,
       asset,
       analysis,
-      apiKey: 'sk-test-secret',
       repository: dependencies.repository as never,
       artifactStore: dependencies.artifactStore as never,
-      preprocessor: dependencies.preprocessor,
       analyst: dependencies.analyst,
     })
 

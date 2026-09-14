@@ -225,6 +225,13 @@
       "when": 1789007813872,
       "tag": "0031_chemical_sebastian_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789356998006,
+      "tag": "0032_video_analysis_v2",
+      "breakpoints": true
     }
   ]
 }

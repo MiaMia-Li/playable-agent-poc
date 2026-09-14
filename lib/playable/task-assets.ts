@@ -7,6 +7,7 @@ import {
   maxAssetBytesForSlot,
   MAX_ASSET_BYTES,
   MAX_ASSETS_PER_SLOT,
+  MAX_REFERENCE_VIDEO_SECONDS,
   MAX_TASK_ASSETS,
   MAX_UPLOAD_BYTES,
   type PlayableAssetSlot,
@@ -23,11 +24,20 @@ export interface PlayableAsset {
   filename: string
   mimeType: string
   size: number
+  /**
+   * Reported by the browser, so trivially forgeable. That is acceptable: it
+   * drives an upload guard and an evidence sanity check, neither of which is a
+   * security boundary. Null when the container gave no finite duration.
+   */
+  durationSeconds: number | null
   storageKey: string
   createdAt: Date
 }
 
-export type SafePlayableAsset = Pick<PlayableAsset, 'id' | 'slot' | 'filename' | 'mimeType' | 'size'>
+export type SafePlayableAsset = Pick<
+  PlayableAsset,
+  'id' | 'slot' | 'filename' | 'mimeType' | 'size' | 'durationSeconds'
+>
 
 interface AssetHandlerDependencies {
   authenticate(request: NextRequest): Promise<string | undefined>
@@ -42,8 +52,22 @@ type RouteContext = { params: Promise<{ taskId: string }> }
 type AssetRouteContext = { params: Promise<{ taskId: string; assetId: string }> }
 
 export function safeAsset(asset: PlayableAsset): SafePlayableAsset {
-  const { id, slot, filename, mimeType, size } = asset
-  return { id, slot, filename, mimeType, size }
+  const { id, slot, filename, mimeType, size, durationSeconds } = asset
+  return { id, slot, filename, mimeType, size, durationSeconds }
+}
+
+/**
+ * Parses the duration the browser reported alongside the upload.
+ *
+ * Returns null for anything unusable rather than rejecting. Some webm and
+ * streamed mp4 containers report `Infinity` or `NaN` for `<video>.duration`,
+ * and refusing a valid video because its metadata is awkward costs more than
+ * letting one long video through a guard that is about experience, not safety.
+ */
+function parseUploadedDuration(value: FormDataEntryValue | null | undefined): number | null {
+  if (typeof value !== 'string') return null
+  const duration = Number(value)
+  return Number.isFinite(duration) && duration > 0 ? duration : null
 }
 
 export function createPlayableAssetHandler(dependencies: AssetHandlerDependencies) {
@@ -70,6 +94,13 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
       return Response.json({ error: 'File too large' }, { status: 413 })
     }
+    const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(form?.get('durationSeconds')) : null
+    if (durationSeconds !== null && durationSeconds > MAX_REFERENCE_VIDEO_SECONDS) {
+      return Response.json(
+        { error: 'Video too long', maxDurationSeconds: MAX_REFERENCE_VIDEO_SECONDS },
+        { status: 413 },
+      )
+    }
     const currentAssets = await dependencies.listAssets(taskId, userId)
     if (currentAssets.length >= MAX_TASK_ASSETS) {
       return Response.json({ error: 'Too many assets' }, { status: 409 })
@@ -91,6 +122,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       filename: filename || 'asset',
       mimeType: file.type,
       size: file.size,
+      durationSeconds,
       storageKey,
       createdAt: new Date(),
     }

@@ -1,10 +1,10 @@
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
 import { gameplayBlueprintSchema, type GameplayBlueprint } from './schemas'
+import { readGeminiApiKey, readGeminiBaseUrl } from './shared-ai-key'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
-import type { VideoPreprocessor } from './video-preprocessor'
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const reader = stream.getReader()
@@ -29,10 +29,8 @@ export interface RunVideoAnalysisInput {
   task: PlayableTaskRecord
   asset: PlayableAsset
   analysis: PlayableVideoAnalysisRecord
-  apiKey: string
   repository: PlayableTaskRepository
   artifactStore: ArtifactStore
-  preprocessor: VideoPreprocessor
   analyst: VideoGameplayAnalyst
   abortSignal?: AbortSignal
 }
@@ -47,33 +45,42 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
     })
     const stream = await input.artifactStore.get(input.asset.storageKey)
     if (!stream) throw new Error('Reference video is missing')
-    const video = await input.preprocessor.preprocess({
-      taskId: input.task.id,
-      video: await readAll(stream),
-      mimeType: input.asset.mimeType,
-      abortSignal: input.abortSignal,
-    })
+    const bytes = await readAll(stream)
     await input.repository.updateVideoAnalysisStatus(input.analysis.id, 'analyzing')
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_gameplay_analysis_started',
       message: 'QDAI gameplay analysis started',
     })
-    const blueprint = await input.analyst.analyze({
+    const result = await input.analyst.analyze({
       taskId: input.task.id,
-      apiKey: input.apiKey,
       prompt: input.task.prompt,
-      video,
+      video: {
+        bytes,
+        mimeType: input.asset.mimeType,
+        durationSeconds: input.asset.durationSeconds ?? undefined,
+      },
       abortSignal: input.abortSignal,
     })
+    // A blueprint is free model text, so it can echo anything that was in the
+    // request. Both the Gemini key and the gateway address have to be covered,
+    // not just whichever one the caller happened to pass in.
     const sanitizedBlueprint = gameplayBlueprintSchema.parse(
-      JSON.parse(redactSecrets(JSON.stringify(blueprint)).split(input.apiKey).join('[REDACTED]')),
+      JSON.parse(
+        redactSecrets(
+          JSON.stringify(result.blueprint),
+          [readGeminiApiKey() ?? '', readGeminiBaseUrl()].filter(Boolean),
+        ),
+      ),
     )
-    await input.repository.completeVideoAnalysis(input.analysis.id, sanitizedBlueprint)
+    await input.repository.completeVideoAnalysis(input.analysis.id, sanitizedBlueprint, result.mediaResolution)
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_gameplay_analysis_succeeded',
-      message: 'Gameplay blueprint is ready',
+      message:
+        result.mediaResolution === 'high'
+          ? 'Gameplay blueprint is ready'
+          : 'Gameplay blueprint is ready, analysed at reduced resolution',
     })
     return sanitizedBlueprint
   } catch {

@@ -15,16 +15,25 @@ import {
 import { generateId } from '@/lib/utils/id'
 import {
   confirmationProposalSchema,
+  gameplayAnnotationsSchema,
   gameplayBlueprintSchema,
   playableTaskPhaseSchema,
   requirementBriefSchema,
   revisionProposalSchema,
   videoAnalysisStatusSchema,
   type ConfirmationProposal,
+  type GameplayAnnotation,
   type PlayableTaskPhase,
   type RequirementBrief,
   type RevisionProposal,
 } from './schemas'
+
+/**
+ * Bounds the read-then-insert race in `claimVideoAnalysis`. Each retry means
+ * another caller took the candidate attempt number first; three is well beyond
+ * what the observed concurrency can produce, and failing is better than looping.
+ */
+const VIDEO_ANALYSIS_CLAIM_RETRIES = 3
 import type {
   PlayableBuildRecord,
   PlayableEventRecord,
@@ -57,6 +66,8 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     userId: row.userId,
     prompt: row.prompt,
     phase: playableTaskPhaseSchema.parse(row.phase),
+    activeReferenceVideoAssetId: row.activeReferenceVideoAssetId,
+    gameplayAnnotations: row.gameplayAnnotations ? gameplayAnnotationsSchema.parse(row.gameplayAnnotations) : [],
     requirementBrief: row.requirementBrief ? requirementBriefSchema.parse(row.requirementBrief) : null,
     confirmation: row.confirmation ? confirmationProposalSchema.parse(row.confirmation) : null,
     pendingRevision: row.pendingRevision ? revisionProposalSchema.parse(row.pendingRevision) : null,
@@ -90,6 +101,8 @@ function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): Playab
     status: videoAnalysisStatusSchema.parse(row.status),
     pipelineVersion: row.pipelineVersion,
     model: row.model,
+    attempt: row.attempt,
+    mediaResolution: row.mediaResolution,
     blueprint: row.blueprint ? gameplayBlueprintSchema.parse(row.blueprint) : null,
     errorCode: row.errorCode,
     createdAt: row.createdAt,
@@ -211,6 +224,24 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
           inArray(tasks.phase, ['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed']),
         ),
       )
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async updateGameplayAnnotations(taskId: string, userId: string, annotations: GameplayAnnotation[]): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ gameplayAnnotations: gameplayAnnotationsSchema.parse(annotations), updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
+  async setActiveReferenceVideo(taskId: string, userId: string, assetId: string | null): Promise<boolean> {
+    const updated = await db
+      .update(tasks)
+      .set({ activeReferenceVideoAssetId: assetId, updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
       .returning({ id: tasks.id })
     return updated.length === 1
   }
@@ -508,17 +539,22 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return asset as PlayableAsset | undefined
   }
 
-  async createVideoAnalysis(input: {
-    id: string
-    taskId: string
-    assetId: string
-    pipelineVersion: string
-    model: string
-  }): Promise<PlayableVideoAnalysisRecord> {
-    const [analysis] = await db.insert(playableVideoAnalyses).values(input).returning()
-    return toVideoAnalysis(analysis)
-  }
-
+  /**
+   * Claims the right to run one analysis of one video.
+   *
+   * The previous algorithm let the unique index decide: a conflicting insert
+   * meant someone else already held the claim. Adding `attempt` to that index
+   * ends the arrangement, because a fresh attempt number never conflicts, so
+   * every caller would win and every caller would bill a run. The check for
+   * "already running" and "already finished" therefore moves out of the index
+   * and into an explicit read of the highest attempt.
+   *
+   * That read and the following insert are not atomic. The unique index still
+   * arbitrates the gap: two callers that pick the same candidate attempt race
+   * on the insert, one loses, and the loser retries against what it now sees.
+   * An occasional extra round trip is cheaper than a transaction or a row lock,
+   * and the failure mode is bounded rather than silent.
+   */
   async claimVideoAnalysis(input: {
     id: string
     taskId: string
@@ -526,54 +562,57 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     pipelineVersion: string
     model: string
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
-    const [inserted] = await db
-      .insert(playableVideoAnalyses)
-      .values(input)
-      .onConflictDoNothing({
-        target: [playableVideoAnalyses.assetId, playableVideoAnalyses.pipelineVersion, playableVideoAnalyses.model],
-      })
-      .returning()
-    if (inserted) return { analysis: toVideoAnalysis(inserted), claimed: true }
-    const [reclaimed] = await db
-      .update(playableVideoAnalyses)
-      .set({
-        status: 'pending',
-        blueprint: null,
-        errorCode: null,
-        completedAt: null,
-        createdAt: new Date(),
-      })
-      .where(
-        and(
-          eq(playableVideoAnalyses.assetId, input.assetId),
-          eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
-          eq(playableVideoAnalyses.model, input.model),
-          eq(playableVideoAnalyses.status, 'failed'),
-        ),
-      )
-      .returning()
-    if (reclaimed) return { analysis: toVideoAnalysis(reclaimed), claimed: true }
-    const [existing] = await db
-      .select()
-      .from(playableVideoAnalyses)
-      .where(
-        and(
-          eq(playableVideoAnalyses.assetId, input.assetId),
-          eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
-          eq(playableVideoAnalyses.model, input.model),
-        ),
-      )
-      .limit(1)
-    if (!existing) throw new Error('Video analysis claim failed')
-    return { analysis: toVideoAnalysis(existing), claimed: false }
+    const scope = and(
+      eq(playableVideoAnalyses.assetId, input.assetId),
+      eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
+      eq(playableVideoAnalyses.model, input.model),
+    )
+
+    for (let retry = 0; retry < VIDEO_ANALYSIS_CLAIM_RETRIES; retry += 1) {
+      const [latest] = await db
+        .select()
+        .from(playableVideoAnalyses)
+        .where(scope)
+        .orderBy(desc(playableVideoAnalyses.attempt))
+        .limit(1)
+
+      // Anything other than a failed run means the answer already exists or is
+      // on its way, so hand it back rather than paying for a duplicate.
+      if (latest && latest.status !== 'failed') return { analysis: toVideoAnalysis(latest), claimed: false }
+
+      const [inserted] = await db
+        .insert(playableVideoAnalyses)
+        .values({ ...input, attempt: (latest?.attempt ?? 0) + 1 })
+        .onConflictDoNothing({
+          target: [
+            playableVideoAnalyses.assetId,
+            playableVideoAnalyses.pipelineVersion,
+            playableVideoAnalyses.model,
+            playableVideoAnalyses.attempt,
+          ],
+        })
+        .returning()
+      if (inserted) return { analysis: toVideoAnalysis(inserted), claimed: true }
+    }
+
+    throw new Error('Video analysis claim failed')
   }
 
-  async findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined> {
+  /**
+   * Filtered by pipeline version because v1 rows are still in the table and
+   * would otherwise be handed to the v2 parser, which rejects them. Ordered by
+   * attempt first: `createdAt` alone is ambiguous for rows written in the same
+   * millisecond.
+   */
+  async findLatestVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined> {
     const [analysis] = await db
       .select()
       .from(playableVideoAnalyses)
-      .where(eq(playableVideoAnalyses.taskId, taskId))
-      .orderBy(desc(playableVideoAnalyses.createdAt))
+      .where(and(eq(playableVideoAnalyses.taskId, taskId), eq(playableVideoAnalyses.pipelineVersion, pipelineVersion)))
+      .orderBy(desc(playableVideoAnalyses.attempt), desc(playableVideoAnalyses.createdAt))
       .limit(1)
     return analysis ? toVideoAnalysis(analysis) : undefined
   }
@@ -582,11 +621,20 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     await db.update(playableVideoAnalyses).set({ status }).where(eq(playableVideoAnalyses.id, id))
   }
 
-  async completeVideoAnalysis(id: string, blueprint: PlayableVideoAnalysisRecord['blueprint']): Promise<void> {
+  async completeVideoAnalysis(
+    id: string,
+    blueprint: PlayableVideoAnalysisRecord['blueprint'],
+    mediaResolution: PlayableVideoAnalysisRecord['mediaResolution'],
+  ): Promise<void> {
     if (!blueprint) throw new Error('Gameplay blueprint is required')
     await db
       .update(playableVideoAnalyses)
-      .set({ status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(blueprint), completedAt: new Date() })
+      .set({
+        status: 'succeeded',
+        blueprint: gameplayBlueprintSchema.parse(blueprint),
+        mediaResolution,
+        completedAt: new Date(),
+      })
       .where(eq(playableVideoAnalyses.id, id))
   }
 

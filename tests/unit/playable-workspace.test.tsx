@@ -479,6 +479,7 @@ describe('PlayableWorkspace', () => {
             filename: 'historical-tiles.png',
             mimeType: 'image/png',
             size: 5,
+            durationSeconds: null,
           },
         ]}
         initialConversation={[
@@ -763,6 +764,7 @@ describe('PlayableWorkspace', () => {
       filename: 'new-gameplay.mp4',
       mimeType: 'video/mp4',
       size: 5,
+      durationSeconds: 12,
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/messages')) {
@@ -1005,6 +1007,7 @@ describe('PlayableWorkspace', () => {
         filename: 'gameplay.mp4',
         mimeType: 'video/mp4',
         size: 5,
+        durationSeconds: 12,
       },
     ]
     let uploadIndex = 0
@@ -1083,6 +1086,7 @@ describe('PlayableWorkspace', () => {
       filename: 'retry.mp4',
       mimeType: 'video/mp4',
       size: 5,
+      durationSeconds: 12,
     }
     let videoAttempts = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

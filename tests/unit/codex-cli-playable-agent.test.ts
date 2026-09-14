@@ -62,10 +62,31 @@ const confirmationPlan = {
   message: confirmationReply.message,
   reasoning: confirmationReply.reasoning,
   calls: [
-    { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
-    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
-    { name: 'submit_confirmation', brief: null, request: null, confirmation: proposal, revision: null },
+    { name: 'update_requirement_brief', annotations: null, brief, request: null, confirmation: null, revision: null },
+    {
+      name: 'list_playable_capabilities',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: null,
+      revision: null,
+    },
+    {
+      name: 'validate_implementation_route',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: null,
+      revision: null,
+    },
+    {
+      name: 'submit_confirmation',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: proposal,
+      revision: null,
+    },
   ],
 } as const
 

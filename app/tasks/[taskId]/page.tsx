@@ -8,6 +8,7 @@ import { isLocalCodexMode, isLocalHarnessMode, localCodexSession } from '@/lib/p
 import { publicPlayableSession } from '@/lib/playable/public-access'
 import { restorePlayableConversation } from '@/lib/playable/conversation'
 import { safeValidationSummary } from '@/lib/playable/task-api'
+import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-analyst'
 
 interface TaskPageProps {
   params: Promise<{
@@ -31,7 +32,7 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
   const [storedMessages, initialAssets, videoAnalysis, builds, events, referenceSelections] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
-    repository.findLatestVideoAnalysis(task.id),
+    repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION),
     repository.listBuilds(task.id),
     repository.listEvents(task.id),
     repository.listReferenceSelections?.(task.id, session.user.id) ?? Promise.resolve([]),
@@ -65,12 +66,13 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
       initialRevision={task.pendingRevision ?? undefined}
       initialBrief={task.requirementBrief ?? undefined}
       initialConversation={initialConversation}
-      initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size }) => ({
+      initialAssets={initialAssets.map(({ id, slot, filename, mimeType, size, durationSeconds }) => ({
         id,
         slot,
         filename,
         mimeType,
         size,
+        durationSeconds,
       }))}
       initialVideoAnalysisStatus={videoAnalysis?.status}
       initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}

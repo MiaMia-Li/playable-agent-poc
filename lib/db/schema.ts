@@ -1,7 +1,8 @@
-import { pgTable, text, timestamp, integer, jsonb, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, integer, real, jsonb, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
 import {
   confirmationProposalSchema,
+  gameplayAnnotationsSchema,
   playableTaskPhaseSchema,
   requirementBriefSchema,
   revisionProposalSchema,
@@ -122,6 +123,11 @@ export const tasks = pgTable('tasks', {
   mcpServerIds: jsonb('mcp_server_ids').$type<string[]>(),
   playableMode: text('playable_mode'),
   phase: text('phase').notNull().default('draft'),
+  // The one reference video currently driving the blueprint. Held here rather
+  // than as a flag on the assets so that "one task, one live video" is a
+  // property of a single row.
+  activeReferenceVideoAssetId: text('active_reference_video_asset_id'),
+  gameplayAnnotations: jsonb('gameplay_annotations'),
   requirementBrief: jsonb('requirement_brief'),
   confirmation: jsonb('confirmation'),
   pendingRevision: jsonb('pending_revision'),
@@ -162,6 +168,8 @@ export const insertTaskSchema = z.object({
   mcpServerIds: z.array(z.string()).optional(),
   playableMode: z.enum(playableModeIds).optional(),
   phase: playableTaskPhaseSchema.default('draft'),
+  activeReferenceVideoAssetId: z.string().optional(),
+  gameplayAnnotations: gameplayAnnotationsSchema.optional(),
   requirementBrief: requirementBriefSchema.optional(),
   confirmation: confirmationProposalSchema.optional(),
   pendingRevision: revisionProposalSchema.optional(),
@@ -201,6 +209,8 @@ export const selectTaskSchema = z.object({
   mcpServerIds: z.array(z.string()).nullable(),
   playableMode: z.enum(playableModeIds).nullable().optional(),
   phase: playableTaskPhaseSchema.optional(),
+  activeReferenceVideoAssetId: z.string().nullable().optional(),
+  gameplayAnnotations: gameplayAnnotationsSchema.nullable().optional(),
   requirementBrief: requirementBriefSchema.nullable().optional(),
   confirmation: confirmationProposalSchema.nullable().optional(),
   pendingRevision: revisionProposalSchema.nullable().optional(),
@@ -477,6 +487,9 @@ export const playableTaskAssets = pgTable(
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
     size: integer('size').notNull(),
+    // Reported by the browser at upload time. Null when the container does not
+    // expose a finite duration, which is common for webm and streamed mp4.
+    durationSeconds: real('duration_seconds'),
     storageKey: text('storage_key').notNull().unique(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
@@ -502,6 +515,13 @@ export const playableVideoAnalyses = pgTable(
       .default('pending'),
     pipelineVersion: text('pipeline_version').notNull(),
     model: text('model').notNull(),
+    // Distinguishes repeat analyses of one video. Failed rows stay in place so
+    // that the history of what was observed survives a re-run.
+    attempt: integer('attempt').notNull().default(1),
+    // Which resolution the gateway actually applied, not which one was asked
+    // for. Only one channel honours the request, so this is the sole record of
+    // whether an analysis ran degraded. Null until the analysis succeeds.
+    mediaResolution: text('media_resolution', { enum: ['high', 'default'] }),
     blueprint: jsonb('blueprint'),
     errorCode: text('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -510,10 +530,14 @@ export const playableVideoAnalyses = pgTable(
   (table) => ({
     taskCreatedIndex: index('playable_video_analyses_task_created_idx').on(table.taskId, table.createdAt),
     assetPipelineIndex: index('playable_video_analyses_asset_pipeline_idx').on(table.assetId, table.pipelineVersion),
-    assetPipelineModelUnique: uniqueIndex('playable_video_analyses_asset_pipeline_model_unique').on(
+    // The arbiter for concurrent claims. `attempt` is part of the tuple so that
+    // a re-run gets its own row, which means an insert conflict no longer
+    // implies "someone is already running" — see `claimVideoAnalysis`.
+    assetPipelineModelAttemptUnique: uniqueIndex('playable_video_analyses_asset_pipeline_model_attempt_unique').on(
       table.assetId,
       table.pipelineVersion,
       table.model,
+      table.attempt,
     ),
   }),
 )

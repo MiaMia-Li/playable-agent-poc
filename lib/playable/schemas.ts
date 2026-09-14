@@ -13,14 +13,22 @@ const gameplayEvidenceSchema = z.strictObject({
   observation: z.string().trim().min(1).max(500),
 })
 
-const gameplayInferenceSchema = z.strictObject({
+// Exported because gameplay annotations reuse this shape. See spec section 7.2.
+export const gameplayInferenceSchema = z.strictObject({
   value: z.string().trim().min(1).max(1000),
   confidence: z.number().min(0).max(1),
   evidence: z.array(gameplayEvidenceSchema).max(12),
 })
 
+/**
+ * What the model produces and what gets stored. It deliberately has no
+ * `annotations` field: this schema is also the source of the response schema
+ * sent to the model, so a field here is a field the model would invent content
+ * for, collapsing the separation between observation and user statement.
+ * Annotations are attached on the way out, by `toGameplayBlueprintDocument`.
+ */
 export const gameplayBlueprintSchema = z.strictObject({
-  version: z.literal(1),
+  version: z.literal(2),
   summary: z.string().trim().min(1).max(1000),
   orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
   controls: z.array(gameplayInferenceSchema).max(8),
@@ -34,11 +42,77 @@ export const gameplayBlueprintSchema = z.strictObject({
   tutorial: z.array(gameplayInferenceSchema).max(8),
   endCard: gameplayInferenceSchema.nullable(),
   visualStyle: z.string().trim().max(1000),
+  audio: z.array(gameplayInferenceSchema).max(12),
+  intentDivergence: z.array(gameplayInferenceSchema).max(8),
   uncertainties: z.array(z.string().trim().min(1).max(500)).max(12),
   overallConfidence: z.number().min(0).max(1),
 })
 
+/**
+ * What the requirement agent emits. It supplies only the statement and the
+ * timestamps it refers to; confidence, source and asset binding are all
+ * definitional and are filled in server side, so the agent cannot hedge on a
+ * user's own words or guess at an asset id.
+ */
+export const gameplayAnnotationDraftSchema = z.strictObject({
+  value: z.string().trim().min(1).max(1000),
+  evidence: z.array(gameplayEvidenceSchema).min(1).max(12),
+})
+
+export const gameplayAnnotationSchema = z.strictObject({
+  id: z.string().trim().min(1),
+  assetId: z.string().trim().min(1),
+  source: z.literal('user'),
+  ...gameplayAnnotationDraftSchema.shape,
+  confidence: z.literal(1),
+})
+
+export const MAX_GAMEPLAY_ANNOTATIONS = 40
+
+export const gameplayAnnotationsSchema = z.array(gameplayAnnotationSchema).max(MAX_GAMEPLAY_ANNOTATIONS)
+
+/**
+ * The reply carries drafts rather than stored annotations because it is
+ * produced before anything is persisted; ids and asset binding do not exist
+ * yet. It is a mirror for the current turn only — the durable list the user
+ * sees and deletes from is read from `tasks.gameplay_annotations`.
+ */
+export const gameplayAnnotationDraftsSchema = z.array(gameplayAnnotationDraftSchema).max(MAX_GAMEPLAY_ANNOTATIONS)
+
+/**
+ * Carried as a field rather than an instruction because the build sandbox agent
+ * only ever sees `gameplay-blueprint.json`; there is no instruction string on
+ * that path. As a literal it travels with the JSON by construction, and
+ * dropping it fails type-check rather than silently weakening the document.
+ */
+export const ANNOTATIONS_POLICY = '用户标注为权威陈述，与模型推论冲突时以标注为准' as const
+
+export const gameplayBlueprintDocumentSchema = gameplayBlueprintSchema.extend({
+  annotationsPolicy: z.literal(ANNOTATIONS_POLICY),
+  annotations: gameplayAnnotationsSchema,
+})
+
+/**
+ * The only place storage-shaped blueprints become document-shaped ones.
+ * Callers must pass annotations already filtered to the analysed asset —
+ * the Active Reference Video can change, and annotations outlive that change.
+ */
+export function toGameplayBlueprintDocument(
+  blueprint: GameplayBlueprint,
+  annotations: GameplayAnnotation[],
+): GameplayBlueprintDocument {
+  return gameplayBlueprintDocumentSchema.parse({
+    ...gameplayBlueprintSchema.parse(blueprint),
+    annotationsPolicy: ANNOTATIONS_POLICY,
+    annotations,
+  })
+}
+
+export type GameplayInference = z.infer<typeof gameplayInferenceSchema>
 export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
+export type GameplayBlueprintDocument = z.infer<typeof gameplayBlueprintDocumentSchema>
+export type GameplayAnnotation = z.infer<typeof gameplayAnnotationSchema>
+export type GameplayAnnotationDraft = z.infer<typeof gameplayAnnotationDraftSchema>
 export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
 
 export const playableTaskPhases = [
@@ -296,6 +370,7 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     message: z.string().trim().min(1),
     reasoning: z.string().trim().min(1),
     brief: requirementBriefSchema.optional(),
+    annotations: gameplayAnnotationDraftsSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
   z.strictObject({
@@ -305,6 +380,7 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     options: z.array(clarificationOptionSchema).max(8),
     request: requirementInputRequestSchema.optional(),
     brief: requirementBriefSchema.optional(),
+    annotations: gameplayAnnotationDraftsSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
   z.strictObject({
@@ -313,6 +389,7 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     reasoning: z.string().trim().min(1),
     confirmation: confirmationProposalSchema,
     brief: requirementBriefSchema.optional(),
+    annotations: gameplayAnnotationDraftsSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
   z.strictObject({
@@ -322,6 +399,7 @@ export const playableAgentReplySchema = z.discriminatedUnion('kind', [
     revision: revisionPlanSchema,
     confirmation: confirmationProposalSchema,
     brief: requirementBriefSchema.optional(),
+    annotations: gameplayAnnotationDraftsSchema.optional(),
     tools: z.array(z.string().trim().min(1)).max(8).optional(),
   }),
   z.strictObject({
