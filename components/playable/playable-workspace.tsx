@@ -29,6 +29,14 @@ import {
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
+import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
+import {
+  assetUploadErrorMessage,
+  assetUploadForm,
+  isReferenceVideoTooLong,
+  REFERENCE_VIDEO_TOO_LONG_MESSAGE,
+  requestReferenceVideoAnalysis,
+} from '@/lib/playable/reference-video-client'
 import type { PlayableValidationSummary } from '@/lib/playable/playable-agent-adapter'
 import { PLAYABLE_TEMPLATES, templatePrompts, type PlayableTemplateId } from '@/lib/playable/template-catalog'
 import { usePlayableRecentTasks } from './recent-tasks-context'
@@ -57,6 +65,16 @@ interface PlayableWorkspaceProps {
   initialAssets?: SafePlayableAsset[]
   initialVideoAnalysisStatus?: VideoAnalysisStatus
   initialGameplayBlueprint?: GameplayBlueprint
+  initialVideoAnalysisMediaResolution?: AppliedMediaResolution | null
+  /** The server's pointer, which analysis and the blueprint are read through. */
+  initialActiveReferenceVideoId?: string | null
+}
+
+interface VideoAnalysisSnapshot {
+  assetId?: string
+  status: VideoAnalysisStatus
+  blueprint: GameplayBlueprint | null
+  mediaResolution?: AppliedMediaResolution | null
 }
 
 const phaseRank: Record<PlayableTaskPhase, number> = {
@@ -88,6 +106,8 @@ export function PlayableWorkspace({
   initialAssets = [],
   initialVideoAnalysisStatus,
   initialGameplayBlueprint,
+  initialVideoAnalysisMediaResolution = null,
+  initialActiveReferenceVideoId = null,
 }: PlayableWorkspaceProps) {
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposalDraft, setProposalDraft] = useState(initialProposal)
@@ -101,8 +121,62 @@ export function PlayableWorkspace({
     initialVideoAnalysisStatus,
   )
   const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
+  const [videoAnalysisMediaResolution, setVideoAnalysisMediaResolution] = useState<AppliedMediaResolution | null>(
+    initialVideoAnalysisMediaResolution,
+  )
+  const [videoAnalysisUnavailable, setVideoAnalysisUnavailable] = useState(false)
+  const [retryingVideoAnalysis, setRetryingVideoAnalysis] = useState(false)
   const [assets, setAssets] = useState(initialAssets)
-  const latestReferenceVideoId = useRef(initialAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id)
+  const [activeReferenceVideoId, setActiveReferenceVideoId] = useState(initialActiveReferenceVideoId)
+  // Mirrors of state read from async callbacks, which would otherwise see the
+  // values from the render that created them.
+  const activeReferenceVideoIdRef = useRef(initialActiveReferenceVideoId)
+  const assetsRef = useRef(initialAssets)
+
+  const applyVideoAnalysis = useCallback((analysis: VideoAnalysisSnapshot) => {
+    setVideoAnalysisStatus(analysis.status)
+    setGameplayBlueprint(analysis.blueprint ?? undefined)
+    setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
+  }, [])
+
+  const clearVideoAnalysis = useCallback(() => {
+    setVideoAnalysisStatus(undefined)
+    setGameplayBlueprint(undefined)
+    setVideoAnalysisMediaResolution(null)
+  }, [])
+
+  const activateReferenceVideo = useCallback((assetId: string | null) => {
+    activeReferenceVideoIdRef.current = assetId
+    setActiveReferenceVideoId(assetId)
+  }, [])
+
+  const startVideoAnalysis = useCallback(
+    async (assetId: string, rerun: boolean) => {
+      setRetryingVideoAnalysis(true)
+      try {
+        const response = await requestReferenceVideoAnalysis(taskId, assetId, { rerun })
+        // Another upload may have taken over while this was in flight; its own
+        // request owns the state now.
+        if (activeReferenceVideoIdRef.current !== assetId) return
+        if (response.status === 503) {
+          clearVideoAnalysis()
+          setVideoAnalysisUnavailable(true)
+          return
+        }
+        if (!response.ok) {
+          setVideoAnalysisStatus('failed')
+          return
+        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
+        if (body.analysis) applyVideoAnalysis(body.analysis)
+      } catch {
+        if (activeReferenceVideoIdRef.current === assetId) setVideoAnalysisStatus('failed')
+      } finally {
+        setRetryingVideoAnalysis(false)
+      }
+    },
+    [applyVideoAnalysis, clearVideoAnalysis, taskId],
+  )
 
   useEffect(() => {
     if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
@@ -114,12 +188,9 @@ export function PlayableWorkspace({
           cache: 'no-store',
         })
         if (!response.ok) return
-        const body = (await response.json()) as {
-          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
-        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (!active || !body.analysis) return
-        setVideoAnalysisStatus(body.analysis.status)
-        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+        applyVideoAnalysis(body.analysis)
       } catch {
         // Keep polling after transient analysis status failures.
       } finally {
@@ -131,7 +202,7 @@ export function PlayableWorkspace({
       active = false
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
-  }, [taskId, videoAnalysisStatus])
+  }, [applyVideoAnalysis, taskId, videoAnalysisStatus])
 
   useEffect(() => {
     if (!['building', 'validating'].includes(phase)) return
@@ -179,15 +250,51 @@ export function PlayableWorkspace({
     }
   }, [phase, taskId])
 
-  const handleAssetsChange = useCallback((nextAssets: SafePlayableAsset[]) => {
-    const nextReferenceVideoId = nextAssets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id
-    if (nextReferenceVideoId !== latestReferenceVideoId.current) {
-      latestReferenceVideoId.current = nextReferenceVideoId
-      setVideoAnalysisStatus(undefined)
-      setGameplayBlueprint(undefined)
-    }
-    setAssets(nextAssets)
-  }, [])
+  /**
+   * Follows the server's active pointer rather than guessing from the asset
+   * list: an upload makes its video active and a delete of the active video
+   * clears it, so those are the only two transitions mirrored here. A new
+   * upload starts analysis straight away, so the user's typing time is spent
+   * analysing rather than waiting after they send.
+   */
+  const handleAssetsChange = useCallback(
+    (nextAssets: SafePlayableAsset[]) => {
+      const knownIds = new Set(assetsRef.current.map((asset) => asset.id))
+      const uploadedVideo = nextAssets
+        .filter((asset) => asset.slot === 'referenceVideo' && !knownIds.has(asset.id))
+        .at(-1)
+      assetsRef.current = nextAssets
+      setAssets(nextAssets)
+      if (uploadedVideo) {
+        activateReferenceVideo(uploadedVideo.id)
+        clearVideoAnalysis()
+        setVideoAnalysisStatus('pending')
+        void startVideoAnalysis(uploadedVideo.id, false)
+        return
+      }
+      const activeId = activeReferenceVideoIdRef.current
+      if (activeId && !nextAssets.some((asset) => asset.id === activeId)) {
+        activateReferenceVideo(null)
+        clearVideoAnalysis()
+      }
+    },
+    [activateReferenceVideo, clearVideoAnalysis, startVideoAnalysis],
+  )
+
+  // With no active video — a task from before v2, or after deleting the active
+  // one — the newest remaining video is what an explicit start targets. The
+  // request names it, and the route makes it active, so this is a choice the
+  // user makes by pressing the button rather than one made on their behalf.
+  const analysisTargetId =
+    activeReferenceVideoId ?? assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)?.id ?? null
+  const handleRetryVideoAnalysis = useCallback(
+    ({ rerun }: { rerun: boolean }) => {
+      if (!analysisTargetId) return
+      if (activeReferenceVideoIdRef.current !== analysisTargetId) activateReferenceVideo(analysisTargetId)
+      void startVideoAnalysis(analysisTargetId, rerun)
+    },
+    [activateReferenceVideo, analysisTargetId, startVideoAnalysis],
+  )
   const handleVideoAnalysisToolStatus = useCallback(
     async (status: 'started' | 'completed' | 'failed') => {
       if (status === 'started') {
@@ -206,20 +313,17 @@ export function PlayableWorkspace({
           setVideoAnalysisStatus('failed')
           return
         }
-        const body = (await response.json()) as {
-          analysis?: { status: VideoAnalysisStatus; blueprint: GameplayBlueprint | null }
-        }
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (!body.analysis) {
           setVideoAnalysisStatus('failed')
           return
         }
-        setVideoAnalysisStatus(body.analysis.status)
-        setGameplayBlueprint(body.analysis.blueprint ?? undefined)
+        applyVideoAnalysis(body.analysis)
       } catch {
         setVideoAnalysisStatus('failed')
       }
     },
-    [taskId],
+    [applyVideoAnalysis, taskId],
   )
 
   return (
@@ -244,6 +348,11 @@ export function PlayableWorkspace({
           gameplayBlueprint={gameplayBlueprint}
           onAssetsChange={handleAssetsChange}
           onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
+          videoAnalysisMediaResolution={videoAnalysisMediaResolution}
+          videoAnalysisUnavailable={videoAnalysisUnavailable}
+          referenceVideoAwaitingAnalysis={Boolean(analysisTargetId) && !videoAnalysisStatus}
+          retryingVideoAnalysis={retryingVideoAnalysis}
+          onRetryVideoAnalysis={handleRetryVideoAnalysis}
         />
         <PlayablePreview
           taskId={taskId}
@@ -291,7 +400,16 @@ export function PlayableHome({
   const attachmentUrls = useRef(new Set<string>())
   const attachmentsRef = useRef<HomeAttachment[]>([])
   const creatingRef = useRef(false)
-  const retryRef = useRef<{ fingerprint: string; taskId: string; uploadedIds: Set<string> } | undefined>(undefined)
+  const retryRef = useRef<
+    | {
+        fingerprint: string
+        taskId: string
+        uploadedIds: Set<string>
+        /** Kept across a retry so a video uploaded on the first try still gets analysed. */
+        referenceVideoAssetId?: string
+      }
+    | undefined
+  >(undefined)
   const [prompt, setPrompt] = useState('')
   const [attachments, setAttachments] = useState<HomeAttachment[]>([])
   const [creating, setCreating] = useState(false)
@@ -347,15 +465,24 @@ export function PlayableHome({
         if (retry.uploadedIds.has(id)) continue
         const slot = referenceSlotForMimeType(file.type)
         if (!slot) throw new Error('参考素材格式不受支持')
-        const uploadBody = new FormData()
-        uploadBody.set('slot', slot)
-        uploadBody.set('file', file)
+        const uploadBody = await assetUploadForm(slot, file)
         const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(retry.taskId)}/assets`, {
           method: 'POST',
           body: uploadBody,
         })
-        if (!uploadResponse.ok) throw new Error('参考素材上传失败')
+        if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '参考素材上传失败'))
+        if (slot === 'referenceVideo') {
+          const body = (await uploadResponse.json().catch(() => undefined)) as { asset?: { id?: string } } | undefined
+          if (body?.asset?.id) retry.referenceVideoAssetId = body.asset.id
+        }
         retry.uploadedIds.add(id)
+      }
+      // Started before navigating so the task page opens on an analysis that
+      // is already under way. Not awaited past the 202: the run itself is in
+      // the background, and a refusal here only means the task page will offer
+      // to start it instead.
+      if (retry.referenceVideoAssetId) {
+        await requestReferenceVideoAnalysis(retry.taskId, retry.referenceVideoAssetId).catch(() => undefined)
       }
       retryRef.current = undefined
       router.push(`/tasks/${retry.taskId}`)
@@ -425,6 +552,25 @@ export function PlayableHome({
     const next = [...attachmentsRef.current, ...accepted]
     attachmentsRef.current = next
     setAttachments(next)
+    void evictOverlongVideos(accepted)
+  }
+
+  /**
+   * Staging stays synchronous so the picker feels immediate; the duration read
+   * that follows is asynchronous, so an overlong video is taken back out once
+   * it is known. Creating before this settles is still safe, because the upload
+   * itself refuses the same video.
+   */
+  async function evictOverlongVideos(candidates: HomeAttachment[]) {
+    const videos = candidates.filter(({ file }) => referenceSlotForMimeType(file.type) === 'referenceVideo')
+    if (videos.length === 0) return
+    const overlong = await Promise.all(
+      videos.map(async ({ id, file }) => ((await isReferenceVideoTooLong(file)) ? id : null)),
+    )
+    const overlongIds = overlong.filter((id): id is string => id !== null)
+    if (overlongIds.length === 0) return
+    for (const id of overlongIds) removeAttachment(id)
+    setError(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
   }
 
   function removeAttachment(id: string) {

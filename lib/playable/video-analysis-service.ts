@@ -25,6 +25,15 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
   return result
 }
 
+/**
+ * The whole run, retries included, must end inside the analysis route's
+ * `maxDuration` (800 seconds in `vercel.json`). A function the platform kills
+ * never reaches `failVideoAnalysis`, so aborting first is what turns a timeout
+ * into a recorded failure instead of a row stuck in `analyzing`. The margin
+ * covers the Blob read and the writes that follow the model call.
+ */
+export const VIDEO_ANALYSIS_BUDGET_MS = 740_000
+
 export interface RunVideoAnalysisInput {
   task: PlayableTaskRecord
   asset: PlayableAsset

@@ -42,7 +42,7 @@ import { isPlayableResourceAssetSlot } from './asset-policy'
 import { createRequirementBrief } from './requirement-tools'
 import type { AppliedMediaResolution, VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
-import { runVideoAnalysis } from './video-analysis-service'
+import { runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
 import { PlayableBuildExecutionError } from './sandbox-runner'
 import {
   deliveryProfileIdFor,
@@ -236,6 +236,12 @@ export interface PlayableTaskRepository {
     assetId: string
     pipelineVersion: string
     model: string
+    /**
+     * Lets a claim start a new attempt past a succeeded one, for the user's
+     * "look again" request. A running attempt still blocks regardless, so a
+     * re-run can never bill two concurrent analyses of one video.
+     */
+    rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>
   findLatestVideoAnalysis(taskId: string, pipelineVersion: string): Promise<PlayableVideoAnalysisRecord | undefined>
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
@@ -961,7 +967,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
-  const claimVideoAnalysis = async (taskId: string, assetId: string, model: string) => {
+  const claimVideoAnalysis = async (taskId: string, assetId: string, model: string, rerun: boolean) => {
     // Deliberately keyed without `attempt`. This map exists to collapse
     // concurrent requests within one process into a single claim; including the
     // attempt number would make every key unique and defeat the whole purpose.
@@ -977,6 +983,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       assetId,
       pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
       model,
+      rerun,
     })
     videoAnalysisClaims.set(key, claim)
     try {
@@ -1640,7 +1647,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       // than as an honest "analysis is unavailable".
       if (!dependencies.videoAnalyst) return jsonError(503, 'Video analysis is unavailable')
 
-      const body = (await request.json().catch(() => undefined)) as { assetId?: unknown } | undefined
+      const body = (await request.json().catch(() => undefined)) as { assetId?: unknown; rerun?: unknown } | undefined
+      // An explicit re-run is the only way past a succeeded analysis. Without it
+      // a result that came back degraded, or simply wrong, would be final.
+      const rerun = body?.rerun === true
       const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
       const activeId = access.task.activeReferenceVideoAssetId
       // Callers must name the video. Picking the newest upload implicitly used
@@ -1654,13 +1664,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!activeId) await dependencies.repository.setActiveReferenceVideo(access.task.id, access.userId, video.id)
 
       const latest = await readCurrentAnalysis(access.task, video.id)
-      if (latest && latest.status !== 'failed') {
+      if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
         return Response.json(
           { analysis: safeVideoAnalysis(latest) },
           { status: latest.status === 'succeeded' ? 200 : 202 },
         )
       }
-      const claim = await claimVideoAnalysis(access.task.id, video.id, dependencies.videoAnalyst.model)
+      const claim = await claimVideoAnalysis(access.task.id, video.id, dependencies.videoAnalyst.model, rerun)
       const analysis = claim.analysis
       if (!claim.claimed) {
         return Response.json(
@@ -1682,6 +1692,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             repository: dependencies.repository,
             artifactStore: dependencies.artifactStore,
             analyst: dependencies.videoAnalyst!,
+            abortSignal: AbortSignal.timeout(VIDEO_ANALYSIS_BUDGET_MS),
           })
         })
       } catch {

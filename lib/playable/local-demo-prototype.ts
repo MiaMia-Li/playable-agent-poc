@@ -989,7 +989,9 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     assetId: string
     pipelineVersion: string
     model: string
+    rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const { rerun = false, ...values } = input
     const analyses = this.videoAnalyses.get(input.taskId) ?? []
     const previous = analyses.filter(
       (candidate) =>
@@ -998,9 +1000,11 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
         candidate.model === input.model,
     )
     const latest = previous.at(-1)
-    if (latest && latest.status !== 'failed') return { analysis: latest, claimed: false }
+    if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
+      return { analysis: latest, claimed: false }
+    }
     const analysis: PlayableVideoAnalysisRecord = {
-      ...input,
+      ...values,
       attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,

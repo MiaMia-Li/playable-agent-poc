@@ -561,7 +561,9 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     assetId: string
     pipelineVersion: string
     model: string
+    rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const { rerun = false, ...values } = input
     const scope = and(
       eq(playableVideoAnalyses.assetId, input.assetId),
       eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
@@ -577,12 +579,15 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         .limit(1)
 
       // Anything other than a failed run means the answer already exists or is
-      // on its way, so hand it back rather than paying for a duplicate.
-      if (latest && latest.status !== 'failed') return { analysis: toVideoAnalysis(latest), claimed: false }
+      // on its way, so hand it back rather than paying for a duplicate. A
+      // re-run may pass a finished answer, never one still in flight.
+      if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
+        return { analysis: toVideoAnalysis(latest), claimed: false }
+      }
 
       const [inserted] = await db
         .insert(playableVideoAnalyses)
-        .values({ ...input, attempt: (latest?.attempt ?? 0) + 1 })
+        .values({ ...values, attempt: (latest?.attempt ?? 0) + 1 })
         .onConflictDoNothing({
           target: [
             playableVideoAnalyses.assetId,

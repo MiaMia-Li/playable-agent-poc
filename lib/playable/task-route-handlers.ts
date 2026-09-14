@@ -73,6 +73,9 @@ export const playableAssetHandler = createPlayableAssetHandler({
   findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
   saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
   listAssets: (taskId, userId) => playableTaskRepository.listAssets(taskId, userId),
+  activateReferenceVideo: async (taskId, userId, assetId) => {
+    await playableTaskRepository.setActiveReferenceVideo(taskId, userId, assetId)
+  },
   store: playableArtifactStore,
   generateId,
 })
@@ -87,4 +90,12 @@ const playableAssetAccessDependencies = {
 }
 
 export const playableAssetContentHandler = createPlayableAssetContentHandler(playableAssetAccessDependencies)
-export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler(playableAssetAccessDependencies)
+export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler({
+  ...playableAssetAccessDependencies,
+  releaseReferenceVideo: async (taskId, userId, assetId) => {
+    const task = await playableTaskRepository.findOwnedTask(taskId, userId)
+    if (task?.activeReferenceVideoAssetId === assetId) {
+      await playableTaskRepository.setActiveReferenceVideo(taskId, userId, null)
+    }
+  },
+})

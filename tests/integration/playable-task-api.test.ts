@@ -400,7 +400,9 @@ class MemoryRepository implements PlayableTaskRepository {
     assetId: string
     pipelineVersion: string
     model: string
+    rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }> {
+    const { rerun = false, ...values } = input
     const latest = this.videoAnalyses
       .filter(
         (candidate) =>
@@ -409,9 +411,11 @@ class MemoryRepository implements PlayableTaskRepository {
           candidate.model === input.model,
       )
       .at(-1)
-    if (latest && latest.status !== 'failed') return { analysis: latest, claimed: false }
+    if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
+      return { analysis: latest, claimed: false }
+    }
     const analysis: PlayableVideoAnalysisRecord = {
-      ...input,
+      ...values,
       attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
@@ -1076,6 +1080,62 @@ describe('playable task API', () => {
     expect([first.status, second.status]).toEqual([202, 202])
     expect(harness.repository.videoAnalyses).toHaveLength(1)
     expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+  })
+
+  // A degraded or plainly wrong result must not be final, but a plain POST is
+  // idempotent on success so that upload retries never bill twice. Only an
+  // explicit re-run crosses a succeeded row, and even it waits for a running one.
+  it('starts a new attempt past a succeeded analysis only when a re-run is asked for', async () => {
+    const video: PlayableAsset = {
+      id: 'video-rerun',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceVideo',
+      filename: 'reference.mp4',
+      mimeType: 'video/mp4',
+      size: 1,
+      storageKey: 'video-rerun-key',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-degraded',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: harness.videoAnalyst.model,
+      attempt: 1,
+      mediaResolution: 'default',
+      blueprint: gameplayBlueprint,
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const post = (body: unknown) =>
+      harness.handlers.analysis(request('/api/playable-tasks/owned/analysis', 'POST', body), context)
+
+    const plain = await post({ assetId: video.id })
+    expect(plain.status).toBe(200)
+    expect(harness.repository.videoAnalyses).toHaveLength(1)
+
+    const rerun = await post({ assetId: video.id, rerun: true })
+    expect(rerun.status).toBe(202)
+    await expect(rerun.json()).resolves.toMatchObject({ analysis: { attempt: 2, status: 'pending' } })
+
+    const whileRunning = await post({ assetId: video.id, rerun: true })
+    expect(whileRunning.status).toBe(202)
+    expect(harness.repository.videoAnalyses).toHaveLength(2)
+
+    await Promise.all(harness.scheduled.map((work) => work()))
+    expect(harness.videoAnalyst.analyze).toHaveBeenCalledOnce()
+    await expect(
+      harness.repository.findLatestVideoAnalysis('owned', VIDEO_ANALYSIS_PIPELINE_VERSION),
+    ).resolves.toMatchObject({ attempt: 2, status: 'succeeded', mediaResolution: 'high' })
   })
 
   it('rejects video analysis tool calls for cross-user assets and non-referenceVideo slots', async () => {

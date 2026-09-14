@@ -217,6 +217,10 @@ export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
 
     let degraded: VideoGameplayAnalysisResult | undefined
     for (let attempt = 0; attempt < HONOURING_CHANNEL_ATTEMPTS; attempt += 1) {
+      // Running out of time while chasing the honouring channel is the same
+      // situation as running out of attempts: a usable low-resolution result
+      // in hand beats none.
+      if (input.abortSignal?.aborted && degraded) return degraded
       input.abortSignal?.throwIfAborted()
       let response: GenerateContentResponse
       try {
@@ -232,6 +236,7 @@ export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
           },
         })
       } catch (error) {
+        if (input.abortSignal?.aborted && degraded) return degraded
         logExternalRequestError('Gemini', error, [apiKey, baseUrl])
         throw error
       }

@@ -48,7 +48,7 @@ const revision: RevisionProposal = {
 }
 
 const blueprint = {
-  version: 1 as const,
+  version: 2 as const,
   summary: '点击配对',
   orientation: 'portrait' as const,
   controls: [],
@@ -61,6 +61,8 @@ const blueprint = {
   progression: [],
   tutorial: [],
   endCard: null,
+  audio: [],
+  intentDivergence: [],
   visualStyle: '卡通',
   uncertainties: [],
   overallConfidence: 1,

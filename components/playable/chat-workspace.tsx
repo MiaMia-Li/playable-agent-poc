@@ -37,6 +37,13 @@ import {
   referenceSlotForMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
+import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
+import {
+  assetUploadErrorMessage,
+  assetUploadForm,
+  isReferenceVideoTooLong,
+  REFERENCE_VIDEO_TOO_LONG_MESSAGE,
+} from '@/lib/playable/reference-video-client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -76,6 +83,13 @@ const requirementToolLabels: Record<string, string> = {
   offer_market_research: '建议市场搜索',
   search_market_references: '搜索市场参考',
 }
+const videoAnalysisStatusLabels: Record<VideoAnalysisStatus, string> = {
+  pending: '等待分析',
+  preprocessing: '读取视频',
+  analyzing: '理解玩法',
+  succeeded: '蓝图已生成',
+  failed: '分析失败',
+}
 const defaultResourceTreatments: Record<string, string> = {
   tileFaces: '使用系统提供的牌面素材',
   backgroundBoard: '使用系统提供的背景与棋盘',
@@ -105,6 +119,22 @@ interface ChatWorkspaceProps {
   gameplayBlueprint?: GameplayBlueprint
   onAssetsChange?: (assets: SafePlayableAsset[]) => void
   onVideoAnalysisToolStatus?: (status: 'started' | 'completed' | 'failed') => void
+  /**
+   * What the last successful run actually got. `default` means the gateway
+   * ignored the resolution request, which the user is told so a re-run is an
+   * informed choice rather than a guess.
+   */
+  videoAnalysisMediaResolution?: AppliedMediaResolution | null
+  /** No Gemini key is configured, so there is nothing to wait for or retry. */
+  videoAnalysisUnavailable?: boolean
+  /**
+   * A reference video exists with no current analysis: a task from before the
+   * v2 pipeline, or one whose active video was deleted. Offered as an explicit
+   * start because each run is billed.
+   */
+  referenceVideoAwaitingAnalysis?: boolean
+  retryingVideoAnalysis?: boolean
+  onRetryVideoAnalysis?: (options: { rerun: boolean }) => void
 }
 
 interface ConversationAttachment {
@@ -280,6 +310,11 @@ export function ChatWorkspace({
   gameplayBlueprint,
   onAssetsChange,
   onVideoAnalysisToolStatus,
+  videoAnalysisMediaResolution,
+  videoAnalysisUnavailable = false,
+  referenceVideoAwaitingAnalysis = false,
+  retryingVideoAnalysis = false,
+  onRetryVideoAnalysis,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -365,15 +400,13 @@ export function ChatWorkspace({
           try {
             const slot = referenceSlotForMimeType(attachment.file.type)
             if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
-            const body = new FormData()
-            body.set('slot', slot)
-            body.set('file', attachment.file)
+            const body = await assetUploadForm(slot, attachment.file)
             const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
               method: 'POST',
               body,
               signal: controller.signal,
             })
-            if (!uploadResponse.ok) throw new Error('素材上传失败')
+            if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '素材上传失败'))
             const result = (await uploadResponse.json()) as { asset: SafePlayableAsset }
             resolvedAttachments = resolvedAttachments.map((item) =>
               item.id === attachment.id ? { ...item, status: 'uploaded', asset: result.asset } : item,
@@ -645,14 +678,12 @@ export function ChatWorkspace({
     try {
       for (const file of acceptedFiles) {
         if (!playableAssetAccept(slot).split(',').includes(file.type)) throw new Error('素材格式不受支持')
-        const body = new FormData()
-        body.set('slot', slot)
-        body.set('file', file)
+        const body = await assetUploadForm(slot, file)
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
           method: 'POST',
           body,
         })
-        if (!response.ok) throw new Error('素材上传失败')
+        if (!response.ok) throw new Error(await assetUploadErrorMessage(response, '素材上传失败'))
         const result = (await response.json()) as { asset: SafePlayableAsset }
         uploaded.push(result.asset)
       }
@@ -677,7 +708,26 @@ export function ChatWorkspace({
     }
   }
 
+  /**
+   * Staging stays synchronous so a message sent straight after picking still
+   * carries its attachments. The duration read is asynchronous, so an overlong
+   * video is taken back out once it is known; if the user sends first, the
+   * upload itself refuses the same video with the same message.
+   */
+  async function evictOverlongComposerVideos(files: File[]) {
+    const videos = files.filter((file) => referenceSlotForMimeType(file.type) === 'referenceVideo')
+    if (videos.length === 0) return
+    const checks = await Promise.all(videos.map(async (file) => ((await isReferenceVideoTooLong(file)) ? file : null)))
+    const overlong = new Set(checks.filter((file): file is File => file !== null))
+    if (overlong.size === 0) return
+    setComposerAttachments((items) =>
+      items.filter((attachment) => attachment.status !== 'staged' || !overlong.has(attachment.file)),
+    )
+    setError(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
+  }
+
   function stageComposerFiles(files: File[]) {
+    void evictOverlongComposerVideos(files)
     setComposerAttachments((items) => {
       const localOnlyCount = items.filter((attachment) => !attachment.asset).length
       const remainingCapacity = Math.max(
@@ -851,36 +901,69 @@ export function ChatWorkspace({
           </p>
         </section>
 
-        {videoAnalysisStatus && (
+        {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
           <section aria-label="参考视频分析" className="space-y-2 rounded-xl border p-3">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold">QDAI 视频玩法分析</h2>
-              <Badge variant={videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}>
-                {videoAnalysisStatus === 'pending'
-                  ? '等待分析'
-                  : videoAnalysisStatus === 'preprocessing'
-                    ? '提取关键画面'
-                    : videoAnalysisStatus === 'analyzing'
-                      ? '理解玩法'
-                      : videoAnalysisStatus === 'succeeded'
-                        ? '蓝图已生成'
-                        : '分析失败'}
+              <Badge
+                variant={videoAnalysisUnavailable || videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}
+              >
+                {videoAnalysisUnavailable
+                  ? '分析不可用'
+                  : videoAnalysisStatus
+                    ? videoAnalysisStatusLabels[videoAnalysisStatus]
+                    : '尚未分析'}
               </Badge>
             </div>
-            {gameplayBlueprint ? (
+            {videoAnalysisUnavailable ? (
+              <p className="text-muted-foreground text-xs">
+                参考视频分析暂不可用，将根据文字需求继续，必要时会追问玩法细节。
+              </p>
+            ) : gameplayBlueprint ? (
               <>
                 <p className="text-muted-foreground text-xs leading-5">{gameplayBlueprint.summary}</p>
                 {gameplayBlueprint.uncertainties.length > 0 && (
                   <p className="text-xs">待确认：{gameplayBlueprint.uncertainties.join('、')}</p>
                 )}
+                {gameplayBlueprint.intentDivergence.length > 0 && (
+                  <div className="text-xs">
+                    <p className="font-medium">视频与你的描述不一致：</p>
+                    <ul className="text-muted-foreground mt-1 list-disc space-y-0.5 pl-4">
+                      {gameplayBlueprint.intentDivergence.map((divergence, index) => (
+                        <li key={index}>{divergence.value}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {videoAnalysisMediaResolution === 'default' && (
+                  <p className="text-muted-foreground text-xs">
+                    本次分析在较低分辨率下完成，画面中的小字可能没有识别完整，可以重新分析。
+                  </p>
+                )}
               </>
             ) : (
               <p className="text-muted-foreground text-xs">
-                {videoAnalysisStatus === 'failed'
-                  ? '将继续使用文字需求，你也可以重新上传参考视频。'
-                  : '正在把参考视频转换为可供玩法 Agent 使用的结构化蓝图。'}
+                {!videoAnalysisStatus
+                  ? '这支参考视频还没有可用的玩法分析。'
+                  : videoAnalysisStatus === 'failed'
+                    ? '将继续使用文字需求，你也可以重新分析参考视频。'
+                    : '正在把参考视频转换为可供玩法 Agent 使用的结构化蓝图。'}
               </p>
             )}
+            {!videoAnalysisUnavailable &&
+              onRetryVideoAnalysis &&
+              (!videoAnalysisStatus || videoAnalysisStatus === 'failed' || videoAnalysisStatus === 'succeeded') && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={retryingVideoAnalysis}
+                  onClick={() => onRetryVideoAnalysis({ rerun: videoAnalysisStatus === 'succeeded' })}
+                >
+                  {retryingVideoAnalysis ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+                  {videoAnalysisStatus ? '重新分析' : '分析参考视频'}
+                </Button>
+              )}
           </section>
         )}
 

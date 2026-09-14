@@ -29,7 +29,7 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
   const repository = localDemo ? localDemoRuntime.repository : new DatabasePlayableTaskRepository()
   const task = await repository.findOwnedTask(taskId, session.user.id)
   if (!task) notFound()
-  const [storedMessages, initialAssets, videoAnalysis, builds, events, referenceSelections] = await Promise.all([
+  const [storedMessages, initialAssets, latestVideoAnalysis, builds, events, referenceSelections] = await Promise.all([
     repository.listMessages(task.id),
     repository.listAssets(task.id, session.user.id),
     repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION),
@@ -37,6 +37,12 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
     repository.listEvents(task.id),
     repository.listReferenceSelections?.(task.id, session.user.id) ?? Promise.resolve([]),
   ])
+  // The newest analysis may belong to a video that is no longer active. That is
+  // "not analysed yet" for the page, the same rule the analysis route applies.
+  const videoAnalysis =
+    latestVideoAnalysis && latestVideoAnalysis.assetId === task.activeReferenceVideoAssetId
+      ? latestVideoAnalysis
+      : undefined
   const sourceTemplateId = selectedSourceTemplate(task)
   const initialConversation = restorePlayableConversation(
     storedMessages,
@@ -76,6 +82,8 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
       }))}
       initialVideoAnalysisStatus={videoAnalysis?.status}
       initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
+      initialVideoAnalysisMediaResolution={videoAnalysis?.mediaResolution ?? null}
+      initialActiveReferenceVideoId={task.activeReferenceVideoAssetId}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialBuildId={version}

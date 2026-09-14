@@ -44,6 +44,13 @@ interface AssetHandlerDependencies {
   findOwnedTask(taskId: string, userId: string): Promise<boolean>
   saveAsset(asset: PlayableAsset): Promise<void>
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
+  /**
+   * The newest reference video becomes the one analysis targets. Done here
+   * rather than in the analysis route so the pointer is already correct when
+   * the browser's follow-up request names the asset; otherwise a second video
+   * uploaded in the same session would be refused as not active.
+   */
+  activateReferenceVideo(taskId: string, userId: string, assetId: string): Promise<void>
   store: ArtifactStore
   generateId(): string
 }
@@ -128,6 +135,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     }
     await dependencies.store.put(storageKey, new Uint8Array(await file.arrayBuffer()), file.type)
     await dependencies.saveAsset(asset)
+    if (slot === 'referenceVideo') await dependencies.activateReferenceVideo(taskId, userId, id)
     return Response.json({ asset: safeAsset(asset) }, { status: 201 })
   }
 }
@@ -168,7 +176,16 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
   }
 }
 
-export function createPlayableAssetDeleteHandler(dependencies: AssetAccessHandlerDependencies) {
+interface AssetDeleteHandlerDependencies extends AssetAccessHandlerDependencies {
+  /**
+   * Clears the active pointer when it names the deleted video. It is not moved
+   * to another remaining video: choosing one would silently decide which video
+   * gets analysed and paid for, and how the user picks is still open.
+   */
+  releaseReferenceVideo(taskId: string, userId: string, assetId: string): Promise<void>
+}
+
+export function createPlayableAssetDeleteHandler(dependencies: AssetDeleteHandlerDependencies) {
   return async (request: NextRequest, context: AssetRouteContext) => {
     const userId = await dependencies.authenticate(request)
     if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
@@ -178,6 +195,7 @@ export function createPlayableAssetDeleteHandler(dependencies: AssetAccessHandle
     await dependencies.store.delete(asset.storageKey)
     const deleted = await dependencies.deleteOwnedAsset(taskId, userId, assetId)
     if (!deleted) return Response.json({ error: 'Not found' }, { status: 404 })
+    if (deleted.slot === 'referenceVideo') await dependencies.releaseReferenceVideo(taskId, userId, assetId)
     return new Response(null, { status: 204 })
   }
 }

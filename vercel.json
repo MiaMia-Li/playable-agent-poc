@@ -2,8 +2,10 @@
   "functions": {
     "app/api/tasks/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/playable-tasks/[taskId]/analysis/route.ts": {
+      "maxDuration": 800
     }
   },
   "crons": []
 }
-
