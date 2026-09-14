@@ -1818,6 +1818,7 @@ describe('playable task API', () => {
     expect(await response.json()).toEqual({
       task: {
         phase: 'building',
+        previewVersion: null,
         hasArtifact: false,
         artifactVersion: null,
         latestValidation: null,
@@ -3034,4 +3035,56 @@ describe('PrivateVercelArtifactStore', () => {
     await expect(store.delete('users/u/tasks/t/b/playable.html')).resolves.toBeUndefined()
     expect(blobClient.del).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html')
   })
+})
+
+it('publishes preview independently, retains it on acceptance failure, and blocks preview downloads', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'awaiting_confirmation'
+  task.confirmation = confirmation
+  await h.repository.claimBuild(task.id, task.userId, confirmation, 'preview-build')
+  vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
+    await input.onPreview!('<html>provisional</html>')
+    expect(task.phase).toBe('building')
+    expect(task.latestArtifactKey).toBeNull()
+    const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+    const response = await h.handlers.events(request('/api/playable-tasks/owned/events'), ctx)
+    expect((await response.json()).task.previewVersion).toBe('preview-build')
+    const inline = await h.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build'),
+      ctx,
+    )
+    expect(await inline.text()).toBe('<html>provisional</html>')
+    expect(inline.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    for (const suffix of ['&download=1', '&version=preview-build']) {
+      expect(
+        (
+          await h.handlers.artifact(
+            request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build' + suffix),
+            ctx,
+          )
+        ).status,
+      ).toBe(404)
+    }
+    expect(
+      (
+        await h.handlers.artifact(request('/api/playable-tasks/foreign/artifact?kind=playable&preview=preview-build'), {
+          params: Promise.resolve({ taskId: 'foreign' }),
+        })
+      ).status,
+    ).toBe(404)
+    throw new Error('Acceptance failed')
+  })
+  await runConfirmedBuild({
+    task,
+    apiKey: 'sk-test-secret',
+    buildId: 'preview-build',
+    repository: h.repository,
+    agent: h.agent,
+    artifactStore: h.artifactStore,
+  })
+  expect(task.phase).toBe('failed')
+  expect(task.latestArtifactKey).toBeNull()
+  expect([...h.artifacts.keys()].some((key) => key.endsWith('/preview.html'))).toBe(true)
+  expect([...h.artifacts.keys()].some((key) => key.endsWith('/playable.html'))).toBe(false)
 })

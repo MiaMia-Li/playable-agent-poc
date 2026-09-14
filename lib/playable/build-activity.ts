@@ -2,9 +2,11 @@ import type { BuildActivityDetail } from './build-activity-detail'
 
 // 步骤标题固定，详情只接收宿主过滤后的公开信息。未知事件仍忽略。
 export const buildActivityLabels = {
+  preview_delayed: '生成时间超过预览目标，正在继续完成修改',
   stage_started: '阶段开始',
   stage_completed: '阶段结束',
   transferring: '正在传输构建文件',
+  preview_checking: '正在检查预览交互',
   agent_message: 'Agent 说明',
   reasoning_summary: '思考摘要',
   preparing: '正在准备构建环境',
@@ -72,6 +74,7 @@ export interface BuildTimelineEvent {
 
 // 整体终态只认应用落库的成功或失败事件；模型的单步结束不代表产物已发布。
 export function buildEventLabel(type: string): string | undefined {
+  if (type === 'build_preview_ready') return '预览已就绪，完整验收中'
   if (type === 'build_started') return '构建已开始'
   if (type === 'build_succeeded') return '构建完成'
   if (type === 'build_failed') return '构建失败'

@@ -24,6 +24,7 @@ interface PlayablePreviewProps {
   phase: PlayableTaskPhase
   hasArtifact?: boolean
   artifactVersion?: string | null
+  previewVersion?: string | null
   initialBuildId?: string
   confirmation?: ConfirmationProposal
   revision?: RevisionProposal
@@ -50,6 +51,7 @@ export function PlayablePreview({
   phase,
   hasArtifact = phase === 'ready',
   artifactVersion = null,
+  previewVersion = null,
   initialBuildId,
   confirmation,
   revision,
@@ -66,6 +68,8 @@ export function PlayablePreview({
   const [retrying, setRetrying] = useState(false)
   const [actionError, setActionError] = useState('')
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const showingPreview = Boolean(previewVersion && phase !== 'ready')
+  const canPreview = hasArtifact || showingPreview
   const successfulBuilds = builds.filter(
     (build): build is PlayableBuildSummary & { version: number } =>
       build.status === 'succeeded' && build.version !== null,
@@ -76,10 +80,11 @@ export function PlayablePreview({
   const activeValidation = selectedBuild ? selectedBuild.validation : (currentBuild?.validation ?? initialValidation)
   const authenticatedArtifactUrl = useMemo(() => {
     const parameters = new URLSearchParams({ kind: 'playable' })
-    if (selectedBuildId) parameters.set('version', selectedBuildId)
+    if (showingPreview) parameters.set('preview', previewVersion!)
+    else if (selectedBuildId) parameters.set('version', selectedBuildId)
     return `/api/playable-tasks/${encodeURIComponent(taskId)}/artifact?${parameters.toString()}`
-  }, [selectedBuildId, taskId])
-  const frameKey = `${selectedBuildId ?? artifactVersion ?? 'existing'}:${manualVersion}`
+  }, [selectedBuildId, taskId, showingPreview, previewVersion])
+  const frameKey = `${showingPreview ? previewVersion : (selectedBuildId ?? artifactVersion ?? 'existing')}:${manualVersion}`
 
   useEffect(() => {
     if (!hasArtifact) return
@@ -200,7 +205,7 @@ export function PlayablePreview({
             size="icon"
             variant="ghost"
             aria-label="刷新预览"
-            disabled={!hasArtifact}
+            disabled={!canPreview}
             onClick={() => setManualVersion((value) => value + 1)}
           >
             <RefreshCw />
@@ -210,12 +215,12 @@ export function PlayablePreview({
             variant="ghost"
             aria-label={muted ? '取消静音预览' : '静音预览'}
             aria-pressed={muted}
-            disabled={!hasArtifact}
+            disabled={!canPreview}
             onClick={() => setMuted((value) => !value)}
           >
             {muted ? <VolumeX /> : <Volume2 />}
           </Button>
-          {hasArtifact ? (
+          {canPreview ? (
             <Button asChild size="icon" variant="ghost">
               <a
                 href={authenticatedArtifactUrl}
@@ -231,7 +236,7 @@ export function PlayablePreview({
               <ExternalLink aria-hidden="true" />
             </Button>
           )}
-          {hasArtifact ? (
+          {hasArtifact && !showingPreview ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button size="icon" variant="ghost" aria-label="下载交付物">
@@ -256,7 +261,14 @@ export function PlayablePreview({
           )}
         </div>
       </div>
-      {hasArtifact && (
+      {showingPreview && (
+        <p role="status" className="mx-4 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          {phase === 'failed'
+            ? '预览可体验，完整验收未通过。请继续修改后再交付。'
+            : '预览已就绪，完整验收中。当前版本仅供体验。'}
+        </p>
+      )}
+      {hasArtifact && !showingPreview && (
         <div className="flex shrink-0 items-center justify-center gap-2 px-4 pb-2">
           <span className="text-muted-foreground text-xs">试玩版本</span>
           {successfulBuilds.length > 1 ? (
@@ -278,7 +290,7 @@ export function PlayablePreview({
           )}
         </div>
       )}
-      {hasArtifact && activeValidation && !activeValidation.deliveryCompliant && (
+      {hasArtifact && !showingPreview && activeValidation && !activeValidation.deliveryCompliant && (
         <div
           className="mx-4 mb-3 flex shrink-0 flex-wrap items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-100"
           role="alert"
@@ -297,7 +309,7 @@ export function PlayablePreview({
           </Button>
         </div>
       )}
-      {phase === 'failed' && hasArtifact && (
+      {phase === 'failed' && hasArtifact && !showingPreview && (
         <p className="text-destructive shrink-0 px-4 pb-2 text-center text-xs" role="alert">
           {failureMessage ?? '本次构建失败，正在展示上一成功版本。'}
         </p>
@@ -314,7 +326,7 @@ export function PlayablePreview({
           }}
           aria-label={`${orientation === 'portrait' ? '竖屏' : '横屏'}画布 ${logicalSize.width} × ${logicalSize.height}`}
         >
-          {hasArtifact ? (
+          {canPreview ? (
             <iframe
               key={frameKey}
               ref={iframeRef}
@@ -347,7 +359,7 @@ export function PlayablePreview({
           )}
         </div>
       </div>
-      {phase === 'failed' && hasArtifact && (
+      {phase === 'failed' && canPreview && (
         <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 px-4 pb-4">
           <Button size="sm" variant="outline" disabled={retrying || !confirmation} onClick={() => void retryBuild()}>
             {retrying ? '正在重试…' : '重试构建'}

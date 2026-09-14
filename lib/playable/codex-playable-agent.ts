@@ -1,4 +1,5 @@
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
+import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import type { BuildActivityCallback } from './build-activity'
 import { createHarnessActivityReporter } from './build-activity-detail'
@@ -283,6 +284,7 @@ async function createProposal(
 
 export async function executeBuildAgent(
   input: {
+    phase?: 'preview' | 'acceptance'
     authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
     sandbox: PlayableSandbox
     taskId: string
@@ -319,7 +321,14 @@ export async function executeBuildAgent(
       const result = await agent.stream({
         session,
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
-        prompt: [PLAYABLE_TOOLS_PROMPT, createCodexBuildPrompt(route, revision, sourceTemplateId, mode)].join('\n'),
+        prompt: [
+          PLAYABLE_TOOLS_PROMPT,
+          input.phase === 'preview'
+            ? PREVIEW_BUILD_PROMPT
+            : input.phase === 'acceptance'
+              ? FULL_ACCEPTANCE_PROMPT
+              : createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
+        ].join('\n'),
         abortSignal: input.abortSignal,
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
@@ -491,7 +500,8 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
         try {
           return await this.buildRunner(attemptInput, { abortSignal: controller.signal })
         } catch (error) {
-          if (attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error)) throw error
+          if (input.onPreview || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
+            throw error
           await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, controller.signal)
         }
       }

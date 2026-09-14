@@ -98,6 +98,7 @@ export function PlayableWorkspace({
   const [brief, setBrief] = useState(initialBrief)
   const [hasArtifact, setHasArtifact] = useState(initialHasArtifact)
   const [artifactVersion, setArtifactVersion] = useState(initialArtifactVersion)
+  const [previewVersion, setPreviewVersion] = useState<string | null>(null)
   const [buildFailureMessage, setBuildFailureMessage] = useState(initialBuildFailureMessage)
   const [validation, setValidation] = useState<PlayableValidationSummary | null>(initialValidation)
   const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
@@ -152,6 +153,7 @@ export function PlayableWorkspace({
             phase: PlayableTaskPhase
             hasArtifact: boolean
             artifactVersion: string | null
+            previewVersion?: string | null
             latestValidation: PlayableValidationSummary | null
             requirementBrief: RequirementBrief | null
             confirmation: ConfirmationProposal | null
@@ -170,6 +172,7 @@ export function PlayableWorkspace({
         setRevisionDraft(body.task.pendingRevision ?? undefined)
         setHasArtifact(body.task.hasArtifact)
         setArtifactVersion(body.task.artifactVersion)
+        setPreviewVersion(body.task.previewVersion ?? null)
         setValidation(body.task.latestValidation)
       } catch {
         // A transient polling failure must not clear the last successful preview.
@@ -256,6 +259,7 @@ export function PlayableWorkspace({
           phase={phase}
           hasArtifact={hasArtifact}
           artifactVersion={artifactVersion}
+          previewVersion={previewVersion}
           initialBuildId={initialBuildId}
           confirmation={proposalDraft}
           revision={revisionDraft}

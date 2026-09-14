@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { exec } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
@@ -915,4 +916,49 @@ describe('runPlayableBuild', () => {
     ).rejects.toThrow('Playable validation failed')
     expect(sandbox.destroyed).toBe(true)
   })
+})
+
+// 编排测试用模拟浏览器报告，验证发布顺序和报告与最终字节的绑定。
+it.each(['passed', 'failed', 'stale', 'smoke-failed'])('two-phase acceptance: %s', async (outcome) => {
+  const sandbox = await createLocalSandbox()
+  const input = buildInput('center_collision', 'sk-preview-test')
+  const preview = vi.fn(async () => undefined)
+  input.onPreview = preview
+  const run = sandbox.run.bind(sandbox)
+  sandbox.run = async (options) => {
+    if (options.command.includes('browser-acceptance.mjs'))
+      return { exitCode: outcome === 'smoke-failed' ? 1 : 0, stdout: '', stderr: '' }
+    return run(options)
+  }
+  const phases: unknown[] = []
+  const promise = runPlayableBuild(input, {
+    createSandbox: async () => sandbox,
+    executeAgent: async ({ phase, workspace, abortSignal }) => {
+      phases.push(phase)
+      expect(abortSignal).toBeDefined()
+      if (phase === 'preview') {
+        expect(preview).not.toHaveBeenCalled()
+        await mkdir(path.join(workspace, 'work'), { recursive: true })
+        await writeFile(path.join(workspace, 'work/preview-scenario.mjs'), 'export default async () => {}')
+      } else {
+        expect(preview).toHaveBeenCalledOnce()
+        const html = await readFile(path.join(workspace, 'output.html'))
+        await mkdir(path.join(workspace, 'work/browser-acceptance'), { recursive: true })
+        await writeFile(path.join(workspace, 'work/scenario.mjs'), 'export default async () => {}')
+        await writeFile(
+          path.join(workspace, 'work/browser-acceptance/report.json'),
+          JSON.stringify({
+            passed: outcome !== 'failed',
+            smoke: false,
+            sha256: outcome === 'stale' ? 'old' : createHash('sha256').update(html).digest('hex'),
+          }),
+        )
+      }
+    },
+  })
+  if (outcome === 'passed') {
+    expect((await promise).html).toBeTruthy()
+  } else await expect(promise).rejects.toThrow()
+  expect(preview).toHaveBeenCalledTimes(outcome === 'smoke-failed' ? 0 : 1)
+  expect(phases).toEqual(outcome === 'smoke-failed' ? ['preview'] : ['preview', 'acceptance'])
 })

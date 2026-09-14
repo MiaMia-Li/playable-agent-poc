@@ -90,6 +90,13 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
             </span>
           </AccordionTrigger>
           <AccordionContent className="pb-1">
+            {running &&
+              current.some((event) => event.type === 'build_activity_preview_delayed') &&
+              !current.some((event) => event.type === 'build_preview_ready') && (
+                <p role="status" className="text-muted-foreground mt-2 text-xs">
+                  生成时间超过预览目标，正在继续完成修改。
+                </p>
+              )}
             <ol aria-label="构建步骤" className="mt-2 space-y-3 text-sm">
               {rows.map((event) => {
                 const detail = event.detail

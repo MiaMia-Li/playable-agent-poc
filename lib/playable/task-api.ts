@@ -971,6 +971,19 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
+      onPreview: async (html) => {
+        if (containsExactSecret(html, apiKey) || redactSecrets(html) !== html)
+          throw new Error('Preview contains a credential')
+        const current = await repository.findBuild(task.id, buildId)
+        if (!current || current.status !== 'building') throw new Error('Preview build is no longer active')
+        await artifactStore.put(`${artifactPrefix(task, buildId)}/preview.html`, html, 'text/html; charset=utf-8')
+        await activityQueue
+        await repository.appendEvent({
+          taskId: task.id,
+          type: 'build_preview_ready',
+          message: JSON.stringify({ version: 1, buildId }),
+        })
+      },
       onActivity,
       taskId: task.id,
       apiKey,
@@ -1887,8 +1900,21 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       )
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
       const events = await dependencies.repository.listEvents(access.task.id)
+      // 预览与正式产物分开存储；新一轮开始后不再把旧预览当成本轮结果。
+      const latestStart = events.findLastIndex((event) => event.type === 'build_started')
+      const previewEvent = events
+        .slice(Math.max(0, latestStart))
+        .findLast((event) => event.type === 'build_preview_ready')
+      let previewVersion: string | null = null
+      try {
+        const value = JSON.parse(previewEvent?.message ?? 'null')
+        if (typeof value?.buildId === 'string') previewVersion = value.buildId
+      } catch {
+        /* 历史或不完整事件不展示为预览。 */
+      }
+      if (latestTask.phase === 'ready') previewVersion = null
       return Response.json(
-        { task: safeTaskState(latestTask), events: events.map(eventJson) },
+        { task: { ...safeTaskState(latestTask), previewVersion }, events: events.map(eventJson) },
         { headers: { 'Cache-Control': 'private, no-store' } },
       )
     },
@@ -1950,6 +1976,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const url = new URL(request.url)
+      const previewId = url.searchParams.get('preview')
+      if (previewId) {
+        if (
+          url.searchParams.get('kind') !== 'playable' ||
+          url.searchParams.has('download') ||
+          url.searchParams.has('version')
+        )
+          return jsonError(404, 'Not found')
+        const build = await dependencies.repository.findBuild(access.task.id, previewId)
+        if (!build) return jsonError(404, 'Not found')
+        const artifact = await dependencies.artifactStore.get(`${artifactPrefix(access.task, previewId)}/preview.html`)
+        if (!artifact) return jsonError(404, 'Not found')
+        return new Response(artifact, {
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Security-Policy': PREVIEW_CSP,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, no-store',
+          },
+        })
+      }
       const versionId = url.searchParams.get('version')
       let artifactKey = access.task.latestArtifactKey
       if (versionId) {

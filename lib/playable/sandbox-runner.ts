@@ -1,5 +1,7 @@
-import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { readBuildSkillFiles } from './build-skill'
+import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
+import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
+import { createHash } from 'node:crypto'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
@@ -40,6 +42,7 @@ interface BuildLogger {
 }
 
 export interface ExecuteAgentInput {
+  phase?: 'preview' | 'acceptance'
   authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
   sandbox: PlayableSandbox
   workspace: string
@@ -180,6 +183,7 @@ export async function runPlayableBuild(
   input: ConfirmedBuildInput,
   dependencies: RunPlayableBuildDependencies,
 ): Promise<BuildResult> {
+  const previewDeadline = Date.now() + PREVIEW_TARGET_MS
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
   input.onActivity?.('preparing')
@@ -303,7 +307,8 @@ export async function runPlayableBuild(
 
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
-    await dependencies.executeAgent({
+    const earlyPreview = Boolean(input.onPreview && supportsFastPreview(confirmation))
+    const agentInput: ExecuteAgentInput = {
       authEnvironment: {
         CODEX_API_KEY: input.apiKey,
         OPENAI_BASE_URL: OPENROUTER_BASE_URL,
@@ -312,9 +317,69 @@ export async function runPlayableBuild(
       workspace,
       taskId: input.taskId,
       abortSignal: dependencies.abortSignal,
-    })
+    }
+    if (earlyPreview) {
+      await withPreviewBudget(
+        (abortSignal) => dependencies.executeAgent({ ...agentInput, phase: 'preview', abortSignal }),
+        {
+          signal: dependencies.abortSignal,
+          targetMs: previewDeadline - Date.now(),
+          onTargetExceeded: () => input.onActivity?.('preview_delayed'),
+        },
+      )
+    } else await dependencies.executeAgent(agentInput)
+    if (earlyPreview) {
+      // 预览同样使用不可修改的验收入口，工作区里的场景仅描述实际交互。
+      await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
+      input.onActivity?.('preview_checking')
+      const checkSignal = dependencies.abortSignal
+      await requireSuccessfulCommand(
+        sandbox,
+        {
+          command:
+            'node ../skill-master/assets/starter/work/browser-acceptance.mjs output.html work/preview-scenario.mjs --smoke',
+          workingDirectory: workspace,
+          abortSignal: checkSignal,
+        },
+        'Preview interaction check failed',
+      )
+      const preview = await sandbox.readTextFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: checkSignal,
+      })
+      if (
+        !preview ||
+        !hasResponsiveViewport(preview) ||
+        hasExternalResourceReference(preview) ||
+        preview.includes(input.apiKey) ||
+        redactSecrets(preview) !== preview
+      )
+        throw new Error('Preview artifact check failed')
+      await input.onPreview!(preview)
+      const acceptanceInput = {
+        ...agentInput,
+        phase: 'acceptance' as const,
+        abortSignal: dependencies.abortSignal ?? new AbortController().signal,
+      }
+      await dependencies.executeAgent(acceptanceInput)
+      const reportText = await sandbox.readTextFile({
+        path: path.join(workspace, 'work/browser-acceptance/report.json'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const finalHtml = await sandbox.readBinaryFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const report = reportText ? JSON.parse(reportText) : null
+      if (
+        !finalHtml ||
+        report?.passed !== true ||
+        report?.smoke !== false ||
+        report?.sha256 !== createHash('sha256').update(finalHtml).digest('hex')
+      )
+        throw new Error('Full browser acceptance did not pass')
+    }
     stage = 'integrity'
-    await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
     input.onActivity?.('validating')
