@@ -6,6 +6,9 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConfirmationProposal, RequirementBrief, RevisionProposal } from '@/lib/playable/schemas'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
+import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
+import { sourceTemplateIds } from '@/lib/playable/types'
+import { bindSourceTemplate } from '@/lib/playable/source-template'
 import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
@@ -649,6 +652,51 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByLabelText('免责声明')).toBeEnabled()
   })
 
+  it.each(sourceTemplateIds)('selects %s and can switch back to Mahjong', (sourceTemplateId) => {
+    const onChange = vi.fn()
+    const view = render(<ConfirmationTable proposal={proposal} onChange={onChange} onConfirm={vi.fn()} />)
+    fireEvent.keyDown(screen.getByLabelText('玩法模板'), { key: 'ArrowDown' })
+    expect(screen.getAllByRole('option')).toHaveLength(8)
+    const template = PLAYABLE_TEMPLATES.find((candidate) => candidate.id === sourceTemplateId)!
+    fireEvent.click(screen.getByRole('option', { name: `${template.label} (${template.id})` }))
+    const selected = onChange.mock.calls.at(-1)![0]
+    expect(selected).toMatchObject({
+      sourceTemplateId,
+      gameplay: template.description,
+      routing: { match: 'exact', differences: [] },
+    })
+    view.rerender(<ConfirmationTable proposal={selected} onChange={onChange} onConfirm={vi.fn()} />)
+    expect(screen.getByLabelText('玩法模板')).toHaveTextContent(template.label)
+    fireEvent.keyDown(screen.getByLabelText('玩法模板'), { key: 'ArrowDown' })
+    expect(screen.getAllByRole('option')).toHaveLength(8)
+    fireEvent.click(screen.getByRole('option', { name: '中心碰撞 (center_collision)' }))
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'center_collision', sourceTemplateId: null }),
+    )
+  })
+
+  it.each(sourceTemplateIds)('uses standard routing for %s', (sourceTemplateId) => {
+    const template = PLAYABLE_TEMPLATES.find((candidate) => candidate.id === sourceTemplateId)!
+    for (const match of ['exact', 'approximate', 'freeform'] as const) {
+      const routing = { match, confidence: 0.85, differences: match === 'exact' ? [] : ['增加奖励流程'] }
+      const confirmation = bindSourceTemplate({ ...proposal, routing }, sourceTemplateId)
+      expect(confirmation.routing).toEqual(routing)
+      const view = render(<ConfirmationTable proposal={confirmation} onChange={vi.fn()} onConfirm={vi.fn()} />)
+      expect(screen.queryByText('基于模板修改')).not.toBeInTheDocument()
+      const routeRow = screen.getByText('路由').closest('tr')!
+      expect(
+        within(routeRow).getByText({ exact: '完全匹配', approximate: '近似匹配', freeform: 'Agent 自由生成' }[match]),
+      ).toBeInTheDocument()
+      if (match !== 'freeform') {
+        expect(screen.queryByText('实现方式')).not.toBeInTheDocument()
+        expect(screen.getByLabelText('玩法模板')).toHaveTextContent(template.label)
+      } else {
+        expect(screen.getByText('实现方式')).toBeInTheDocument()
+      }
+      view.unmount()
+    }
+  })
+
   it('labels unsupported gameplay as direct freeform generation', () => {
     render(
       <ConfirmationTable
@@ -671,7 +719,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    expect(screen.getByText('自由生成')).toBeInTheDocument()
+    expect(screen.getAllByText('Agent 自由生成')).toHaveLength(2)
     expect(screen.getByText('实现方式')).toBeInTheDocument()
     expect(screen.getByText('英雄与怪物')).toBeInTheDocument()
     expect(screen.getByText('战斗场景')).toBeInTheDocument()

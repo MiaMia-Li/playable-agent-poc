@@ -639,10 +639,10 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         await writeFile(assetPath, asset.bytes)
       }
       await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(assetManifest), 'utf8')
-      if (input.revision?.strategy === 'patch' && input.baseHtml) {
+      if ((input.revision?.strategy === 'patch' || input.confirmation.sourceTemplateId) && input.baseHtml) {
         await writeFile(outputPath, input.baseHtml, 'utf8')
         await execFileAsync(process.execPath, [
-          input.confirmation.routing.match === 'freeform'
+          input.confirmation.sourceTemplateId || input.confirmation.routing.match === 'freeform'
             ? path.join(starterRoot, 'work/test-freeform-playable.mjs')
             : path.join(starterRoot, 'work/test-playable.mjs'),
           outputPath,
@@ -864,6 +864,7 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       return
     task.phase = 'building'
     task.confirmation = confirmation
+    task.pendingRevision = revision ?? null
     task.updatedAt = new Date()
     const builds = this.builds.get(taskId) ?? []
     builds.push({

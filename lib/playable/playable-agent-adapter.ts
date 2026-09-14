@@ -1,3 +1,4 @@
+import type { BuildActivityCallback } from './build-activity'
 import type {
   ConfirmationProposal,
   GameplayAnnotation,
@@ -141,6 +142,8 @@ export class PlayableAgentError extends Error {
 }
 
 export interface ConfirmedBuildInput {
+  /** 上报步骤及公开详情；由宿主脱敏后落库，回调不序列化进 Agent 配置。 */
+  onActivity?: BuildActivityCallback
   taskId: string
   apiKey: string
   confirmation: ConfirmationProposal

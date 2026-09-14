@@ -589,7 +589,8 @@ describe('requirement domain tools', () => {
   it('exposes registered modes and the freeform fallback policy', () => {
     const capabilities = playableCapabilitiesForAgent()
     expect(capabilities.plugin.modes).toHaveLength(4)
-    expect(capabilities.routingPolicy.freeform).toContain('outside every registered mode')
+    expect(capabilities.templates).toHaveLength(8)
+    expect(capabilities.routingPolicy.freeform).toContain('outside every registered template')
   })
 
   it('exposes selectable delivery profiles with AppLovin as the default', () => {

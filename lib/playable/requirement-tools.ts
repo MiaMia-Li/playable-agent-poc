@@ -16,6 +16,7 @@ import type { AgentReplyOptions, RequirementAnalysisToolCall } from './playable-
 import { searchBriefSchema } from './research/schemas'
 import type { SafePlayableAsset } from './task-assets'
 import { MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from './template-registry'
+import { PLAYABLE_TEMPLATES } from './template-catalog'
 import { DELIVERY_PROFILES, deliveryProfileSnapshot } from './delivery-standards'
 
 export const requirementToolNames = [
@@ -232,6 +233,7 @@ export function createRequirementBrief(prompt = ''): RequirementBrief {
 export function playableCapabilitiesForAgent() {
   return {
     deliveryProfiles: Object.values(DELIVERY_PROFILES),
+    templates: PLAYABLE_TEMPLATES,
     plugin: {
       id: MAHJONG_PLAYABLE_PLUGIN.id,
       version: MAHJONG_PLAYABLE_PLUGIN.version,
@@ -243,10 +245,10 @@ export function playableCapabilitiesForAgent() {
       delivery: MAHJONG_PLAYABLE_PLUGIN.delivery,
     },
     routingPolicy: {
-      exact: 'The registered mode covers the core input, state machine, and win/loss rules.',
+      exact: 'A registered template covers the core input, state machine, and win/loss rules.',
       approximate:
-        'A registered mode covers the core state machine, while presentation or secondary systems need adaptation.',
-      freeform: 'The core input, state machine, or win/loss rules are outside every registered mode.',
+        'A registered template covers the core state machine, while presentation or secondary systems need adaptation.',
+      freeform: 'The core input, state machine, or win/loss rules are outside every registered template.',
     },
     confirmationDefaults: {
       presentation: {
@@ -508,7 +510,8 @@ export const REQUIREMENT_AGENT_INSTRUCTIONS = [
   'When a user idea clearly matches a registered mode, apply the supplied confirmation defaults to unspecified optional fields and submit_confirmation in the same turn. The confirmation table lets the user customize these defaults before building.',
   'Do not ask separate questions for score thresholds, timer values, visual theme, bundled assets, title, CTA, locale, disclaimer, or store URL when sensible defaults can produce a valid preview.',
   'Do not force a registered mode when the core input, state machine, or win/loss rules do not fit.',
-  'Use exact when a mode fully covers core gameplay, approximate when the core loop fits but secondary behavior or presentation needs Agent adaptation, and freeform when core gameplay does not fit.',
+  'Use exact when a template fully covers core gameplay, approximate when the core loop fits but secondary behavior or presentation needs Agent adaptation, and freeform when core gameplay does not fit.',
+  'Classify selected standalone HTML templates by the same exact/approximate/freeform policy as Mahjong templates. Compare gameplay against the selected template, not the Mahjong scaffold. sourceTemplateId identifies the selected HTML template; mode remains legacy scaffold metadata and does not determine its match. Never force freeform merely because a template uses a separate engine.',
   'For approximate routes, preserve requested differences in both the brief and confirmation. The build Agent will implement them conversationally from the approved plan.',
   'For freeform routes, choose the closest mode only as a workspace scaffold; the build Agent must create the requested gameplay directly.',
   'Keep confirmation.gameplay limited to player-visible controls, rules, objectives, and feedback. Never include route names, registered mode IDs, templates, plugins, workspace scaffolding, or other implementation details in user-facing fields.',

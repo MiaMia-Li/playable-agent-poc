@@ -1,3 +1,6 @@
+import { mergeReasoning } from './reasoning-history'
+import { sanitizeBuildActivityDetail } from './build-activity-detail'
+import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -549,8 +552,10 @@ function toolProgressEvent(
 
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
+// Packed game bootstrappers evaluate embedded scripts. Keep this capability scoped to
+// the opaque-origin sandbox, without same-origin access or network connections.
 const PREVIEW_CSP =
-  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
@@ -731,7 +736,7 @@ const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，自动�
 const CODEX_AUTH_BUILD_FAILURE_MESSAGE = 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。'
 const CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE = 'Codex 请求频率已达到限制，请稍后再试。'
 const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，自动重试后仍未完成，请稍后再试。'
-const CODEX_BUILD_FAILURE_MESSAGE = 'Codex 生成试玩时发生错误，请稍后重试；如持续失败，请检查 API Key 和模型访问权限。'
+const CODEX_BUILD_FAILURE_MESSAGE = 'Agent 执行失败，未发布试玩产物。请查看构建步骤和服务端错误日志后重试。'
 
 function externalErrorText(error: unknown): string {
   const parts: string[] = []
@@ -816,6 +821,7 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
       ) {
         return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
       }
+      if (message.includes('agent stream failed')) return 'Agent 响应流中断，未完成构建，请重试。'
       return CODEX_BUILD_FAILURE_MESSAGE
     }
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
@@ -963,6 +969,33 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
   )
 
+  // 顺序写入步骤事件，确保工具先开始再结束；终止事件前要等待队列排空。
+  // 公开详情在排队前统一脱敏，不写入控制台；原始事件、环境和隐藏推理不落库。
+  const activitySecrets = [
+    apiKey,
+    mediaApiKey ?? '',
+    ...Object.entries(process.env)
+      .filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|POSTGRES_URL|TEAM_ID|PROJECT_ID/.test(key))
+      .map(([, value]) => value ?? ''),
+  ]
+  let activityQueue = Promise.resolve()
+  const onActivity: BuildActivityCallback = (activity, detail) => {
+    if (!Object.hasOwn(buildActivityLabels, activity)) return
+    const message = detail
+      ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
+      : buildActivityLabels[activity]
+    activityQueue = activityQueue
+      .then(async () => {
+        await repository.appendEvent({
+          taskId: task.id,
+          type: `build_activity_${activity}`,
+          message,
+        })
+      })
+      .catch(() => {
+        console.error('Unable to persist build activity')
+      })
+  }
   let stage: ConfirmedBuildStage = 'confirmation'
   try {
     if (
@@ -1044,6 +1077,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
+      onActivity,
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
@@ -1052,6 +1086,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
+    await activityQueue
     stage = 'validation'
     if (
       !result.validation.buildPassed ||
@@ -1102,6 +1137,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       })
       .catch(() => undefined)
   } catch (cause) {
+    await activityQueue
     logConfirmedBuildFailure(stage, cause)
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   } finally {
@@ -1609,6 +1645,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             )
             stopKeepalive = () => clearInterval(keepalive)
             const prompt = safeString(message, [apiKey])
+            // 每个请求单独收集，不能让工具后的新摘要覆盖本轮前面的公开摘要。
+            let reasoningHistory: string | undefined
             let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
@@ -1663,7 +1701,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     const message = progress.message ? safeString(progress.message, [apiKey]) : undefined
                     const reasoning = progress.reasoning ? safeString(progress.reasoning, [apiKey]) : undefined
                     if (!message && !reasoning) return
-                    enqueue({ type: 'assistant_progress', message, reasoning })
+                    reasoningHistory = mergeReasoning(reasoningHistory, reasoning)
+                    enqueue({ type: 'assistant_progress', message, reasoning: reasoningHistory })
                   },
                   executeTool: (call, toolOptions) =>
                     executeRequirementAnalysisTool({
@@ -1688,6 +1727,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 throw new Error('Agent reply contains a credential')
               }
               const validatedReply = sanitizeAgentReply(parsedReply, [apiKey])
+              validatedReply.reasoning =
+                mergeReasoning(reasoningHistory, validatedReply.reasoning) ?? validatedReply.reasoning
               if (validatedReply.kind === 'research') {
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
@@ -1711,7 +1752,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId
-              if (templateId) nextBrief.sourceTemplateId = templateId
+              if (templateId !== undefined) nextBrief.sourceTemplateId = templateId
               if (validatedReply.annotations) {
                 stage = 'annotation_store'
                 await storeGameplayAnnotations(access.task, access.userId, validatedReply.annotations)
@@ -1991,7 +2032,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const body = (await request.json().catch(() => undefined)) as
         | { confirmation?: unknown; revisionId?: unknown }
         | undefined
-      const revision =
+      let revision =
         typeof body?.revisionId === 'string' && access.task.pendingRevision?.id === body.revisionId
           ? access.task.pendingRevision
           : undefined
@@ -2005,7 +2046,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       let sanitized: ConfirmationProposal
       try {
-        sanitized = sanitizeConfirmation(bindSourceTemplate(parsed.data, selectedSourceTemplate(access.task)))
+        sanitized = sanitizeConfirmation(
+          bindSourceTemplate(
+            parsed.data,
+            parsed.data.sourceTemplateId !== undefined
+              ? parsed.data.sourceTemplateId
+              : selectedSourceTemplate(access.task),
+          ),
+        )
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -2031,6 +2079,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+
+      if (revision?.strategy === 'patch') {
+        const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
+        const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
+        const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
+        if (baseBuild && previousTemplate !== nextTemplate) {
+          revision = { ...revision, strategy: 'regenerate' }
+        }
+      }
 
       const buildId = dependencies.generateId()
       const claimed = await dependencies.repository.claimBuild(

@@ -11,6 +11,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AssetPreviewList } from './asset-preview-list'
 import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from '@/lib/playable/template-registry'
+import { sourceTemplateIds, type SourceTemplateId } from '@/lib/playable/types'
+import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
 import { isAbsoluteHttpsUrl } from '@/lib/playable/schemas'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import { isPlayableResourceAssetSlot, playableAssetAccept, type PlayableAssetSlot } from '@/lib/playable/asset-policy'
@@ -43,7 +45,7 @@ const generatedTreatments: Record<keyof ConfirmationProposal['resources'], strin
 const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = {
   exact: '完全匹配',
   approximate: '近似匹配',
-  freeform: '自由生成',
+  freeform: 'Agent 自由生成',
 }
 
 const copyFieldConfig: Record<keyof ConfirmationProposal['copy'], { label: string; maxLength: number }> = {
@@ -116,7 +118,8 @@ export function ConfirmationTable({
   const inProgress = Boolean(confirming || buildPhase)
   const controlsDisabled = Boolean(disabled || inProgress)
   const canConfirm = resourcesReady && validStoreUrl && !inProgress && !disabled
-  const mode = getPlayableMode(proposal.mode)
+  const mode =
+    PLAYABLE_TEMPLATES.find((template) => template.id === proposal.sourceTemplateId) ?? getPlayableMode(proposal.mode)
   const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(proposal.delivery))
   const referenceAssets = uploadedAssets.filter((asset) => !isPlayableResourceAssetSlot(asset.slot))
 
@@ -135,7 +138,15 @@ export function ConfirmationTable({
 
   const updateMode = (value: string) => {
     const nextMode = PLAYABLE_MODES.find((candidate) => candidate.id === value)
-    if (nextMode) onChange({ ...proposal, mode: nextMode.id })
+    const nextTemplate = PLAYABLE_TEMPLATES.find((candidate) => candidate.id === value)
+    if (!nextTemplate || nextTemplate.id === mode.id) return
+    onChange({
+      ...proposal,
+      mode: nextMode?.id ?? proposal.mode,
+      sourceTemplateId: sourceTemplateIds.includes(value as SourceTemplateId) ? (value as SourceTemplateId) : null,
+      gameplay: nextTemplate.description,
+      routing: { match: 'exact', confidence: 1, differences: [] },
+    })
   }
 
   return (
@@ -152,7 +163,7 @@ export function ConfirmationTable({
             <tr>
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">路由</th>
               <td className="px-3 py-2">
-                <span>{proposal.sourceTemplateId ? '基于模板修改' : routingLabels[proposal.routing.match]}</span>
+                <span>{routingLabels[proposal.routing.match]}</span>
                 <span className="text-muted-foreground ml-2">
                   置信度 {Math.round(proposal.routing.confidence * 100)}%
                 </span>
@@ -174,14 +185,7 @@ export function ConfirmationTable({
                     : '实现方式'}
               </th>
               <td className="space-y-2 px-3 py-2">
-                {proposal.sourceTemplateId ? (
-                  <>
-                    <Badge variant="secondary">基于模板修改</Badge>
-                    <p className="text-muted-foreground text-xs">
-                      从已选模板的原始 HTML 开始，保留原有玩法和素材，按确认需求修改。
-                    </p>
-                  </>
-                ) : proposal.routing.match === 'freeform' ? (
+                {proposal.routing.match === 'freeform' ? (
                   <>
                     <Badge variant="secondary">Agent 自由生成</Badge>
                     <p className="text-muted-foreground text-xs">
@@ -190,12 +194,12 @@ export function ConfirmationTable({
                   </>
                 ) : (
                   <>
-                    <Select value={proposal.mode} disabled={controlsDisabled} onValueChange={updateMode}>
+                    <Select value={mode.id} disabled={controlsDisabled} onValueChange={updateMode}>
                       <SelectTrigger className="w-full" aria-label="玩法模板">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {PLAYABLE_MODES.map((candidate) => (
+                        {PLAYABLE_TEMPLATES.map((candidate) => (
                           <SelectItem key={candidate.id} value={candidate.id}>
                             {candidate.label} ({candidate.id})
                           </SelectItem>

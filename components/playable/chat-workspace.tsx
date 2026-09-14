@@ -1,7 +1,12 @@
 'use client'
 
+import { BuildTimeline } from './build-timeline'
+import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
+import { AgentText, ReasoningText } from './reasoning-text'
+import { mergeReasoning } from '@/lib/playable/reasoning-history'
+import { placeBuildRuns } from '@/lib/playable/build-conversation'
 import Link from 'next/link'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowUp,
   Check,
@@ -108,6 +113,7 @@ const defaultResourceTreatments: Record<string, string> = {
 }
 
 interface ChatWorkspaceProps {
+  buildEvents?: BuildTimelineEvent[]
   taskId: string
   initialPrompt?: string
   phase: PlayableTaskPhase
@@ -175,6 +181,7 @@ interface ComposerAttachment {
 }
 
 export interface ConversationMessage {
+  createdAt?: string
   id: string | number
   role: 'user' | 'assistant'
   content: string
@@ -314,6 +321,7 @@ function assetsForProposal(proposal: ConfirmationProposal, assets: SafePlayableA
 }
 
 export function ChatWorkspace({
+  buildEvents = [],
   taskId,
   initialPrompt = '',
   phase,
@@ -363,6 +371,19 @@ export function ChatWorkspace({
   const [error, setError] = useState('')
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
+  const followBuild = useRef(true)
+  useEffect(() => {
+    // 进入构建时将执行时间线带入视野；之后的历史阅读交给用户控制。
+    if (phase === 'building' && scrollContainer.current) {
+      scrollContainer.current.scrollTop = scrollContainer.current.scrollHeight
+    }
+  }, [phase])
+  useEffect(() => {
+    if (followBuild.current && scrollContainer.current && (phase === 'building' || phase === 'validating')) {
+      scrollContainer.current.scrollTop = scrollContainer.current.scrollHeight
+    }
+  }, [buildEvents, phase])
+
   const composerAttachmentInput = useRef<HTMLInputElement>(null)
   const composerAttachmentSequence = useRef(0)
   const selectedAssetsRef = useRef(initialAssets)
@@ -408,7 +429,7 @@ export function ChatWorkspace({
           ? `请参考已上传素材：${attachmentSnapshot.map((attachment) => attachment.filename).join('、')}`
           : '')
       if (!content || sending || !canCompose) return false
-      const id = Date.now()
+      const id = crypto.randomUUID()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
       let terminalEventReceived = false
@@ -426,6 +447,7 @@ export function ChatWorkspace({
               ...items,
               {
                 id: assistantId,
+                createdAt: new Date().toISOString(),
                 role: 'assistant',
                 content: next.content ?? '',
                 status: next.status ?? 'streaming',
@@ -437,7 +459,11 @@ export function ChatWorkspace({
               },
             ]
           }
-          return items.map((item) => (item.id === assistantId ? { ...item, ...next } : item))
+          return items.map((item) =>
+            item.id === assistantId
+              ? { ...item, ...next, reasoning: mergeReasoning(item.reasoning, next.reasoning) }
+              : item,
+          )
         })
       }
       try {
@@ -907,6 +933,8 @@ export function ChatWorkspace({
     }
   }
 
+  const placedBuilds = placeBuildRuns(conversation, buildEvents)
+  const buildRunning = phase === 'building' || phase === 'validating'
   const latestProposalIndex = conversation.findLastIndex(
     (item) => item.role === 'assistant' && item.confirmation !== undefined,
   )
@@ -930,7 +958,14 @@ export function ChatWorkspace({
 
   return (
     <section aria-label="需求对话" className="flex min-h-0 flex-col overflow-hidden">
-      <div ref={scrollContainer} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pt-5 pb-1">
+      <div
+        ref={scrollContainer}
+        className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pt-5 pb-1"
+        onScroll={() => {
+          const node = scrollContainer.current
+          if (node) followBuild.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
+        }}
+      >
         <section aria-label="构建进度" className="bg-muted/50 rounded-xl p-3">
           <ol className="grid grid-cols-3 gap-1">
             {stages.map(([id, label]) => (
@@ -1097,112 +1132,119 @@ export function ChatWorkspace({
               )}
             </div>
           ) : (
-            <article key={item.id} className="flex min-w-0 items-start gap-3" aria-label="助手回复">
-              <span className="bg-primary text-primary-foreground mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full">
-                {item.status === 'streaming' ? (
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Sparkles className="size-3.5" aria-hidden="true" />
-                )}
-              </span>
-              <div className="min-w-0 flex-1 pt-1 text-sm leading-6">
-                {item.reasoning && (
-                  <details className="text-muted-foreground mb-2 text-xs">
-                    <summary className="cursor-pointer select-none">Thinking</summary>
-                    <p className="mt-1 border-l pl-3 leading-5">{item.reasoning}</p>
-                  </details>
-                )}
-                <div className="whitespace-pre-wrap break-words">
-                  {item.content || (item.status === 'streaming' ? 'Loading…' : '')}
-                  {item.status === 'streaming' && <span className="ml-0.5 inline-block animate-pulse">▍</span>}
-                </div>
-                {item.request && item.request.question !== item.content && (
-                  <p className="mt-2 text-xs font-medium">{item.request.question}</p>
-                )}
-                <DynamicRequestActions
-                  request={
-                    item.request ?? {
-                      type: 'single_select',
-                      question: item.content,
-                      options: item.options ?? [],
-                      allowCustom: true,
-                    }
-                  }
-                  disabled={sending || !canCompose}
-                  onSubmit={(value) => void sendMessage(value)}
-                />
-                {item.research && (
-                  <ResearchResultCard
-                    report={item.research}
-                    adoptedSelection={item.adoptedSelection}
-                    disabled={sending || !canCompose}
-                    onAdopt={async (selection) => {
-                      const adopted = await sendMessage('采用此方向', true, [], selection)
-                      if (!adopted) return
-                      setConversation((items) =>
-                        items.map((candidate) =>
-                          candidate.id === item.id ? { ...candidate, adoptedSelection: selection } : candidate,
-                        ),
-                      )
-                    }}
-                    onSearchAgain={() => void sendMessage('重新搜索并分析同类试玩广告')}
-                    onSkip={() => void sendMessage('跳过市场搜索，继续整理试玩需求')}
-                  />
-                )}
-                {item.revision && (
-                  <RevisionSummary revision={index === latestProposalIndex && revision ? revision : item.revision} />
-                )}
-                {item.confirmation &&
-                  (index === latestProposalIndex && confirmActionVisible ? (
-                    <div className="mt-4">
-                      <ConfirmationTable
-                        proposal={proposal ?? item.confirmation}
-                        onChange={updateCurrentProposal}
-                        onConfirm={confirm}
-                        title={
-                          item.revision && 'targetVersion' in item.revision
-                            ? `候选构建方案 v${item.revision.targetVersion}`
-                            : '候选构建方案 v1'
-                        }
-                        description="你可以继续调整配置或上传素材，确认后才会开始构建。"
-                        confirming={confirming}
-                        buildPhase={buildInProgress ? phase : undefined}
-                        disabled={sending || buildInProgress}
-                        uploadingSlot={uploadingSlot}
-                        onUpload={upload}
-                        onRemoveAsset={removeAsset}
-                        uploadedAssets={selectedAssets}
-                        removingAssetId={removingAssetId}
-                        assetPreviewUrl={(asset) =>
-                          `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
-                        }
-                        showConfirmAction={false}
-                      />
-                    </div>
+            <Fragment key={item.id}>
+              <article key={item.id} className="flex min-w-0 items-start gap-3" aria-label="助手回复">
+                <span className="bg-primary text-primary-foreground mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full">
+                  {item.status === 'streaming' ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                   ) : (
-                    <details className="mt-4 overflow-hidden rounded-xl border">
-                      <summary className="bg-muted/30 cursor-pointer select-none px-4 py-3 text-sm font-semibold">
-                        历史构建方案
-                      </summary>
-                      <div className="border-t p-4">
+                    <Sparkles className="size-3.5" aria-hidden="true" />
+                  )}
+                </span>
+                <div className="min-w-0 flex-1 pt-1 text-sm leading-6">
+                  {item.reasoning && (
+                    <details className="text-muted-foreground mb-2 text-xs">
+                      <summary className="cursor-pointer select-none">Thinking</summary>
+                      <ReasoningText>{item.reasoning}</ReasoningText>
+                    </details>
+                  )}
+                  <div className="break-words">
+                    <AgentText>{item.content || (item.status === 'streaming' ? 'Loading…' : '')}</AgentText>
+                    {item.status === 'streaming' && <span className="ml-0.5 inline-block animate-pulse">▍</span>}
+                  </div>
+                  {item.request && item.request.question !== item.content && (
+                    <p className="mt-2 text-xs font-medium">{item.request.question}</p>
+                  )}
+                  <DynamicRequestActions
+                    request={
+                      item.request ?? {
+                        type: 'single_select',
+                        question: item.content,
+                        options: item.options ?? [],
+                        allowCustom: true,
+                      }
+                    }
+                    disabled={sending || !canCompose}
+                    onSubmit={(value) => void sendMessage(value)}
+                  />
+                  {item.research && (
+                    <ResearchResultCard
+                      report={item.research}
+                      adoptedSelection={item.adoptedSelection}
+                      disabled={sending || !canCompose}
+                      onAdopt={async (selection) => {
+                        const adopted = await sendMessage('采用此方向', true, [], selection)
+                        if (!adopted) return
+                        setConversation((items) =>
+                          items.map((candidate) =>
+                            candidate.id === item.id ? { ...candidate, adoptedSelection: selection } : candidate,
+                          ),
+                        )
+                      }}
+                      onSearchAgain={() => void sendMessage('重新搜索并分析同类试玩广告')}
+                      onSkip={() => void sendMessage('跳过市场搜索，继续整理试玩需求')}
+                    />
+                  )}
+                  {item.revision && (
+                    <RevisionSummary revision={index === latestProposalIndex && revision ? revision : item.revision} />
+                  )}
+                  {item.confirmation &&
+                    (index === latestProposalIndex && confirmActionVisible ? (
+                      <div className="mt-4">
                         <ConfirmationTable
-                          proposal={item.confirmation}
-                          onChange={() => undefined}
-                          onConfirm={() => undefined}
-                          showHeader={false}
-                          disabled
-                          uploadedAssets={assetsForProposal(item.confirmation, selectedAssets)}
+                          proposal={proposal ?? item.confirmation}
+                          onChange={updateCurrentProposal}
+                          onConfirm={confirm}
+                          title={
+                            item.revision && 'targetVersion' in item.revision
+                              ? `候选构建方案 v${item.revision.targetVersion}`
+                              : '候选构建方案 v1'
+                          }
+                          description="你可以继续调整配置或上传素材，确认后才会开始构建。"
+                          confirming={confirming}
+                          buildPhase={buildInProgress ? phase : undefined}
+                          disabled={sending || buildInProgress}
+                          uploadingSlot={uploadingSlot}
+                          onUpload={upload}
+                          onRemoveAsset={removeAsset}
+                          uploadedAssets={selectedAssets}
+                          removingAssetId={removingAssetId}
                           assetPreviewUrl={(asset) =>
                             `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
                           }
                           showConfirmAction={false}
                         />
                       </div>
-                    </details>
-                  ))}
-                {item.status === 'failed' && <span className="text-destructive mt-1 block text-xs">回复已中断</span>}
-              </div>
-            </article>
+                    ) : (
+                      <details className="mt-4 overflow-hidden rounded-xl border">
+                        <summary className="bg-muted/30 cursor-pointer select-none px-4 py-3 text-sm font-semibold">
+                          历史构建方案
+                        </summary>
+                        <div className="border-t p-4">
+                          <ConfirmationTable
+                            proposal={item.confirmation}
+                            onChange={() => undefined}
+                            onConfirm={() => undefined}
+                            showHeader={false}
+                            disabled
+                            uploadedAssets={assetsForProposal(item.confirmation, selectedAssets)}
+                            assetPreviewUrl={(asset) =>
+                              `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
+                            }
+                            showConfirmAction={false}
+                          />
+                        </div>
+                      </details>
+                    ))}
+                  {item.status === 'failed' && <span className="text-destructive mt-1 block text-xs">回复已中断</span>}
+                </div>
+              </article>
+              {placedBuilds
+                .filter((run) => run.ownerId === item.id)
+                .map((run) => (
+                  <BuildTimeline key={run.events[0].id} events={run.events} running={buildRunning && run.latest} />
+                ))}
+            </Fragment>
           ),
         )}
 
@@ -1262,6 +1304,12 @@ export function ChatWorkspace({
             {error}
           </p>
         )}
+        {placedBuilds
+          .filter((run) => run.ownerId === undefined)
+          .map((run) => (
+            <BuildTimeline key={run.events[0].id} events={run.events} running={buildRunning && run.latest} />
+          ))}
+        {buildRunning && placedBuilds.length === 0 && <BuildTimeline events={[]} running />}
         <div className="h-4 shrink-0" aria-hidden="true" />
       </div>
 

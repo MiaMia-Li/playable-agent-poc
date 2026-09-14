@@ -1,5 +1,7 @@
 'use client'
 
+import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
+
 import { sourceTemplateIds, type SourceTemplateId } from '@/lib/playable/types'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -125,6 +127,7 @@ export function PlayableWorkspace({
   initialActiveReferenceVideoId = null,
   initialGameplayAnnotations = [],
 }: PlayableWorkspaceProps) {
+  const [buildEvents, setBuildEvents] = useState<BuildTimelineEvent[]>([])
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposalDraft, setProposalDraft] = useState(initialProposal)
   const [revisionDraft, setRevisionDraft] = useState(initialRevision)
@@ -328,7 +331,8 @@ export function PlayableWorkspace({
   }, [applyVideoAnalysis, intentCheckRequestedAt, taskId])
 
   useEffect(() => {
-    if (!['building', 'validating'].includes(phase)) return
+    // 非草稿阶段首次读取历史记录；只有活跃构建持续轮询，待确认时刷新也不能丢失旧构建。
+    if (phase === 'draft') return
     let active = true
     let timeout: number | undefined
     const poll = async () => {
@@ -347,9 +351,10 @@ export function PlayableWorkspace({
             confirmation: ConfirmationProposal | null
             pendingRevision: RevisionProposal | null
           }
-          events?: Array<{ type: string; message?: string }>
+          events?: Array<BuildTimelineEvent & { message?: string }>
         }
         if (!active || !body.task) return
+        setBuildEvents(body.events ?? [])
         setPhase((current) => (phaseRank[body.task!.phase] >= phaseRank[current] ? body.task!.phase : current))
         if (body.task.phase === 'failed') {
           setBuildFailureMessage(body.events?.findLast((event) => event.type === 'build_failed')?.message)
@@ -363,7 +368,7 @@ export function PlayableWorkspace({
       } catch {
         // A transient polling failure must not clear the last successful preview.
       } finally {
-        if (active) timeout = window.setTimeout(poll, 2000)
+        if (active && ['building', 'validating'].includes(phase)) timeout = window.setTimeout(poll, 2000)
       }
     }
     void poll()
@@ -462,6 +467,7 @@ export function PlayableWorkspace({
     <main className="bg-background flex h-full min-h-0 flex-col overflow-hidden">
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[2fr_3fr]">
         <ChatWorkspace
+          buildEvents={buildEvents}
           taskId={taskId}
           initialPrompt={initialPrompt}
           phase={phase}
