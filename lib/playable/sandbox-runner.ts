@@ -203,6 +203,7 @@ export async function runPlayableBuild(
 ): Promise<BuildResult> {
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
+  input.onActivity?.('preparing')
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
   const freeform = confirmation.routing.match === 'freeform'
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
@@ -343,6 +344,7 @@ export async function runPlayableBuild(
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
+    input.onActivity?.('validating')
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(
       sandbox,

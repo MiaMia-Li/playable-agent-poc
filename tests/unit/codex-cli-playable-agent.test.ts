@@ -185,7 +185,12 @@ describe('CodexCliPlayableAgent', () => {
   })
 
   it('runs Codex with workspace writes before delegating the isolated build', async () => {
-    const invokeCodex = vi.fn(async () => ({ completed: true }))
+    const onActivity = vi.fn()
+    const invokeCodex = vi.fn(async (invocation) => {
+      invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
+      invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
+      return { completed: true }
+    })
     const result: BuildResult = {
       html: '<script>window.__PLAYABLE__={}</script>',
       validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
@@ -193,11 +198,19 @@ describe('CodexCliPlayableAgent', () => {
     const buildRunner = vi.fn(async () => result)
     const input: ConfirmedBuildInput = {
       taskId: 'task-cli-build',
+      onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
     }
 
     await expect(new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build(input)).resolves.toBe(result)
+    expect(onActivity.mock.calls.map(([activity]) => activity)).toEqual([
+      'preparing',
+      'agent_started',
+      'command_started',
+      'command_completed',
+      'agent_completed',
+    ])
     expect(invokeCodex).toHaveBeenCalledWith(
       expect.objectContaining({
         sandbox: 'workspace-write',

@@ -1,4 +1,6 @@
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
+import type { BuildActivityCallback } from './build-activity'
+import { createHarnessActivityReporter } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -281,6 +283,7 @@ async function executeBuildAgent(
   revision: ConfirmedBuildInput['revision'],
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
+  onActivity?: BuildActivityCallback,
 ) {
   const skill = await loadSkill(skillRoot)
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
@@ -297,11 +300,31 @@ async function executeBuildAgent(
   }
   try {
     try {
-      await agent.generate({
+      onActivity?.('agent_started')
+      const result = await agent.stream({
         session,
         prompt: createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
         abortSignal: input.abortSignal,
       })
+      // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
+      const progress = createHarnessActivityReporter(onActivity)
+      try {
+        for await (const event of result.fullStream) {
+          if (event.type === 'error') {
+            // 保留提供方错误，供已有脱敏日志和失败分类使用；不能用通用文案覆盖根因。
+            throw event.error instanceof Error
+              ? event.error
+              : new Error(typeof event.error === 'string' ? event.error : 'Agent stream failed', {
+                  cause: event.error,
+                })
+          }
+          progress.accept(event)
+        }
+      } finally {
+        progress.flush()
+      }
+      input.abortSignal?.throwIfAborted()
+      onActivity?.('agent_completed')
     } catch (error) {
       logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
       throw error
@@ -417,6 +440,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
               input.revision,
               input.confirmation.sourceTemplateId,
               input.confirmation.mode,
+              input.onActivity,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,

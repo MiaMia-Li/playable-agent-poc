@@ -1,4 +1,6 @@
 import { mergeReasoning } from './reasoning-history'
+import { sanitizeBuildActivityDetail } from './build-activity-detail'
+import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -629,7 +631,7 @@ const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，自动�
 const CODEX_AUTH_BUILD_FAILURE_MESSAGE = 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。'
 const CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE = 'Codex 请求频率已达到限制，请稍后再试。'
 const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，自动重试后仍未完成，请稍后再试。'
-const CODEX_BUILD_FAILURE_MESSAGE = 'Codex 生成试玩时发生错误，请稍后重试；如持续失败，请检查 API Key 和模型访问权限。'
+const CODEX_BUILD_FAILURE_MESSAGE = 'Agent 执行失败，未发布试玩产物。请查看构建步骤和服务端错误日志后重试。'
 
 function externalErrorText(error: unknown): string {
   const parts: string[] = []
@@ -714,6 +716,7 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
       ) {
         return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
       }
+      if (message.includes('agent stream failed')) return 'Agent 响应流中断，未完成构建，请重试。'
       return CODEX_BUILD_FAILURE_MESSAGE
     }
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
@@ -861,6 +864,33 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
   )
 
+  // 顺序写入步骤事件，确保工具先开始再结束；终止事件前要等待队列排空。
+  // 公开详情在排队前统一脱敏，不写入控制台；原始事件、环境和隐藏推理不落库。
+  const activitySecrets = [
+    apiKey,
+    mediaApiKey ?? '',
+    ...Object.entries(process.env)
+      .filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|POSTGRES_URL|TEAM_ID|PROJECT_ID/.test(key))
+      .map(([, value]) => value ?? ''),
+  ]
+  let activityQueue = Promise.resolve()
+  const onActivity: BuildActivityCallback = (activity, detail) => {
+    if (!Object.hasOwn(buildActivityLabels, activity)) return
+    const message = detail
+      ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
+      : buildActivityLabels[activity]
+    activityQueue = activityQueue
+      .then(async () => {
+        await repository.appendEvent({
+          taskId: task.id,
+          type: `build_activity_${activity}`,
+          message,
+        })
+      })
+      .catch(() => {
+        console.error('Unable to persist build activity')
+      })
+  }
   let stage: ConfirmedBuildStage = 'confirmation'
   try {
     if (
@@ -942,6 +972,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
+      onActivity,
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
@@ -950,6 +981,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
+    await activityQueue
     stage = 'validation'
     if (
       !result.validation.buildPassed ||
@@ -1000,6 +1032,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       })
       .catch(() => undefined)
   } catch (cause) {
+    await activityQueue
     logConfirmedBuildFailure(stage, cause)
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   } finally {

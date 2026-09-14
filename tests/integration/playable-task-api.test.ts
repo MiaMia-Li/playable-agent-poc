@@ -2057,6 +2057,45 @@ describe('playable task API', () => {
     ])
   })
 
+  it('persists fixed build activities before the terminal failure event', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.mocked(harness.agent.build).mockImplementationOnce(async (input) => {
+      input.onActivity?.('command_started', { tool: 'bash', input: 'echo sk-test-secret', output: '检查完成' })
+      input.onActivity?.('command_failed')
+      throw new Error('private diagnostic')
+    })
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'activity-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    const events = await harness.repository.listEvents(task.id)
+    expect(events.map((event) => event.type)).toEqual([
+      'build_activity_command_started',
+      'build_activity_command_failed',
+      'build_failed',
+    ])
+    expect(JSON.stringify(events)).not.toContain('private diagnostic')
+    expect(JSON.stringify(events)).not.toContain('sk-test-secret')
+    expect(JSON.parse(events[0].message!)).toMatchObject({
+      version: 1,
+      detail: { input: 'echo [已隐藏]', output: '检查完成' },
+    })
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    expect((await response.json()).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'build_activity_command_failed', message: '命令执行失败，等待 Agent 处理' }),
+      ]),
+    )
+  })
+
   it.each(sourceTemplateIds.flatMap((id) => [null, 'zeus_scatter' as const].map((initial) => [id, initial] as const)))(
     'persists and builds %s instead of the initial template %s',
     async (sourceTemplateId, initial) => {

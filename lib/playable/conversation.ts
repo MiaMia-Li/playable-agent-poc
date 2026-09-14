@@ -14,6 +14,7 @@ export interface RestoredPlayableConversationMessage {
   role: 'user' | 'assistant'
   content: string
   status: 'sent'
+  createdAt?: string
   reasoning?: string
   options?: ClarificationOption[]
   request?: RequirementInputRequest
@@ -34,7 +35,13 @@ export function restorePlayableConversation(
       if (stored.role === 'user') {
         return [
           {
-            message: { id: stored.id, role: 'user', content: stored.content, status: 'sent' },
+            message: {
+              id: stored.id,
+              role: 'user',
+              content: stored.content,
+              status: 'sent',
+              createdAt: stored.createdAt.toISOString(),
+            },
             createdAt: stored.createdAt,
           },
         ]
@@ -47,6 +54,7 @@ export function restorePlayableConversation(
           {
             message: {
               id: stored.id,
+              createdAt: stored.createdAt.toISOString(),
               role: 'assistant',
               content: reply.message,
               reasoning: reply.reasoning,

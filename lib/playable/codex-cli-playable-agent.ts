@@ -1,4 +1,5 @@
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
+import { reportCliBuildActivity } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
 import { spawn } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -341,6 +342,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
     this.activeTasks.set(input.taskId, controller)
     let workspace: string | undefined
     try {
+      input.onActivity?.('preparing')
       workspace = await prepareLocalWorkspace(input, this.skillRoot)
       const perspectiveTemplateInstructions = usesPerspectiveTemplate(input.confirmation)
         ? [
@@ -350,10 +352,14 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             'Do not replace it with the shared Canvas 2D runtime or another Mahjong mode.',
           ]
         : []
+      input.onActivity?.('agent_started')
       const completion = await this.invokeCodex({
         workspace,
         sandbox: 'workspace-write',
         reasoningEffort: 'medium',
+        onEvent(event) {
+          reportCliBuildActivity(event, input.onActivity)
+        },
         abortSignal: controller.signal,
         schema: codexOutputSchema(completionSchema),
         prompt: input.confirmation.sourceTemplateId
@@ -416,6 +422,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         console.error('Codex CLI build completion was invalid')
         throw new Error('Codex CLI build completion is invalid')
       }
+      input.onActivity?.('agent_completed')
       console.log('Codex CLI playable workspace completed')
       if (this.buildRunner) return await this.buildRunner(input, { abortSignal: controller.signal })
       const preparedArtifact = new Uint8Array(await readFile(path.join(workspace, 'output.html')))
