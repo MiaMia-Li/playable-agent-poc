@@ -450,8 +450,10 @@ function toolProgressEvent(
 
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
+// Packed game bootstrappers evaluate embedded scripts. Keep this capability scoped to
+// the opaque-origin sandbox, without same-origin access or network connections.
 const PREVIEW_CSP =
-  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000

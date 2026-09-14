@@ -2620,7 +2620,7 @@ describe('playable task API', () => {
     expect(inline.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(inline.headers.get('content-disposition')).toBe('inline; filename="playable.html"')
     expect(inline.headers.get('content-security-policy')).toBe(
-      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
+      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
     )
     expect(inline.headers.get('x-content-type-options')).toBe('nosniff')
     expect(inline.headers.get('cache-control')).toBe('private, no-store')
