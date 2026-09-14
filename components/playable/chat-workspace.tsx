@@ -826,7 +826,7 @@ export function ChatWorkspace({
 
   return (
     <section aria-label="需求对话" className="flex min-h-0 flex-col overflow-hidden">
-      <div ref={scrollContainer} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pt-5 pb-1">
+      <div ref={scrollContainer} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-y-none px-5 pt-5 pb-1">
         <section aria-label="构建进度" className="bg-muted/50 rounded-xl p-3">
           <ol className="grid grid-cols-3 gap-1">
             {stages.map(([id, label]) => (

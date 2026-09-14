@@ -305,7 +305,9 @@ describe('PlayableWorkspace', () => {
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
 
-    expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
+    const chat = screen.getByRole('region', { name: '需求对话' })
+    expect(chat).toBeInTheDocument()
+    expect(chat.firstElementChild).toHaveClass('overscroll-y-none')
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('方案生成中可试玩')
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
