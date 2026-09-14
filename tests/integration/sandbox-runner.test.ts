@@ -1,3 +1,4 @@
+import { campaignParameters } from '@/lib/playable/campaign-parameters'
 import { createHash } from 'node:crypto'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { exec } from 'node:child_process'
@@ -957,8 +958,54 @@ it.each(['passed', 'failed', 'stale', 'smoke-failed'])('two-phase acceptance: %s
     },
   })
   if (outcome === 'passed') {
-    expect((await promise).html).toBeTruthy()
+    expect((await promise).reusableScenarios).toBeDefined()
   } else await expect(promise).rejects.toThrow()
   expect(preview).toHaveBeenCalledTimes(outcome === 'smoke-failed' ? 0 : 1)
   expect(phases).toEqual(outcome === 'smoke-failed' ? ['preview'] : ['preview', 'acceptance'])
+})
+
+it('reuses accepted scenarios without model calls for a parameter-only revision', async () => {
+  const sandbox = await createLocalSandbox()
+  const input = buildInput('center_collision', 'sk-parameter-test')
+  input.baseConfirmation = input.confirmation
+  input.baseHtml =
+    (await readFile('public/playable-templates/center_collision.html', 'utf8')) +
+    `<script type="application/json" id="playable-campaign-config">${JSON.stringify(campaignParameters(input.confirmation))}</script><!--playable-campaign-binding-v1-->`
+  input.confirmation = { ...input.confirmation, copy: { ...input.confirmation.copy, title: 'New title' } }
+  input.revision = {
+    id: 'revision',
+    baseBuildId: 'base',
+    baseVersion: 1,
+    targetVersion: 2,
+    strategy: 'patch',
+    parameterOnly: true,
+    summary: 'Change title',
+    changes: ['title'],
+    preserved: ['gameplay'],
+  }
+  input.reusableScenarios = { preview: 'export default async () => {}', full: 'export default async () => {}' }
+  input.onPreview = vi.fn(async () => undefined)
+  const run = sandbox.run.bind(sandbox)
+  sandbox.run = async (options) => {
+    if (options.command.includes('browser-acceptance.mjs')) {
+      const workspace = options.workingDirectory!
+      const html = await readFile(path.join(workspace, 'output.html'))
+      await mkdir(path.join(workspace, 'work/browser-acceptance'), { recursive: true })
+      await writeFile(
+        path.join(workspace, 'work/browser-acceptance/report.json'),
+        JSON.stringify({
+          passed: true,
+          smoke: options.command.includes('--smoke'),
+          sha256: createHash('sha256').update(html).digest('hex'),
+        }),
+      )
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    return run(options)
+  }
+  const executeAgent = vi.fn(async () => undefined)
+  const result = await runPlayableBuild(input, { createSandbox: async () => sandbox, executeAgent })
+  expect(executeAgent).not.toHaveBeenCalled()
+  expect(input.onPreview).toHaveBeenCalledOnce()
+  expect(result.html).toContain('New title')
 })

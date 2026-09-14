@@ -7,6 +7,7 @@ export const buildActivityLabels = {
   stage_completed: '阶段结束',
   transferring: '正在传输构建文件',
   preview_checking: '正在检查预览交互',
+  parameters_applied: '已应用模板参数，跳过模型修改',
   agent_message: 'Agent 说明',
   reasoning_summary: '思考摘要',
   preparing: '正在准备构建环境',

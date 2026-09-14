@@ -30,7 +30,7 @@ import {
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
-  requirementAgentStepSchema,
+  requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { marketResearchReportSchema } from './research/schemas'
@@ -39,6 +39,7 @@ import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel }
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
 const CODEX_INSTRUCTIONS = [
+  'For a revision that changes only title, CTA text, disclaimer, locale or store URL, set parameterOnly true in the revision plan. Never set it for gameplay, rewards, round order, layout, images or audio changes.',
   'Follow the supplied gameplay-specific playable Skill exactly.',
   'Collect requirements over multiple turns. Ask one focused clarification at a time and never repeat information already answered in conversation history.',
   'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the available gameplay templates as concise selectable options.',
@@ -197,7 +198,7 @@ async function createProposal(
       model: openai.responses(readPlayableAgentModel()),
       instructions: REQUIREMENT_AGENT_INSTRUCTIONS,
       prompt: safePrompt,
-      output: Output.object({ schema: requirementAgentStepSchema }),
+      output: Output.object({ schema: requirementAgentStepOutputSchema }),
       abortSignal,
       providerOptions: {
         openai: {

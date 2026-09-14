@@ -1,6 +1,7 @@
 import { readBuildSkillFiles } from './build-skill'
 import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
+import { applyCampaignParameters } from './campaign-parameters'
 import { createHash } from 'node:crypto'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import path from 'node:path'
@@ -308,6 +309,35 @@ export async function runPlayableBuild(
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
     const earlyPreview = Boolean(input.onPreview && supportsFastPreview(confirmation))
+    let parameterPatched = false
+    if (
+      earlyPreview &&
+      input.revision?.parameterOnly &&
+      input.baseHtml &&
+      input.baseConfirmation &&
+      input.reusableScenarios
+    ) {
+      const patched = applyCampaignParameters(input.baseHtml, input.baseConfirmation, confirmation)
+      if (patched) {
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'output.html'),
+          content: patched,
+          abortSignal: dependencies.abortSignal,
+        })
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'work/preview-scenario.mjs'),
+          content: input.reusableScenarios.preview,
+          abortSignal: dependencies.abortSignal,
+        })
+        await sandbox.writeTextFile({
+          path: path.join(workspace, 'work/scenario.mjs'),
+          content: input.reusableScenarios.full,
+          abortSignal: dependencies.abortSignal,
+        })
+        parameterPatched = true
+        input.onActivity?.('parameters_applied')
+      }
+    }
     const agentInput: ExecuteAgentInput = {
       authEnvironment: {
         CODEX_API_KEY: input.apiKey,
@@ -318,16 +348,18 @@ export async function runPlayableBuild(
       taskId: input.taskId,
       abortSignal: dependencies.abortSignal,
     }
-    if (earlyPreview) {
-      await withPreviewBudget(
-        (abortSignal) => dependencies.executeAgent({ ...agentInput, phase: 'preview', abortSignal }),
-        {
-          signal: dependencies.abortSignal,
-          targetMs: previewDeadline - Date.now(),
-          onTargetExceeded: () => input.onActivity?.('preview_delayed'),
-        },
-      )
-    } else await dependencies.executeAgent(agentInput)
+    if (!parameterPatched) {
+      if (earlyPreview) {
+        await withPreviewBudget(
+          (abortSignal) => dependencies.executeAgent({ ...agentInput, phase: 'preview', abortSignal }),
+          {
+            signal: dependencies.abortSignal,
+            targetMs: previewDeadline - Date.now(),
+            onTargetExceeded: () => input.onActivity?.('preview_delayed'),
+          },
+        )
+      } else await dependencies.executeAgent(agentInput)
+    }
     if (earlyPreview) {
       // 预览同样使用不可修改的验收入口，工作区里的场景仅描述实际交互。
       await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
@@ -356,12 +388,22 @@ export async function runPlayableBuild(
       )
         throw new Error('Preview artifact check failed')
       await input.onPreview!(preview)
+      // 参数修改优先复用已通过的场景；失败后才让模型处理一次，避免正常路径重复推理。
       const acceptanceInput = {
         ...agentInput,
         phase: 'acceptance' as const,
         abortSignal: dependencies.abortSignal ?? new AbortController().signal,
       }
-      await dependencies.executeAgent(acceptanceInput)
+      let reused = false
+      if (parameterPatched) {
+        const result = await sandbox.run({
+          command: 'node ../skill-master/assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs',
+          workingDirectory: workspace,
+          abortSignal: acceptanceInput.abortSignal,
+        })
+        reused = result.exitCode === 0
+      }
+      if (!reused) await dependencies.executeAgent(acceptanceInput)
       const reportText = await sandbox.readTextFile({
         path: path.join(workspace, 'work/browser-acceptance/report.json'),
         abortSignal: dependencies.abortSignal,
@@ -414,7 +456,18 @@ export async function runPlayableBuild(
     if (!hasResponsiveViewport(html)) throw new Error('Playable artifact is missing responsive viewport support')
 
     await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
+    const previewScenario = await sandbox.readTextFile({
+      path: path.join(workspace, 'work/preview-scenario.mjs'),
+      abortSignal: dependencies.abortSignal,
+    })
+    const fullScenario = await sandbox.readTextFile({
+      path: path.join(workspace, 'work/scenario.mjs'),
+      abortSignal: dependencies.abortSignal,
+    })
     return {
+      ...(previewScenario && fullScenario && previewScenario.length <= 128000 && fullScenario.length <= 128000
+        ? { reusableScenarios: { preview: previewScenario, full: fullScenario } }
+        : {}),
       html,
       assetManifest,
       validation: createValidationReport({

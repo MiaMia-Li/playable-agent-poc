@@ -26,7 +26,7 @@ import {
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
-  requirementAgentStepSchema,
+  requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { marketResearchReportSchema } from './research/schemas'
@@ -46,7 +46,7 @@ function codexOutputSchema(schema: z.ZodType): Record<string, unknown> {
 }
 
 export function requirementPlanOutputSchema(): Record<string, unknown> {
-  return codexOutputSchema(requirementAgentStepSchema)
+  return codexOutputSchema(requirementAgentStepOutputSchema)
 }
 
 export interface CodexInvocation {

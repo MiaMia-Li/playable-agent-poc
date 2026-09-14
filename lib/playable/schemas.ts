@@ -227,6 +227,7 @@ export const generatedConfirmationProposalSchema = z
 export const revisionStrategies = ['patch', 'regenerate'] as const
 
 export const revisionPlanSchema = z.strictObject({
+  parameterOnly: z.boolean().optional(),
   strategy: z.enum(revisionStrategies),
   summary: z.string().trim().min(1).max(600),
   changes: z.array(z.string().trim().min(1).max(300)).min(1).max(12),

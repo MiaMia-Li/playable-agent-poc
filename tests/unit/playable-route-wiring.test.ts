@@ -176,6 +176,8 @@ describe('real playable task route wiring', () => {
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
       onActivity: expect.any(Function),
       onPreview: expect.any(Function),
+      baseConfirmation: undefined,
+      reusableScenarios: undefined,
       taskId: 'task-1',
       apiKey: 'sk-shared-key',
       confirmation,

@@ -1,3 +1,4 @@
+import { requirementPlanOutputSchema } from '@/lib/playable/codex-cli-playable-agent'
 import { describe, expect, it, vi } from 'vitest'
 import { Output } from 'ai7'
 import { z } from 'zod'
@@ -10,6 +11,7 @@ import {
   REQUIREMENT_AGENT_INSTRUCTIONS,
   requirementAgentPlanSchema,
   requirementAgentStepSchema,
+  requirementAgentStepOutputSchema,
 } from '@/lib/playable/requirement-tools'
 import {
   defaultConfirmationPresentation,
@@ -91,7 +93,7 @@ function findObjectsWithIncompleteRequired(value: unknown, path = '$'): string[]
 }
 
 it('marks every nested object property as required for OpenAI structured outputs', async () => {
-  const responseFormat = await Output.object({ schema: requirementAgentStepSchema }).responseFormat
+  const responseFormat = await Output.object({ schema: requirementAgentStepOutputSchema }).responseFormat
   if (responseFormat?.type !== 'json') throw new Error('Expected a JSON response format')
 
   expect(findObjectsWithIncompleteRequired(responseFormat.schema)).toEqual([])
@@ -486,4 +488,37 @@ describe('requirement domain tools', () => {
       maxBytes: 5242880,
     })
   })
+})
+
+it('also emits fully required nested properties for the CLI transport', () => {
+  expect(findObjectsWithIncompleteRequired(requirementPlanOutputSchema())).toEqual([])
+})
+
+it('requires an explicit parameter decision from the model while accepting legacy revisions', () => {
+  const value = {
+    kind: 'terminal',
+    message: null,
+    reasoning: 'revision',
+    toolCalls: [],
+    plan: {
+      message: 'change',
+      reasoning: 'copy',
+      calls: [
+        {
+          name: 'submit_revision',
+          brief: null,
+          request: null,
+          confirmation: null,
+          revision: { strategy: 'patch', summary: 'title', changes: ['title'], preserved: ['gameplay'] },
+        },
+      ],
+    },
+  }
+  expect(requirementAgentStepSchema.safeParse(value).success).toBe(true)
+  expect(requirementAgentStepOutputSchema.safeParse(value).success).toBe(false)
+  for (const parameterOnly of [false, true]) {
+    const next = structuredClone(value)
+    Object.assign(next.plan.calls[0].revision, { parameterOnly })
+    expect(requirementAgentStepOutputSchema.parse(next).plan?.calls[0].revision?.parameterOnly).toBe(parameterOnly)
+  }
 })

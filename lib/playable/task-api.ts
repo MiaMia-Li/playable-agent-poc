@@ -915,6 +915,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ? sanitizeRevisionProposal(task.pendingRevision, [apiKey, ...(mediaApiKey ? [mediaApiKey] : [])])
       : undefined
     let baseHtml: string | undefined
+    let baseConfirmation: ConfirmationProposal | undefined
+    let reusableScenarios: { preview: string; full: string } | undefined
     if (sanitizedConfirmation.sourceTemplateId && revision?.strategy !== 'patch') {
       baseHtml = await readFile(sourceTemplateFile(sanitizedConfirmation.sourceTemplateId), 'utf8')
     }
@@ -927,6 +929,25 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       const baseStream = await artifactStore.get(baseBuild.artifactKey)
       if (!baseStream) throw new Error('Revision base artifact is missing')
       baseHtml = new TextDecoder().decode(await readAll(baseStream))
+      const parsedBase = confirmationProposalSchema.safeParse(baseBuild.confirmation)
+      if (parsedBase.success) baseConfirmation = parsedBase.data
+      const scenarioStream = await artifactStore.get(
+        baseBuild.artifactKey.replace(/\/playable\.html$/, '/scenarios.json'),
+      )
+      if (scenarioStream) {
+        try {
+          const saved = JSON.parse(new TextDecoder().decode(await readAll(scenarioStream)))
+          if (
+            typeof saved.preview === 'string' &&
+            typeof saved.full === 'string' &&
+            saved.preview.length <= 128000 &&
+            saved.full.length <= 128000
+          )
+            reusableScenarios = { preview: saved.preview, full: saved.full }
+        } catch {
+          /* 旧版本没有可复用场景时走模型修改，不影响原产物。 */
+        }
+      }
     }
     if (
       !MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration &&
@@ -985,6 +1006,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         })
       },
       onActivity,
+      baseConfirmation,
+      reusableScenarios,
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
@@ -1030,6 +1053,8 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       )
     }
     await artifactStore.put(playableKey, result.html, 'text/html; charset=utf-8')
+    if (result.reusableScenarios)
+      await artifactStore.put(`${prefix}/scenarios.json`, JSON.stringify(result.reusableScenarios), 'application/json')
 
     stage = 'publish'
     const published = await repository.publishArtifact(task.id, buildId, 'validating', playableKey, validationReport)
