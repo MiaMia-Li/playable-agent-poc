@@ -88,6 +88,10 @@ interface VideoAnalysisSnapshot {
  */
 const INTENT_CHECK_WINDOW_MS = 120_000
 
+function isVideoAnalysisInFlight(status: VideoAnalysisStatus | undefined): boolean {
+  return status === 'pending' || status === 'preprocessing' || status === 'analyzing'
+}
+
 const phaseRank: Record<PlayableTaskPhase, number> = {
   draft: 0,
   awaiting_confirmation: 1,
@@ -132,6 +136,34 @@ export function PlayableWorkspace({
   const [videoAnalysisStatus, setVideoAnalysisStatus] = useState<VideoAnalysisStatus | undefined>(
     initialVideoAnalysisStatus,
   )
+  // Read synchronously by a message waiting on the analysis: the upload that
+  // starts one happens inside the same send, before any re-render.
+  const videoAnalysisStatusRef = useRef(initialVideoAnalysisStatus)
+  const videoAnalysisWaiters = useRef(new Set<() => void>())
+  const updateVideoAnalysisStatus = useCallback((status: VideoAnalysisStatus | undefined) => {
+    videoAnalysisStatusRef.current = status
+    setVideoAnalysisStatus(status)
+    if (isVideoAnalysisInFlight(status)) return
+    for (const settle of videoAnalysisWaiters.current) settle()
+    videoAnalysisWaiters.current.clear()
+  }, [])
+  const waitForVideoAnalysis = useCallback((signal: AbortSignal, onWaiting: () => void) => {
+    if (!isVideoAnalysisInFlight(videoAnalysisStatusRef.current)) return Promise.resolve()
+    onWaiting()
+    return new Promise<void>((resolve, reject) => {
+      const settle = () => {
+        signal.removeEventListener('abort', abort)
+        resolve()
+      }
+      const abort = () => {
+        videoAnalysisWaiters.current.delete(settle)
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      if (signal.aborted) return abort()
+      videoAnalysisWaiters.current.add(settle)
+      signal.addEventListener('abort', abort, { once: true })
+    })
+  }, [])
   const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
   const [videoAnalysisMediaResolution, setVideoAnalysisMediaResolution] = useState<AppliedMediaResolution | null>(
     initialVideoAnalysisMediaResolution,
@@ -182,19 +214,22 @@ export function PlayableWorkspace({
     [taskId],
   )
 
-  const applyVideoAnalysis = useCallback((analysis: VideoAnalysisSnapshot) => {
-    setVideoAnalysisStatus(analysis.status)
-    setGameplayBlueprint(analysis.blueprint ?? undefined)
-    setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
-    setVideoAnalysisIntentPending(Boolean(analysis.intentPending))
-  }, [])
+  const applyVideoAnalysis = useCallback(
+    (analysis: VideoAnalysisSnapshot) => {
+      setGameplayBlueprint(analysis.blueprint ?? undefined)
+      setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
+      setVideoAnalysisIntentPending(Boolean(analysis.intentPending))
+      updateVideoAnalysisStatus(analysis.status)
+    },
+    [updateVideoAnalysisStatus],
+  )
 
   const clearVideoAnalysis = useCallback(() => {
-    setVideoAnalysisStatus(undefined)
     setGameplayBlueprint(undefined)
     setVideoAnalysisMediaResolution(null)
     setVideoAnalysisIntentPending(false)
-  }, [])
+    updateVideoAnalysisStatus(undefined)
+  }, [updateVideoAnalysisStatus])
 
   const handleBrief = useCallback((nextBrief: RequirementBrief) => {
     setBrief(nextBrief)
@@ -223,22 +258,22 @@ export function PlayableWorkspace({
           return
         }
         if (!response.ok) {
-          setVideoAnalysisStatus('failed')
+          updateVideoAnalysisStatus('failed')
           return
         }
         const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (body.analysis) applyVideoAnalysis(body.analysis)
       } catch {
-        if (activeReferenceVideoIdRef.current === assetId) setVideoAnalysisStatus('failed')
+        if (activeReferenceVideoIdRef.current === assetId) updateVideoAnalysisStatus('failed')
       } finally {
         setRetryingVideoAnalysis(false)
       }
     },
-    [applyVideoAnalysis, clearVideoAnalysis, taskId],
+    [applyVideoAnalysis, clearVideoAnalysis, taskId, updateVideoAnalysisStatus],
   )
 
   useEffect(() => {
-    if (!videoAnalysisStatus || !['pending', 'preprocessing', 'analyzing'].includes(videoAnalysisStatus)) return
+    if (!isVideoAnalysisInFlight(videoAnalysisStatus)) return
     let active = true
     let timeout: number | undefined
     const poll = async () => {
@@ -356,7 +391,7 @@ export function PlayableWorkspace({
       if (uploadedVideo) {
         activateReferenceVideo(uploadedVideo.id)
         clearVideoAnalysis()
-        setVideoAnalysisStatus('pending')
+        updateVideoAnalysisStatus('pending')
         void startVideoAnalysis(uploadedVideo.id, false)
         return
       }
@@ -366,7 +401,7 @@ export function PlayableWorkspace({
         clearVideoAnalysis()
       }
     },
-    [activateReferenceVideo, clearVideoAnalysis, startVideoAnalysis],
+    [activateReferenceVideo, clearVideoAnalysis, startVideoAnalysis, updateVideoAnalysisStatus],
   )
 
   // With no active video — a task from before v2, or after deleting the active
@@ -391,13 +426,15 @@ export function PlayableWorkspace({
     [activateReferenceVideo, analysisTargetId, refreshAnnotations, startVideoAnalysis],
   )
   const handleVideoAnalysisToolStatus = useCallback(
-    async (status: 'started' | 'completed' | 'failed') => {
+    async (status: 'started' | 'completed' | 'pending' | 'failed') => {
+      // The analysis is still running and its own polling reports the outcome.
+      if (status === 'pending') return
       if (status === 'started') {
-        setVideoAnalysisStatus('analyzing')
+        updateVideoAnalysisStatus('analyzing')
         return
       }
       if (status === 'failed') {
-        setVideoAnalysisStatus('failed')
+        updateVideoAnalysisStatus('failed')
         return
       }
       try {
@@ -405,20 +442,20 @@ export function PlayableWorkspace({
           cache: 'no-store',
         })
         if (!response.ok) {
-          setVideoAnalysisStatus('failed')
+          updateVideoAnalysisStatus('failed')
           return
         }
         const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
         if (!body.analysis) {
-          setVideoAnalysisStatus('failed')
+          updateVideoAnalysisStatus('failed')
           return
         }
         applyVideoAnalysis(body.analysis)
       } catch {
-        setVideoAnalysisStatus('failed')
+        updateVideoAnalysisStatus('failed')
       }
     },
-    [applyVideoAnalysis, taskId],
+    [applyVideoAnalysis, taskId, updateVideoAnalysisStatus],
   )
 
   return (
@@ -443,6 +480,7 @@ export function PlayableWorkspace({
           gameplayBlueprint={gameplayBlueprint}
           onAssetsChange={handleAssetsChange}
           onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
+          waitForVideoAnalysis={waitForVideoAnalysis}
           videoAnalysisMediaResolution={videoAnalysisMediaResolution}
           videoAnalysisUnavailable={videoAnalysisUnavailable}
           videoAnalysisIntentPending={videoAnalysisIntentPending}

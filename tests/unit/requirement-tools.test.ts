@@ -136,25 +136,27 @@ describe('requirement domain tools', () => {
     expect(second).toEqual(first)
   })
 
-  it.each(['unavailable', 'pending', 'analysis_failed'] as const)(
-    'treats a structured %s tool result as failed without discarding its static reason',
-    async (status) => {
+  it.each([
+    { toolResult: { status: 'unavailable', reason: 'asset_unavailable' }, progress: 'tool_failed' },
+    { toolResult: { status: 'analysis_failed', reason: 'analysis_failed' }, progress: 'tool_failed' },
+    { toolResult: { status: 'unavailable', reason: 'analysis_pending' }, progress: 'tool_pending' },
+    { toolResult: { status: 'pending', reason: 'analysis_pending' }, progress: 'tool_pending' },
+  ] as const)(
+    'treats a structured $toolResult.status ($toolResult.reason) result as failed and reports $progress',
+    async ({ toolResult, progress }) => {
       const onProgress = vi.fn()
       const [result] = await executeRequirementAnalysisTools({
         calls: [{ name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null }],
         options: {
-          executeTool: async () => ({ status, reason: status === 'pending' ? 'analysis_pending' : status }),
+          executeTool: async () => toolResult,
           onProgress,
         },
         cache: new Map(),
       })
 
-      expect(result).toMatchObject({
-        status: 'failed',
-        result: { status, reason: expect.any(String) },
-      })
+      expect(result).toMatchObject({ status: 'failed', result: toolResult })
       expect(onProgress).toHaveBeenLastCalledWith({
-        type: 'tool_failed',
+        type: progress,
         toolCall: { name: 'analyze_reference_video', assetIds: [], assetId: 'video-1', searchBrief: null },
       })
     },

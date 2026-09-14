@@ -516,16 +516,19 @@ const TOOL_PROGRESS_COPY = {
   inspect_reference_images: {
     tool_started: '正在分析参考图片',
     tool_completed: '参考图片分析完成',
+    tool_pending: '参考图片分析尚未完成',
     tool_failed: '参考图片分析暂不可用',
   },
   analyze_reference_video: {
     tool_started: '正在分析参考视频',
     tool_completed: '参考视频分析完成',
+    tool_pending: '参考视频分析尚未完成',
     tool_failed: '参考视频分析暂不可用',
   },
   search_market_references: {
     tool_started: '正在搜索同类试玩参考',
     tool_completed: '同类试玩参考搜索完成',
+    tool_pending: '同类试玩参考搜索尚未完成',
     tool_failed: '同类试玩参考搜索暂不可用',
   },
 } as const
@@ -538,7 +541,7 @@ const RESEARCH_PROGRESS_COPY: Record<MarketResearchProgressStage, string> = {
 }
 
 function toolProgressEvent(
-  type: 'tool_started' | 'tool_completed' | 'tool_failed',
+  type: 'tool_started' | 'tool_completed' | 'tool_pending' | 'tool_failed',
   tool: RequirementAnalysisToolCall['name'],
 ) {
   return { type, tool, message: TOOL_PROGRESS_COPY[tool][type] }

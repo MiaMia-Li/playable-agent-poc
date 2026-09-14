@@ -85,6 +85,13 @@ const requirementToolLabels: Record<string, string> = {
   offer_market_research: '建议市场搜索',
   search_market_references: '搜索市场参考',
 }
+type ToolStatus = 'started' | 'completed' | 'pending' | 'failed'
+const toolStatusLabels: Record<ToolStatus, string> = {
+  started: '进行中',
+  completed: '完成',
+  pending: '尚未完成',
+  failed: '失败',
+}
 const videoAnalysisStatusLabels: Record<VideoAnalysisStatus, string> = {
   pending: '等待分析',
   preprocessing: '读取视频',
@@ -120,7 +127,13 @@ interface ChatWorkspaceProps {
   videoAnalysisStatus?: VideoAnalysisStatus
   gameplayBlueprint?: GameplayBlueprint
   onAssetsChange?: (assets: SafePlayableAsset[]) => void
-  onVideoAnalysisToolStatus?: (status: 'started' | 'completed' | 'failed') => void
+  onVideoAnalysisToolStatus?: (status: ToolStatus) => void
+  /**
+   * Holds a message until the active video's analysis has settled, so the
+   * agent proposes with the blueprint rather than without it. Calls
+   * `onWaiting` first when there is something to wait for. Rejects on abort.
+   */
+  waitForVideoAnalysis?: (signal: AbortSignal, onWaiting: () => void) => Promise<void>
   /**
    * What the last successful run actually got. `default` means the gateway
    * ignored the resolution request, which the user is told so a re-run is an
@@ -319,6 +332,7 @@ export function ChatWorkspace({
   gameplayBlueprint,
   onAssetsChange,
   onVideoAnalysisToolStatus,
+  waitForVideoAnalysis,
   videoAnalysisMediaResolution,
   videoAnalysisUnavailable = false,
   videoAnalysisIntentPending = false,
@@ -345,7 +359,7 @@ export function ChatWorkspace({
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
   const [completedTools, setCompletedTools] = useState<string[]>([])
-  const [toolStatuses, setToolStatuses] = useState<Record<string, 'started' | 'completed' | 'failed'>>({})
+  const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
@@ -398,11 +412,34 @@ export function ChatWorkspace({
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
       let terminalEventReceived = false
+      let requestSent = false
       streamController.current = controller
       setSending(true)
       setCompletedTools([])
       setToolStatuses({})
       setError('')
+      const updateAssistant = (next: Partial<ConversationMessage>) => {
+        setConversation((items) => {
+          const existing = items.find((item) => item.id === assistantId)
+          if (!existing) {
+            return [
+              ...items,
+              {
+                id: assistantId,
+                role: 'assistant',
+                content: next.content ?? '',
+                status: next.status ?? 'streaming',
+                reasoning: next.reasoning,
+                options: next.options,
+                request: next.request,
+                research: next.research,
+                adoptedSelection: next.adoptedSelection,
+              },
+            ]
+          }
+          return items.map((item) => (item.id === assistantId ? { ...item, ...next } : item))
+        })
+      }
       try {
         let resolvedAttachments = attachmentSnapshot
         let uploadFailed = false
@@ -469,6 +506,18 @@ export function ChatWorkspace({
         if (appendToConversation) {
           setConversation((items) => [...items, { id, role: 'user', content, status: 'sending', attachments }])
         }
+        // A video uploaded just now, here or on the home page, is still being
+        // analysed. The agent only reads analyses, so sending now would get a
+        // proposal written without the blueprint.
+        if (waitForVideoAnalysis) {
+          let waited = false
+          await waitForVideoAnalysis(controller.signal, () => {
+            waited = true
+            updateAssistant({ content: '参考视频分析中，完成后自动发送…', status: 'streaming' })
+          })
+          if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
+        }
+        requestSent = true
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -488,28 +537,6 @@ export function ChatWorkspace({
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-        const updateAssistant = (next: Partial<ConversationMessage>) => {
-          setConversation((items) => {
-            const existing = items.find((item) => item.id === assistantId)
-            if (!existing) {
-              return [
-                ...items,
-                {
-                  id: assistantId,
-                  role: 'assistant',
-                  content: next.content ?? '',
-                  status: next.status ?? 'streaming',
-                  reasoning: next.reasoning,
-                  options: next.options,
-                  request: next.request,
-                  research: next.research,
-                  adoptedSelection: next.adoptedSelection,
-                },
-              ]
-            }
-            return items.map((item) => (item.id === assistantId ? { ...item, ...next } : item))
-          })
-        }
         const handleLine = (line: string) => {
           if (!line.trim()) return
           let event: {
@@ -540,8 +567,11 @@ export function ChatWorkspace({
             })
           } else if (event.type === 'research_progress' && event.message) {
             updateAssistant({ content: event.message, status: 'streaming' })
-          } else if (['tool_started', 'tool_completed', 'tool_failed'].includes(event.type) && event.tool) {
-            const status = event.type.slice('tool_'.length) as 'started' | 'completed' | 'failed'
+          } else if (
+            ['tool_started', 'tool_completed', 'tool_pending', 'tool_failed'].includes(event.type) &&
+            event.tool
+          ) {
+            const status = event.type.slice('tool_'.length) as ToolStatus
             setToolStatuses((items) => ({ ...items, [event.tool!]: status }))
             if (status === 'completed') {
               setCompletedTools((items) => (items.includes(event.tool!) ? items : [...items, event.tool!]))
@@ -632,7 +662,12 @@ export function ChatWorkspace({
           if (controller.signal.aborted) setError('已停止生成确认方案')
           else setError(cause instanceof Error ? cause.message : '请求失败，请稍后重试')
           setConversation((items) =>
-            items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item)),
+            requestSent
+              ? items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item))
+              : // Stopped while waiting for the analysis: nothing reached the agent.
+                items.flatMap((item) =>
+                  item.id === assistantId ? [] : item.id === id ? [{ ...item, status: 'failed' as const }] : [item],
+                ),
           )
         }
         return false
@@ -655,6 +690,7 @@ export function ChatWorkspace({
       sending,
       taskId,
       updateSelectedAssets,
+      waitForVideoAnalysis,
     ],
   )
 
@@ -1001,7 +1037,7 @@ export function ChatWorkspace({
             {Object.entries(toolStatuses).map(([tool, status]) => (
               <Badge key={tool} variant={status === 'failed' ? 'destructive' : 'secondary'}>
                 {requirementToolLabels[tool] ?? '业务工具'}
-                {status === 'started' ? '进行中' : status === 'completed' ? '完成' : '失败'}
+                {toolStatusLabels[status]}
               </Badge>
             ))}
           </section>

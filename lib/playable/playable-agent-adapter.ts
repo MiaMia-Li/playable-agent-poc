@@ -117,6 +117,7 @@ export type AgentToolProgress = AgentReplyProgress &
   (
     | { type: 'tool_started'; toolCall: RequirementAnalysisToolCall }
     | { type: 'tool_completed'; toolCall: RequirementAnalysisToolCall }
+    | { type: 'tool_pending'; toolCall: RequirementAnalysisToolCall }
     | { type: 'tool_failed'; toolCall: RequirementAnalysisToolCall }
   )
 

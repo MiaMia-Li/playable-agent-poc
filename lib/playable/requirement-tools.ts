@@ -169,11 +169,16 @@ export async function executeRequirementAnalysisTools(input: {
       const result = z
         .json()
         .parse(await input.options.executeTool(toolCall, { abortSignal: input.options.abortSignal }))
-      const status =
-        result && typeof result === 'object' && 'status' in result ? (result as { status?: unknown }).status : undefined
-      if (status === 'unavailable' || status === 'pending' || status === 'analysis_failed') {
+      const { status, reason } =
+        result && typeof result === 'object' && !Array.isArray(result)
+          ? (result as { status?: unknown; reason?: unknown })
+          : {}
+      // To the agent a result that is not ready yet is as unusable as a failed
+      // one, but the user is told apart: an analysis still running will finish.
+      const pending = status === 'pending' || (status === 'unavailable' && reason === 'analysis_pending')
+      if (pending || status === 'unavailable' || status === 'analysis_failed') {
         entry = { tool: toolCall.name, arguments: toolCall, status: 'failed', result }
-        input.options.onProgress?.({ type: 'tool_failed', toolCall })
+        input.options.onProgress?.({ type: pending ? 'tool_pending' : 'tool_failed', toolCall })
       } else {
         entry = { tool: toolCall.name, arguments: toolCall, status: 'completed', result }
         input.options.onProgress?.({ type: 'tool_completed', toolCall })
