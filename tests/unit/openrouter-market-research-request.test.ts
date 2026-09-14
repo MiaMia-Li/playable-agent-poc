@@ -46,7 +46,7 @@ const candidate: MarketResearchCandidate = {
     {
       type: 'public_trend',
       label: '公开素材库可观察玩法',
-      value: '转盘交互',
+      value: '公开趋势仅作玩法参考，不代表 CTR、CVR、IPM 或 ROAS。',
       sourceUrl,
       sourceTitle: 'TikTok Creative Center',
       observedAt: '2026-09-14T00:00:00.000Z',
@@ -73,7 +73,7 @@ afterEach(() => {
 })
 
 describe('OpenRouter market research request', () => {
-  it('uses the OpenRouter web-search tool without unsupported Responses include values', async () => {
+  it('accepts metric disclaimers while using a compatible OpenRouter web-search request', async () => {
     let requestUrl = ''
     let requestBody: Record<string, unknown> | undefined
     vi.stubGlobal(

@@ -40,28 +40,15 @@ export const searchBriefSchema = z.strictObject({
   requirementSummary: z.string().trim().max(600),
 })
 
-export const researchEvidenceSchema = z
-  .strictObject({
-    type: z.enum(['public_trend', 'internal_performance', 'third_party_estimate']),
-    label: boundedText(120),
-    value: z.string().trim().max(120).nullable(),
-    sourceUrl: httpsUrlSchema,
-    sourceTitle: boundedText(200),
-    observedAt: z.string().datetime(),
-    strength: z.enum(['weak', 'moderate', 'strong']),
-  })
-  .superRefine((evidence, context) => {
-    if (
-      evidence.type === 'public_trend' &&
-      /\b(?:ctr|cvr|ipm|roas)\b|转化率|投资回报|付费表现/i.test(`${evidence.label} ${evidence.value ?? ''}`)
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['label'],
-        message: 'Public trends cannot claim conversion performance',
-      })
-    }
-  })
+export const researchEvidenceSchema = z.strictObject({
+  type: z.enum(['public_trend', 'internal_performance', 'third_party_estimate']),
+  label: boundedText(120),
+  value: z.string().trim().max(120).nullable(),
+  sourceUrl: httpsUrlSchema,
+  sourceTitle: boundedText(200),
+  observedAt: z.string().datetime(),
+  strength: z.enum(['weak', 'moderate', 'strong']),
+})
 
 export const marketResearchCandidateSchema = z.strictObject({
   id: boundedText(100),

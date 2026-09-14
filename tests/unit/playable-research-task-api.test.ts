@@ -62,6 +62,15 @@ const report: MarketResearchReport = {
           observedAt: '2026-09-10T01:00:00.000Z',
           strength: 'moderate',
         },
+        {
+          type: 'public_trend',
+          label: '广告体验格式说明',
+          value: '官方页面说明互动广告体验。',
+          sourceUrl: 'https://www.applovin.com/en/ad-experience',
+          sourceTitle: 'AppLovin Ads | The ads experience',
+          observedAt: '2026-09-10T01:00:00.000Z',
+          strength: 'strong',
+        },
       ],
       confidence: 0.8,
       limitations: ['无内部指标'],
@@ -159,7 +168,7 @@ it('streams and persists market research without changing task phase or brief', 
   const events = (await response.text())
     .trim()
     .split('\n')
-    .map((line) => JSON.parse(line) as { type: string; stage?: string })
+    .map((line) => JSON.parse(line) as { type: string; stage?: string; message?: string })
 
   expect(events.filter(({ type }) => type === 'research_progress').map(({ stage }) => stage)).toEqual([
     'searching',
@@ -167,7 +176,16 @@ it('streams and persists market research without changing task phase or brief', 
     'analyzing',
     'summarizing',
   ])
-  expect(events.at(-1)?.type).toBe('research')
+  expect(events.at(-1)).toMatchObject({
+    type: 'research',
+    message: [
+      '研究完成。',
+      '',
+      '来源：',
+      '- TikTok Creative Center：https://ads.tiktok.com/example',
+      '- AppLovin Ads | The ads experience：https://www.applovin.com/en/ad-experience',
+    ].join('\n'),
+  })
   expect(createResearchRun).toHaveBeenCalledOnce()
   expect(completeResearchRun).toHaveBeenCalledOnce()
   expect(updateRequirementBrief).not.toHaveBeenCalled()
@@ -247,7 +265,13 @@ it('streams an agent research summary without presenting directions or changing 
 
   expect(events.at(-1)).toMatchObject({
     type: 'informational',
-    message: '公开资料显示，同类试玩近期更快进入首次交互。',
+    message: [
+      '公开资料显示，同类试玩近期更快进入首次交互。',
+      '',
+      '来源：',
+      '- TikTok Creative Center：https://ads.tiktok.com/example',
+      '- AppLovin Ads | The ads experience：https://www.applovin.com/en/ad-experience',
+    ].join('\n'),
   })
   expect(events.some(({ type }) => type === 'research')).toBe(false)
   expect(appendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'research_completed' }))

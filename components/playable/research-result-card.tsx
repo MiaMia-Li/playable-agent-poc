@@ -105,6 +105,18 @@ export function ResearchResultCard({
                   {index + 1}. {candidate.title}
                 </label>
                 <p className="text-muted-foreground mt-1 text-xs leading-5">{candidate.coreLoop}</p>
+                <a
+                  href={candidate.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="text-muted-foreground hover:text-foreground mt-1.5 flex w-fit max-w-full items-start gap-1 text-[11px] leading-4 transition-colors"
+                >
+                  <span className="min-w-0">
+                    <span>{candidate.sourceTitle}</span>
+                    <span className="text-primary block break-all">{candidate.sourceUrl}</span>
+                  </span>
+                  <ExternalLink className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+                </a>
               </div>
             </div>
             <details className="group mt-2 ml-7">
@@ -155,15 +167,6 @@ export function ResearchResultCard({
                     })}
                   </div>
                 </div>
-                <a
-                  href={candidate.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="text-primary inline-flex items-center gap-1 underline-offset-4 hover:underline"
-                >
-                  查看公开来源
-                  <ExternalLink className="size-3" aria-hidden="true" />
-                </a>
               </div>
             </details>
           </article>

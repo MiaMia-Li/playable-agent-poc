@@ -581,6 +581,19 @@ function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
 }
 
+function appendMarketResearchSources(message: string, report: MarketResearchReport): string {
+  const sources = new Map<string, string>()
+  for (const candidate of report.candidates) {
+    sources.set(candidate.sourceUrl, candidate.sourceTitle)
+    for (const evidence of candidate.evidence) {
+      if (!sources.has(evidence.sourceUrl)) sources.set(evidence.sourceUrl, evidence.sourceTitle)
+    }
+  }
+  const missingSources = [...sources].filter(([url]) => !message.includes(url))
+  if (missingSources.length === 0) return message
+  return [message.trimEnd(), '', '来源：', ...missingSources.map(([url, title]) => `- ${title}：${url}`)].join('\n')
+}
+
 function requirementFailureMessage(cause: unknown): string {
   if (!(cause instanceof PlayableAgentError)) return '助手暂时无法继续整理需求，请重试'
   if (cause.code === 'sandbox_configuration') {
@@ -1663,7 +1676,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               // costs nothing, so capping the video tool would only stop the
               // agent from re-checking an analysis that finished mid-turn.
               const referenceToolBudget = { imagesExecuted: false }
-              let marketResearchCompleted = false
+              let completedMarketResearch: MarketResearchReport | undefined
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -1718,11 +1731,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                         enqueue({ type: 'research_progress', stage, message: RESEARCH_PROGRESS_COPY[stage] })
                       },
                     })
-                    if (
-                      call.name === 'search_market_references' &&
-                      marketResearchReportSchema.safeParse(result).success
-                    ) {
-                      marketResearchCompleted = true
+                    if (call.name === 'search_market_references') {
+                      const parsedResearch = marketResearchReportSchema.safeParse(result)
+                      if (parsedResearch.success) completedMarketResearch = parsedResearch.data
                     }
                     return result
                   },
@@ -1738,6 +1749,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               validatedReply.reasoning =
                 mergeReasoning(reasoningHistory, validatedReply.reasoning) ?? validatedReply.reasoning
               if (validatedReply.kind === 'research') {
+                validatedReply.message = appendMarketResearchSources(validatedReply.message, validatedReply.research)
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
                 await dependencies.repository.appendEvent({
@@ -1753,7 +1765,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              if (validatedReply.kind === 'informational' && marketResearchCompleted) {
+              if (validatedReply.kind === 'informational' && completedMarketResearch) {
+                validatedReply.message = appendMarketResearchSources(validatedReply.message, completedMarketResearch)
                 for (const tool of validatedReply.tools ?? []) {
                   if (!enqueue({ type: 'tool_completed', tool })) return
                 }
