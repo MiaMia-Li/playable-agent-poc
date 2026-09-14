@@ -10,6 +10,7 @@
     "local:codex": "LOCAL_CODEX_MODE=1 next dev --webpack",
     "smoke:local-codex": "LOCAL_CODEX_MODE=1 node --env-file=.env.local --import tsx scripts/smoke-local-codex.ts",
     "check:sandbox-connectivity": "tsx scripts/check-vercel-sandbox-connectivity.ts",
+    "sandbox:prepare-playable": "tsx scripts/prepare-playable-sandbox.ts",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
