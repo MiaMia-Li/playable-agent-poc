@@ -9,6 +9,9 @@ import {
   createPlayableAssetContentHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
+  createPlayableAssetUploadCompleteHandler,
+  createPlayableAssetUploadTokenHandler,
+  type PlayableAsset,
 } from './task-assets'
 import { authenticateLocalDemo, isLocalDemoMode, localDemoRuntime, readLocalDemoApiKey } from './local-demo-prototype'
 import { CodexCliPlayableAgent } from './codex-cli-playable-agent'
@@ -68,17 +71,25 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   generateId,
 })
 
-export const playableAssetHandler = createPlayableAssetHandler({
+const playableAssetUploadDependencies = {
   authenticate,
-  findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
-  saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
-  listAssets: (taskId, userId) => playableTaskRepository.listAssets(taskId, userId),
-  activateReferenceVideo: async (taskId, userId, assetId) => {
+  findOwnedTask: async (taskId: string, userId: string) =>
+    Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
+  saveAsset: (asset: PlayableAsset) => playableTaskRepository.saveAsset(asset),
+  listAssets: (taskId: string, userId: string) => playableTaskRepository.listAssets(taskId, userId),
+  activateReferenceVideo: async (taskId: string, userId: string, assetId: string) => {
     await playableTaskRepository.setActiveReferenceVideo(taskId, userId, assetId)
   },
   store: playableArtifactStore,
+  directUploads: playableArtifactStore instanceof PrivateVercelArtifactStore ? playableArtifactStore : undefined,
   generateId,
-})
+}
+
+export const playableAssetHandler = createPlayableAssetHandler(playableAssetUploadDependencies)
+export const playableAssetUploadTokenHandler = createPlayableAssetUploadTokenHandler(playableAssetUploadDependencies)
+export const playableAssetUploadCompleteHandler = createPlayableAssetUploadCompleteHandler(
+  playableAssetUploadDependencies,
+)
 
 const playableAssetAccessDependencies = {
   authenticate,

@@ -25,6 +25,12 @@ export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
  */
 export const MAX_REFERENCE_VIDEO_SECONDS = 180
 export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
+/**
+ * Largest file the browser posts through the multipart route. Vercel refuses
+ * function request bodies over 4.5 MB before the route runs, so anything
+ * bigger is uploaded straight to storage instead.
+ */
+export const MAX_FORM_UPLOAD_BYTES = MAX_ASSET_BYTES
 export const MAX_HOME_ATTACHMENTS = 6
 export const MAX_ASSETS_PER_SLOT = 8
 export const MAX_TASK_ASSETS = 30

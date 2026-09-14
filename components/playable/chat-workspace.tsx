@@ -45,10 +45,9 @@ import {
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 import {
-  assetUploadErrorMessage,
-  assetUploadForm,
   isReferenceVideoTooLong,
   REFERENCE_VIDEO_TOO_LONG_MESSAGE,
+  uploadPlayableAsset,
 } from '@/lib/playable/reference-video-client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -477,24 +476,20 @@ export function ChatWorkspace({
           try {
             const slot = referenceSlotForMimeType(attachment.file.type)
             if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
-            const body = await assetUploadForm(slot, attachment.file)
-            const uploadResponse = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
-              method: 'POST',
-              body,
+            const uploadedAsset = await uploadPlayableAsset(taskId, slot, attachment.file, {
+              fallbackMessage: '素材上传失败',
               signal: controller.signal,
             })
-            if (!uploadResponse.ok) throw new Error(await assetUploadErrorMessage(uploadResponse, '素材上传失败'))
-            const result = (await uploadResponse.json()) as { asset: SafePlayableAsset }
             resolvedAttachments = resolvedAttachments.map((item) =>
-              item.id === attachment.id ? { ...item, status: 'uploaded', asset: result.asset } : item,
+              item.id === attachment.id ? { ...item, status: 'uploaded', asset: uploadedAsset } : item,
             )
             setComposerAttachments((items) =>
               items.map((item) =>
-                item.id === attachment.id ? { ...item, status: 'uploaded', asset: result.asset } : item,
+                item.id === attachment.id ? { ...item, status: 'uploaded', asset: uploadedAsset } : item,
               ),
             )
-            if (!selectedAssetsRef.current.some((asset) => asset.id === result.asset.id)) {
-              updateSelectedAssets([...selectedAssetsRef.current, result.asset])
+            if (!selectedAssetsRef.current.some((asset) => asset.id === uploadedAsset.id)) {
+              updateSelectedAssets([...selectedAssetsRef.current, uploadedAsset])
             }
           } catch (cause) {
             uploadFailed = true
@@ -758,14 +753,7 @@ export function ChatWorkspace({
     try {
       for (const file of acceptedFiles) {
         if (!playableAssetAccept(slot).split(',').includes(file.type)) throw new Error('素材格式不受支持')
-        const body = await assetUploadForm(slot, file)
-        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/assets`, {
-          method: 'POST',
-          body,
-        })
-        if (!response.ok) throw new Error(await assetUploadErrorMessage(response, '素材上传失败'))
-        const result = (await response.json()) as { asset: SafePlayableAsset }
-        uploaded.push(result.asset)
+        uploaded.push(await uploadPlayableAsset(taskId, slot, file, { fallbackMessage: '素材上传失败' }))
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '素材上传失败')

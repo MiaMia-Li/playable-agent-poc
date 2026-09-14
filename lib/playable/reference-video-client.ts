@@ -1,4 +1,6 @@
-import { MAX_REFERENCE_VIDEO_SECONDS, type PlayableAssetSlot } from './asset-policy'
+import { put } from '@vercel/blob/client'
+import { MAX_FORM_UPLOAD_BYTES, MAX_REFERENCE_VIDEO_SECONDS, type PlayableAssetSlot } from './asset-policy'
+import type { SafePlayableAsset } from './task-assets'
 
 /**
  * Browser-only helpers for the reference video upload path. The server keeps
@@ -50,28 +52,95 @@ export async function isReferenceVideoTooLong(file: File): Promise<boolean> {
 }
 
 /**
- * Builds the multipart body for an asset upload, attaching the browser's
- * reading of a reference video's duration. Throws the user-facing message when
- * the video is over the limit, so no bytes are sent for a video that would be
- * refused anyway.
+ * The browser's reading of a reference video's duration. Throws the
+ * user-facing message when the video is over the limit, so no bytes are sent
+ * for a video that would be refused anyway.
  */
-export async function assetUploadForm(slot: PlayableAssetSlot, file: File): Promise<FormData> {
-  const form = new FormData()
-  form.set('slot', slot)
-  form.set('file', file)
-  if (slot === 'referenceVideo') {
-    const duration = await readVideoDurationSeconds(file)
-    if (duration !== null && duration > MAX_REFERENCE_VIDEO_SECONDS) throw new Error(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
-    if (duration !== null) form.set('durationSeconds', String(duration))
-  }
-  return form
+async function uploadDurationSeconds(slot: PlayableAssetSlot, file: File): Promise<number | null> {
+  if (slot !== 'referenceVideo') return null
+  const duration = await readVideoDurationSeconds(file)
+  if (duration !== null && duration > MAX_REFERENCE_VIDEO_SECONDS) throw new Error(REFERENCE_VIDEO_TOO_LONG_MESSAGE)
+  return duration
 }
 
 /** The server repeats the duration check; its refusal gets the same message. */
-export async function assetUploadErrorMessage(response: Response, fallback: string): Promise<string> {
+async function assetUploadErrorMessage(response: Response, fallback: string): Promise<string> {
   if (response.status !== 413) return fallback
   const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined
   return body?.error === 'Video too long' ? REFERENCE_VIDEO_TOO_LONG_MESSAGE : fallback
+}
+
+function isAbort(cause: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || (cause instanceof Error && cause.name === 'AbortError')
+}
+
+/**
+ * Sends the file straight to storage and then has the server record it.
+ * Resolves undefined when the server has no direct uploads (local demo), so
+ * the caller can use the multipart route instead.
+ */
+async function uploadDirect(
+  assetsUrl: string,
+  slot: PlayableAssetSlot,
+  file: File,
+  durationSeconds: number | null,
+  fallbackMessage: string,
+  signal: AbortSignal | undefined,
+): Promise<SafePlayableAsset | undefined> {
+  const tokenResponse = await fetch(`${assetsUrl}/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slot, mimeType: file.type, size: file.size, durationSeconds }),
+    signal,
+  })
+  if (tokenResponse.status === 501) return
+  if (!tokenResponse.ok) throw new Error(await assetUploadErrorMessage(tokenResponse, fallbackMessage))
+  const { pathname, clientToken } = (await tokenResponse.json()) as { pathname: string; clientToken: string }
+  try {
+    await put(pathname, file, {
+      access: 'private',
+      token: clientToken,
+      contentType: file.type,
+      multipart: true,
+      abortSignal: signal,
+    })
+  } catch (cause) {
+    if (isAbort(cause, signal)) throw cause
+    throw new Error(fallbackMessage)
+  }
+  const completeResponse = await fetch(`${assetsUrl}/uploads/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slot, pathname, filename: file.name, durationSeconds }),
+    signal,
+  })
+  if (!completeResponse.ok) throw new Error(await assetUploadErrorMessage(completeResponse, fallbackMessage))
+  return ((await completeResponse.json()) as { asset: SafePlayableAsset }).asset
+}
+
+/**
+ * Uploads one asset to a task and returns what the server recorded. Throws
+ * an Error carrying the user-facing message on refusal or failure.
+ */
+export async function uploadPlayableAsset(
+  taskId: string,
+  slot: PlayableAssetSlot,
+  file: File,
+  options: { fallbackMessage: string; signal?: AbortSignal },
+): Promise<SafePlayableAsset> {
+  const assetsUrl = `/api/playable-tasks/${encodeURIComponent(taskId)}/assets`
+  const durationSeconds = await uploadDurationSeconds(slot, file)
+  if (file.size > MAX_FORM_UPLOAD_BYTES) {
+    const asset = await uploadDirect(assetsUrl, slot, file, durationSeconds, options.fallbackMessage, options.signal)
+    if (asset) return asset
+  }
+  const form = new FormData()
+  form.set('slot', slot)
+  form.set('file', file)
+  if (durationSeconds !== null) form.set('durationSeconds', String(durationSeconds))
+  const response = await fetch(assetsUrl, { method: 'POST', body: form, signal: options.signal })
+  if (!response.ok) throw new Error(await assetUploadErrorMessage(response, options.fallbackMessage))
+  return ((await response.json()) as { asset: SafePlayableAsset }).asset
 }
 
 /**
