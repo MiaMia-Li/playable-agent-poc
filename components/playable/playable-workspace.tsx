@@ -9,6 +9,7 @@ import { ArrowRight, Loader2, Paperclip } from 'lucide-react'
 import type { Session } from '@/lib/session/types'
 import type {
   ConfirmationProposal,
+  GameplayAnnotation,
   GameplayBlueprint,
   PlayableTaskPhase,
   RequirementBrief,
@@ -68,6 +69,8 @@ interface PlayableWorkspaceProps {
   initialVideoAnalysisMediaResolution?: AppliedMediaResolution | null
   /** The server's pointer, which analysis and the blueprint are read through. */
   initialActiveReferenceVideoId?: string | null
+  /** Already filtered to the active video by the page. */
+  initialGameplayAnnotations?: GameplayAnnotation[]
 }
 
 interface VideoAnalysisSnapshot {
@@ -108,6 +111,7 @@ export function PlayableWorkspace({
   initialGameplayBlueprint,
   initialVideoAnalysisMediaResolution = null,
   initialActiveReferenceVideoId = null,
+  initialGameplayAnnotations = [],
 }: PlayableWorkspaceProps) {
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
   const [proposalDraft, setProposalDraft] = useState(initialProposal)
@@ -132,6 +136,41 @@ export function PlayableWorkspace({
   // values from the render that created them.
   const activeReferenceVideoIdRef = useRef(initialActiveReferenceVideoId)
   const assetsRef = useRef(initialAssets)
+  const [gameplayAnnotations, setGameplayAnnotations] = useState(initialGameplayAnnotations)
+  const [deletingAnnotationId, setDeletingAnnotationId] = useState<string>()
+
+  const refreshAnnotations = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/annotations`, {
+        cache: 'no-store',
+      })
+      if (!response.ok) return
+      const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+      if (body.annotations) setGameplayAnnotations(body.annotations)
+    } catch {
+      // The list stays as it was; the next agent turn resends it anyway.
+    }
+  }, [taskId])
+
+  const handleDeleteAnnotation = useCallback(
+    async (annotation: GameplayAnnotation) => {
+      setDeletingAnnotationId(annotation.id)
+      try {
+        const response = await fetch(
+          `/api/playable-tasks/${encodeURIComponent(taskId)}/annotations?id=${encodeURIComponent(annotation.id)}`,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) return
+        const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+        if (body.annotations) setGameplayAnnotations(body.annotations)
+      } catch {
+        // Left in the list, which is the honest outcome of a delete that failed.
+      } finally {
+        setDeletingAnnotationId(undefined)
+      }
+    },
+    [taskId],
+  )
 
   const applyVideoAnalysis = useCallback((analysis: VideoAnalysisSnapshot) => {
     setVideoAnalysisStatus(analysis.status)
@@ -148,6 +187,9 @@ export function PlayableWorkspace({
   const activateReferenceVideo = useCallback((assetId: string | null) => {
     activeReferenceVideoIdRef.current = assetId
     setActiveReferenceVideoId(assetId)
+    // Annotations are bound to the video they describe; the previous video's
+    // must not be shown against this one's timeline.
+    setGameplayAnnotations([])
   }, [])
 
   const startVideoAnalysis = useCallback(
@@ -290,10 +332,17 @@ export function PlayableWorkspace({
   const handleRetryVideoAnalysis = useCallback(
     ({ rerun }: { rerun: boolean }) => {
       if (!analysisTargetId) return
-      if (activeReferenceVideoIdRef.current !== analysisTargetId) activateReferenceVideo(analysisTargetId)
-      void startVideoAnalysis(analysisTargetId, rerun)
+      if (activeReferenceVideoIdRef.current === analysisTargetId) {
+        void startVideoAnalysis(analysisTargetId, rerun)
+        return
+      }
+      // An existing video may already have annotations from before it lost
+      // the active slot. They can only be read once the route has made it
+      // active again, so the refresh waits for that request.
+      activateReferenceVideo(analysisTargetId)
+      void startVideoAnalysis(analysisTargetId, rerun).then(refreshAnnotations)
     },
-    [activateReferenceVideo, analysisTargetId, startVideoAnalysis],
+    [activateReferenceVideo, analysisTargetId, refreshAnnotations, startVideoAnalysis],
   )
   const handleVideoAnalysisToolStatus = useCallback(
     async (status: 'started' | 'completed' | 'failed') => {
@@ -353,6 +402,10 @@ export function PlayableWorkspace({
           referenceVideoAwaitingAnalysis={Boolean(analysisTargetId) && !videoAnalysisStatus}
           retryingVideoAnalysis={retryingVideoAnalysis}
           onRetryVideoAnalysis={handleRetryVideoAnalysis}
+          gameplayAnnotations={gameplayAnnotations}
+          onAnnotations={setGameplayAnnotations}
+          onDeleteAnnotation={(annotation) => void handleDeleteAnnotation(annotation)}
+          deletingAnnotationId={deletingAnnotationId}
         />
         <PlayablePreview
           taskId={taskId}

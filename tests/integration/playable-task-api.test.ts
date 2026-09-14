@@ -567,6 +567,32 @@ function request(path: string, method = 'GET', body?: unknown) {
   })
 }
 
+function referenceVideo(id: string): PlayableAsset {
+  return {
+    id,
+    taskId: 'owned',
+    userId: 'user-1',
+    slot: 'referenceVideo',
+    filename: `${id}.mp4`,
+    mimeType: 'video/mp4',
+    size: 1,
+    storageKey: `${id}-key`,
+    durationSeconds: 30,
+    createdAt: new Date(),
+  }
+}
+
+function storedAnnotation(id: string, assetId: string, value: string): GameplayAnnotation {
+  return {
+    id,
+    assetId,
+    source: 'user',
+    value,
+    evidence: [{ startSeconds: 3, endSeconds: 4, observation: value }],
+    confidence: 1,
+  }
+}
+
 describe('playable task API', () => {
   let harness: ReturnType<typeof createHarness>
 
@@ -1136,6 +1162,62 @@ describe('playable task API', () => {
     await expect(
       harness.repository.findLatestVideoAnalysis('owned', VIDEO_ANALYSIS_PIPELINE_VERSION),
     ).resolves.toMatchObject({ attempt: 2, status: 'succeeded', mediaResolution: 'high' })
+  })
+
+  // Drafts come back without an asset id and are bound to the active video on
+  // store. Showing the agent another video's annotations would let it rebind
+  // them; replacing the whole list would erase them.
+  it("replaces only the active video's annotations and shows the agent only those", async () => {
+    harness.repository.assets.push(referenceVideo('video-a'), referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const task = harness.repository.tasks.get('owned')!
+    task.gameplayAnnotations = [storedAnnotation('a-1', 'video-a', '旧视频第 3 秒是滑动')]
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      ...confirmationReply,
+      annotations: [
+        { value: '第 12 秒是长按', evidence: [{ startSeconds: 12, endSeconds: 12.5, observation: '长按' }] },
+      ],
+    })
+
+    const body = await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '第 12 秒是长按' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(vi.mocked(harness.agent.proposeConfirmation).mock.calls[0][0].annotations).toEqual([])
+    expect(task.gameplayAnnotations).toEqual([
+      expect.objectContaining({ assetId: 'video-b', value: '第 12 秒是长按', source: 'user', confidence: 1 }),
+      expect.objectContaining({ id: 'a-1', assetId: 'video-a' }),
+    ])
+    const events = body
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; annotations?: GameplayAnnotation[] })
+    expect(events.find((event) => event.type === 'annotations')?.annotations).toEqual([
+      expect.objectContaining({ assetId: 'video-b', value: '第 12 秒是长按' }),
+    ])
+  })
+
+  it('lists and deletes annotations for the active video only', async () => {
+    harness.repository.assets.push(referenceVideo('video-a'), referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const task = harness.repository.tasks.get('owned')!
+    const active = storedAnnotation('b-1', 'video-b', '第 12 秒是长按')
+    task.gameplayAnnotations = [storedAnnotation('a-1', 'video-a', '旧视频'), active]
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const call = (path: string, method = 'GET') => harness.handlers.annotations(request(path, method), context)
+
+    const listed = await call('/api/playable-tasks/owned/annotations')
+    await expect(listed.json()).resolves.toEqual({ annotations: [active] })
+
+    const deleted = await call('/api/playable-tasks/owned/annotations?id=b-1', 'DELETE')
+    expect(deleted.status).toBe(200)
+    await expect(deleted.json()).resolves.toEqual({ annotations: [] })
+    expect(task.gameplayAnnotations.map((annotation) => annotation.id)).toEqual(['a-1'])
+
+    expect((await call('/api/playable-tasks/owned/annotations?id=b-1', 'DELETE')).status).toBe(404)
   })
 
   it('rejects video analysis tool calls for cross-user assets and non-referenceVideo slots', async () => {

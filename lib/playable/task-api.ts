@@ -418,6 +418,16 @@ function taskListItem(task: PlayableTaskRecord) {
   }
 }
 
+/**
+ * Annotations are bound to the asset they describe and outlive a change of
+ * active video, but only the active video's are in play: they are what the
+ * agent resends, what the user sees, and what joins the blueprint document.
+ */
+function activeGameplayAnnotations(task: PlayableTaskRecord): GameplayAnnotation[] {
+  const assetId = task.activeReferenceVideoAssetId
+  return assetId ? task.gameplayAnnotations.filter((annotation) => annotation.assetId === assetId) : []
+}
+
 function safeVideoAnalysis(analysis: PlayableVideoAnalysisRecord | undefined) {
   if (!analysis) return null
   return {
@@ -1038,13 +1048,19 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   ) => {
     const assetId = task.activeReferenceVideoAssetId
     if (!assetId) return
-    const annotations: GameplayAnnotation[] = drafts.map((draft) => ({
+    const current: GameplayAnnotation[] = drafts.map((draft) => ({
       ...draft,
       id: dependencies.generateId(),
       assetId,
       source: 'user',
       confidence: 1,
     }))
+    // Only the active video's list is replaced. The agent is shown just that
+    // list, so another video's annotations were never its to resend; dropping
+    // them here would delete the user's statements about a video they merely
+    // switched away from.
+    const others = task.gameplayAnnotations.filter((annotation) => annotation.assetId !== assetId)
+    const annotations = [...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
     await dependencies.repository.updateGameplayAnnotations(task.id, userId, annotations)
     task.gameplayAnnotations = annotations
   }
@@ -1426,7 +1442,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     ? sanitizeRevisionProposal(access.task.pendingRevision, [apiKey])
                     : null,
                   gameplayBlueprint,
-                  annotations: access.task.gameplayAnnotations,
+                  // Drafts come back without an asset id and are bound to the
+                  // active video on store, so showing the agent another video's
+                  // annotations would let it rebind them to this one.
+                  annotations: activeGameplayAnnotations(access.task),
                   referenceSelection,
                 },
                 {
@@ -1490,6 +1509,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (validatedReply.annotations) {
                 stage = 'annotation_store'
                 await storeGameplayAnnotations(access.task, access.userId, validatedReply.annotations)
+                // The stored list, with ids, rather than the reply's drafts: it
+                // is what the user deletes from.
+                enqueue({ type: 'annotations', annotations: activeGameplayAnnotations(access.task) })
               }
               stage = 'brief_store'
               const briefUpdated = await dependencies.repository.updateRequirementBrief(
@@ -1700,6 +1722,38 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return jsonError(500, 'Unable to schedule video analysis')
       }
       return Response.json({ analysis: safeVideoAnalysis(analysis) }, { status: 202 })
+    },
+
+    /**
+     * The always-visible annotation list reads and deletes through here. It is
+     * the only defence against the agent silently dropping an annotation when
+     * it resends the list, so the user must be able to see and prune it
+     * without going through the agent.
+     */
+    async annotations(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      if (request.method === 'DELETE') {
+        const id = request.nextUrl.searchParams.get('id')
+        if (!id) return jsonError(400, 'Invalid request')
+        if (!access.task.gameplayAnnotations.some((annotation) => annotation.id === id)) {
+          return jsonError(404, 'Annotation not found')
+        }
+        const remaining = access.task.gameplayAnnotations.filter((annotation) => annotation.id !== id)
+        const updated = await dependencies.repository.updateGameplayAnnotations(
+          access.task.id,
+          access.userId,
+          remaining,
+        )
+        if (!updated) return jsonError(404, 'Not found')
+        access.task.gameplayAnnotations = remaining
+      } else if (request.method !== 'GET') {
+        return jsonError(405, 'Method not allowed')
+      }
+      return Response.json(
+        { annotations: activeGameplayAnnotations(access.task) },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      )
     },
 
     async confirm(request: NextRequest, context: RouteContext): Promise<Response> {

@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GameplayBlueprint } from '@/lib/playable/schemas'
+import type { GameplayAnnotation, GameplayBlueprint } from '@/lib/playable/schemas'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 
 Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
@@ -36,6 +36,15 @@ const video = {
   mimeType: 'video/mp4',
   size: 5,
   durationSeconds: 12,
+}
+
+const annotation: GameplayAnnotation = {
+  id: 'annotation-1',
+  assetId: video.id,
+  source: 'user',
+  value: '第 12 秒是长按，不是点击',
+  evidence: [{ startSeconds: 12, endSeconds: 12.5, observation: '长按' }],
+  confidence: 1,
 }
 
 type FetchCall = [RequestInfo | URL, RequestInit | undefined]
@@ -141,6 +150,68 @@ describe('reference video analysis in the workspace', () => {
     fireEvent.click(within(card).getByRole('button', { name: '分析参考视频' }))
 
     await waitFor(() => expect(analysisPosts(fetchMock)).toEqual([{ assetId: video.id }]))
+  })
+
+  // The agent resends the full list each turn and can drop an entry without
+  // saying so. A standing list is the only place that loss becomes visible,
+  // and deleting from it must not have to go through the agent.
+  it('keeps the annotation list on screen and deletes an entry through the API', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ annotations: [] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <PlayableWorkspace
+        taskId="task-annotations"
+        initialAssets={[video]}
+        initialActiveReferenceVideoId={video.id}
+        initialVideoAnalysisStatus="succeeded"
+        initialGameplayBlueprint={blueprint}
+        initialGameplayAnnotations={[annotation]}
+      />,
+    )
+
+    const list = screen.getByRole('region', { name: '玩法标注' })
+    expect(list).toHaveTextContent('第 12 秒是长按，不是点击')
+    expect(list).toHaveTextContent('12s–12.5s')
+    fireEvent.click(within(list).getByRole('button', { name: `删除标注 ${annotation.value}` }))
+
+    await waitFor(() => expect(list).not.toHaveTextContent('第 12 秒是长按，不是点击'))
+    expect(fetchMock).toHaveBeenCalledWith('/api/playable-tasks/task-annotations/annotations?id=annotation-1', {
+      method: 'DELETE',
+    })
+  })
+
+  it('shows the list the agent recorded during a turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/messages')
+          ? new Response(
+              [
+                JSON.stringify({ type: 'annotations', annotations: [annotation] }),
+                JSON.stringify({ type: 'informational', message: '已记录标注' }),
+              ].join('\n'),
+            )
+          : Response.json({}),
+      ),
+    )
+    render(
+      <PlayableWorkspace
+        taskId="task-record"
+        initialAssets={[video]}
+        initialActiveReferenceVideoId={video.id}
+        initialVideoAnalysisStatus="succeeded"
+        initialGameplayBlueprint={blueprint}
+      />,
+    )
+    expect(screen.getByRole('region', { name: '玩法标注' })).toHaveTextContent('可以直接在对话里说明')
+
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '第 12 秒是长按' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+
+    expect(await screen.findByText('已记录标注')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '玩法标注' })).toHaveTextContent('第 12 秒是长按，不是点击')
   })
 
   it('reports analysis as unavailable when the service is not configured', async () => {

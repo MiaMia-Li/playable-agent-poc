@@ -17,6 +17,7 @@ import {
 import type {
   ClarificationOption,
   ConfirmationProposal,
+  GameplayAnnotation,
   GameplayBlueprint,
   PlayableTaskPhase,
   RequirementBrief,
@@ -50,6 +51,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable, isConfirmationReady } from './confirmation-table'
 import { ResearchResultCard } from './research-result-card'
+import { GameplayAnnotationList } from './gameplay-annotation-list'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 
 const stages = [
@@ -135,6 +137,11 @@ interface ChatWorkspaceProps {
   referenceVideoAwaitingAnalysis?: boolean
   retryingVideoAnalysis?: boolean
   onRetryVideoAnalysis?: (options: { rerun: boolean }) => void
+  /** The active video's stored annotations, with ids, as the user can delete them. */
+  gameplayAnnotations?: GameplayAnnotation[]
+  onAnnotations?: (annotations: GameplayAnnotation[]) => void
+  onDeleteAnnotation?: (annotation: GameplayAnnotation) => void
+  deletingAnnotationId?: string
 }
 
 interface ConversationAttachment {
@@ -315,6 +322,10 @@ export function ChatWorkspace({
   referenceVideoAwaitingAnalysis = false,
   retryingVideoAnalysis = false,
   onRetryVideoAnalysis,
+  gameplayAnnotations = [],
+  onAnnotations,
+  onDeleteAnnotation,
+  deletingAnnotationId,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -511,6 +522,7 @@ export function ChatWorkspace({
             tool?: string
             stage?: string
             research?: MarketResearchReport
+            annotations?: GameplayAnnotation[]
           }
           try {
             event = JSON.parse(line)
@@ -532,6 +544,8 @@ export function ChatWorkspace({
               setCompletedTools((items) => (items.includes(event.tool!) ? items : [...items, event.tool!]))
             }
             if (event.tool === 'analyze_reference_video') onVideoAnalysisToolStatus?.(status)
+          } else if (event.type === 'annotations' && event.annotations) {
+            onAnnotations?.(event.annotations)
           } else if (event.type === 'research' && event.message && event.research) {
             terminalEventReceived = true
             updateAssistant({
@@ -634,6 +648,7 @@ export function ChatWorkspace({
       onProposal,
       onRevision,
       onVideoAnalysisToolStatus,
+      onAnnotations,
       sending,
       taskId,
       updateSelectedAssets,
@@ -965,6 +980,14 @@ export function ChatWorkspace({
                 </Button>
               )}
           </section>
+        )}
+
+        {(gameplayAnnotations.length > 0 || videoAnalysisStatus || referenceVideoAwaitingAnalysis) && (
+          <GameplayAnnotationList
+            annotations={gameplayAnnotations}
+            deletingId={deletingAnnotationId}
+            onDelete={onDeleteAnnotation}
+          />
         )}
 
         {Object.keys(toolStatuses).length > 0 && (

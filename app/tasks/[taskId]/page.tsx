@@ -84,6 +84,9 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
       initialGameplayBlueprint={videoAnalysis?.blueprint ?? undefined}
       initialVideoAnalysisMediaResolution={videoAnalysis?.mediaResolution ?? null}
       initialActiveReferenceVideoId={task.activeReferenceVideoAssetId}
+      initialGameplayAnnotations={task.gameplayAnnotations.filter(
+        (annotation) => annotation.assetId === task.activeReferenceVideoAssetId,
+      )}
       initialHasArtifact={Boolean(task.latestArtifactKey)}
       initialArtifactVersion={task.latestArtifactKey?.split('/').at(-2) ?? null}
       initialBuildId={version}
