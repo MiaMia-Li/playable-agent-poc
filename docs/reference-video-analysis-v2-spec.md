@@ -69,6 +69,23 @@ Phase 0 已执行完毕，`scripts/check-gemini-video-analysis.ts` 可复现全�
 - **接近上限的文件**：**本期不测**。3 分钟时长上限在实践中会先于 100 MiB 撞到，该项与 Gemini 无关，留待 §12 的大文件上传路径一并决定。`MAX_REFERENCE_VIDEO_BYTES` 保持 100 MiB 不变。
 - **Files API**：复探仍为 405 / 404，内联路径依旧是唯一选择。
 
+## 0.2 OpenRouter 过渡后端（2026-09-14）
+
+因环境原因暂时连不到公司网关，分析器抽出 `VideoGameplayAnalyst` 接口后并存两个后端，由 `VIDEO_ANALYSIS_BACKEND` 选择：`gemini`（缺省，公司网关，本文其余部分描述的就是它）与 `openrouter`（过渡）。提示词、schema 与校验两边共用，切回网关只改环境变量。模型 ID 不同（`google/gemini-3.5-flash`），抢占键随之不同，所以两个后端的分析行不会互相复用。
+
+OpenRouter 路径经实测（合成影片，`google/gemini-3.5-flash`，落在 Vertex）：
+
+| 能力 | 结果 |
+| --- | --- |
+| 传输 | `/chat/completions` 的 `video_url` + base64 data URL。AI SDK 的 Responses provider 没有视频 part，故用裸 `fetch` |
+| 音轨 | 处理，25 tokens/秒 |
+| 分辨率 | 顶层 `media_resolution: "MEDIA_RESOLUTION_HIGH"` 每次生效（264 tokens/秒）；小写 `high` 返回 400；part 层的 `media_resolution` / `fps` 被静默忽略 |
+| 结构化输出 | `response_format: json_schema` 每次生效，无代码围栏。边界关键字仍须剥掉，否则 400 |
+| 通道判定 | 不存在通道彩票，不需要 `trafficType`；`usage.prompt_tokens_details.video_tokens` 仍用于核对实际分辨率 |
+| 大小 | OpenRouter 对 Google 的请求体上限 100,000,000 bytes（413）；原始 52 MiB 通过，57 MiB 起 502。分析器在 52 MiB 以上直接拒绝，**上传上限 `MAX_REFERENCE_VIDEO_BYTES` 未改** |
+
+请求带 `provider.require_parameters: true`，避免被路由到忽略 schema 或分辨率的端点。重试只针对校验失败的回复（2 次），错误响应直接失败。
+
 ## 1. 目标
 
 让用户上传参考视频后得到更接近真实玩法的分析，并让用户在对话中给出的时间戳说明（例如「第 12 秒是长按不是点击」）真正修正分析结果，而不是停留在对话文本里。

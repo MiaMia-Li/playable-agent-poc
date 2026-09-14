@@ -1,12 +1,9 @@
-import { GoogleGenAI, MediaResolution, type GenerateContentResponse } from '@google/genai'
 import { toJSONSchema, z } from 'zod'
 import { gameplayBlueprintSchema, type GameplayBlueprint, type GameplayInference } from './schemas'
-import { logExternalRequestError } from './external-request-logging'
-import { readGeminiApiKey, readGeminiBaseUrl, readGeminiVideoAnalysisModel } from './shared-ai-key'
 
 export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'qdai-video-v2'
 
-/** Which resolution the gateway actually applied, as opposed to which was asked for. */
+/** Which resolution the service actually applied, as opposed to which was asked for. */
 export type AppliedMediaResolution = 'high' | 'default'
 
 export interface AnalyzedVideo {
@@ -21,6 +18,12 @@ export interface VideoGameplayAnalysisResult {
   mediaResolution: AppliedMediaResolution
 }
 
+/**
+ * The seam between the analysis pipeline and whichever service watches the
+ * video. Backends live in their own modules and are picked by
+ * `createVideoGameplayAnalyst`; this module holds only what they share, so the
+ * prompt, schema and validation cannot drift between them.
+ */
 export interface VideoGameplayAnalyst {
   /**
    * Recorded on the analysis row and part of the claim key, so a model change
@@ -47,24 +50,14 @@ export interface VideoGameplayAnalyst {
 }
 
 /**
- * Video tokens per second of footage at one frame per second, measured through
- * the gateway. Used to tell which resolution was applied without trusting the
- * request to have survived.
+ * Video tokens per second of footage at one frame per second. Measured through
+ * both the gateway and OpenRouter, which agree. Used to tell which resolution
+ * was applied without trusting the request to have survived.
  */
 const VIDEO_TOKENS_PER_SECOND: Record<AppliedMediaResolution, number> = { high: 264, default: 66 }
 const RESOLUTION_TOLERANCE = 0.12
 
-/**
- * Roughly two thirds of gateway requests land on a channel that discards
- * `generationConfig`, taking `mediaResolution` and `responseJsonSchema` with
- * it. Retrying is worth it because the honouring channel gives both higher
- * resolution and an enforced schema, and neither has a substitute. Four
- * attempts leaves around a one in six chance of never seeing it, which is why
- * exhausting the budget degrades rather than fails.
- */
-const HONOURING_CHANNEL_ATTEMPTS = 4
-
-const QDAI_INSTRUCTIONS = [
+export const QDAI_INSTRUCTIONS = [
   'You are QDAI Video Gameplay Analyst.',
   'Infer the observable gameplay shown by the supplied video.',
   'Describe evidence independently of any registered implementation template.',
@@ -76,7 +69,7 @@ const QDAI_INSTRUCTIONS = [
   'Use concise Chinese descriptions suitable for a downstream playable-game planning agent.',
 ].join('\n')
 
-const INTENT_INSTRUCTIONS = [
+export const INTENT_INSTRUCTIONS = [
   'You are QDAI Intent Comparator.',
   'You receive a Gameplay Blueprint that describes what a reference video shows, and a statement of what the user wants to build.',
   'You cannot see the video. The blueprint is the only evidence about it.',
@@ -91,7 +84,7 @@ const intentDivergenceResponseSchema = z.strictObject({
   intentDivergence: gameplayBlueprintSchema.shape.intentDivergence,
 })
 
-function analysisPrompt(input: { prompt: string; video: AnalyzedVideo }): string {
+export function analysisPrompt(input: { prompt: string; video: AnalyzedVideo }): string {
   const lines = ['Produce Gameplay Blueprint v2 for this reference video.']
   if (input.video.durationSeconds !== undefined) {
     lines.push(`Video duration: ${input.video.durationSeconds.toFixed(2)} seconds.`)
@@ -116,11 +109,24 @@ function analysisPrompt(input: { prompt: string; video: AnalyzedVideo }): string
   return lines.join('\n')
 }
 
+export function intentComparisonPrompt(input: { blueprint: GameplayBlueprint; intent: string }): string {
+  return [
+    'Gameplay blueprint of the reference video:',
+    JSON.stringify(input.blueprint),
+    '',
+    'What the user says they want to build. Treat it as a claim about their intent, not as a description of the video:',
+    input.intent,
+    '',
+    'Return `intentDivergence` only.',
+  ].join('\n')
+}
+
 /**
- * The honouring channel rejects the numeric and length bounds that zod emits,
- * returning a bare 400. Everything else survives, including the `const` for the
- * version literal and `additionalProperties: false`, so strictness reaches the
- * model. Bounds are still enforced on the way back in by parsing with zod.
+ * Gemini rejects the numeric and length bounds that zod emits, returning a bare
+ * 400, both through the gateway and through OpenRouter. Everything else
+ * survives, including the `const` for the version literal and
+ * `additionalProperties: false`, so strictness reaches the model. Bounds are
+ * still enforced on the way back in by parsing with zod.
  */
 const UNSUPPORTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   'minLength',
@@ -139,35 +145,34 @@ function dropKeys(value: unknown, keys: ReadonlySet<string>): unknown {
   )
 }
 
-function blueprintResponseSchema(): unknown {
-  return dropKeys(toJSONSchema(gameplayBlueprintSchema), UNSUPPORTED_SCHEMA_KEYWORDS)
+export function blueprintResponseSchema(): Record<string, unknown> {
+  return dropKeys(toJSONSchema(gameplayBlueprintSchema), UNSUPPORTED_SCHEMA_KEYWORDS) as Record<string, unknown>
+}
+
+export function intentResponseSchema(): Record<string, unknown> {
+  return dropKeys(toJSONSchema(intentDivergenceResponseSchema), UNSUPPORTED_SCHEMA_KEYWORDS) as Record<string, unknown>
 }
 
 /**
- * Two independent signals, combined. `trafficType` correlated perfectly with
- * the applied configuration in every observed request, but it is a side effect
- * rather than a documented contract, so the token count is checked too: if the
- * gateway ever changes what `trafficType` means, this reports `default` rather
- * than silently claiming an accuracy it did not get.
+ * Reads the applied resolution back off the VIDEO token count, which is fixed
+ * by duration once sampling is one frame per second. Without a duration there
+ * is nothing to check against, so this reports `default` rather than claiming
+ * an accuracy it cannot confirm.
  */
-function appliedResolution(response: GenerateContentResponse, durationSeconds: number | undefined) {
-  const usage = response.usageMetadata as
-    | { trafficType?: string; promptTokensDetails?: { modality?: string; tokenCount?: number }[] }
-    | undefined
-  if (!usage?.trafficType) return 'default' as const
-  const videoTokens = usage.promptTokensDetails?.find(
-    (detail) => detail.modality?.toUpperCase() === 'VIDEO',
-  )?.tokenCount
-  if (videoTokens === undefined || durationSeconds === undefined || durationSeconds <= 0) return 'default' as const
+export function resolutionFromVideoTokens(
+  videoTokens: number | undefined,
+  durationSeconds: number | undefined,
+): AppliedMediaResolution {
+  if (videoTokens === undefined || durationSeconds === undefined || durationSeconds <= 0) return 'default'
   const expected = durationSeconds * VIDEO_TOKENS_PER_SECOND.high
-  return Math.abs(videoTokens - expected) / expected <= RESOLUTION_TOLERANCE ? ('high' as const) : ('default' as const)
+  return Math.abs(videoTokens - expected) / expected <= RESOLUTION_TOLERANCE ? 'high' : 'default'
 }
 
 /**
- * The dropping channel never saw the response schema, so it answers with
- * whatever it likes — most often JSON inside a code fence, sometimes prose.
- * Unwrapping the fence recovers the common case; anything else fails validation
- * below and costs another attempt, which is the correct outcome.
+ * A reply that never saw the response schema answers with whatever it likes —
+ * most often JSON inside a code fence, sometimes prose. Unwrapping the fence
+ * recovers the common case; anything else fails validation and costs another
+ * attempt, which is the correct outcome.
  */
 function unwrapJson(text: string): string {
   const trimmed = text.trim()
@@ -178,8 +183,12 @@ function unwrapJson(text: string): string {
     .trim()
 }
 
-function parseBlueprint(text: string): GameplayBlueprint {
+export function parseBlueprint(text: string): GameplayBlueprint {
   return gameplayBlueprintSchema.parse(JSON.parse(unwrapJson(text)))
+}
+
+export function parseIntentDivergence(text: string): GameplayInference[] {
+  return intentDivergenceResponseSchema.parse(JSON.parse(unwrapJson(text))).intentDivergence
 }
 
 /**
@@ -187,7 +196,10 @@ function parseBlueprint(text: string): GameplayBlueprint {
  * is good enough. Skipped when the browser could not read a duration at all,
  * which spec section 6.5 accepts in order not to reject valid videos.
  */
-function validateEvidenceTimes(blueprint: GameplayBlueprint, durationSeconds: number | undefined): GameplayBlueprint {
+export function validateEvidenceTimes(
+  blueprint: GameplayBlueprint,
+  durationSeconds: number | undefined,
+): GameplayBlueprint {
   if (durationSeconds === undefined) return blueprint
   const inferences = [
     ...blueprint.controls,
@@ -211,133 +223,4 @@ function validateEvidenceTimes(blueprint: GameplayBlueprint, durationSeconds: nu
     }
   }
   return blueprint
-}
-
-export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
-  readonly model = readGeminiVideoAnalysisModel()
-
-  async analyze(input: {
-    prompt: string
-    video: AnalyzedVideo
-    abortSignal?: AbortSignal
-  }): Promise<VideoGameplayAnalysisResult> {
-    const apiKey = readGeminiApiKey()
-    if (!apiKey) throw new Error('Gemini API key is not configured')
-    const baseUrl = readGeminiBaseUrl()
-    const model = this.model
-
-    const client = new GoogleGenAI({ apiKey, httpOptions: { baseUrl } })
-    const responseJsonSchema = blueprintResponseSchema()
-    const contents = [
-      {
-        role: 'user',
-        parts: [
-          // No `videoMetadata`. The gateway drops it at random, and a sampling
-          // rate that applies one time in five would make the same video yield
-          // different results with nothing to show which run got what.
-          { inlineData: { data: Buffer.from(input.video.bytes).toString('base64'), mimeType: input.video.mimeType } },
-          { text: analysisPrompt(input) },
-        ],
-      },
-    ]
-
-    let degraded: VideoGameplayAnalysisResult | undefined
-    for (let attempt = 0; attempt < HONOURING_CHANNEL_ATTEMPTS; attempt += 1) {
-      // Running out of time while chasing the honouring channel is the same
-      // situation as running out of attempts: a usable low-resolution result
-      // in hand beats none.
-      if (input.abortSignal?.aborted && degraded) return degraded
-      input.abortSignal?.throwIfAborted()
-      let response: GenerateContentResponse
-      try {
-        response = await client.models.generateContent({
-          model,
-          contents,
-          config: {
-            systemInstruction: QDAI_INSTRUCTIONS,
-            mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
-            responseMimeType: 'application/json',
-            responseJsonSchema,
-            abortSignal: input.abortSignal,
-          },
-        })
-      } catch (error) {
-        if (input.abortSignal?.aborted && degraded) return degraded
-        logExternalRequestError('Gemini', error, [apiKey, baseUrl])
-        throw error
-      }
-
-      const mediaResolution = appliedResolution(response, input.video.durationSeconds)
-      let blueprint: GameplayBlueprint
-      try {
-        blueprint = validateEvidenceTimes(parseBlueprint(response.text ?? ''), input.video.durationSeconds)
-      } catch {
-        // Almost always the unconstrained channel answering off-shape. Treat it
-        // as a spent attempt so the loop can try for the honouring one.
-        console.error('Gemini video analysis returned an unusable blueprint')
-        continue
-      }
-
-      if (mediaResolution === 'high') return { blueprint, mediaResolution }
-      // Keep the first usable low-resolution result. If the budget runs out
-      // this is returned rather than failing: it is still a real observation of
-      // the video, and the caller records the resolution so the user can re-run.
-      degraded ??= { blueprint, mediaResolution }
-    }
-
-    if (degraded) return degraded
-    throw new Error('Gemini video analysis produced no usable blueprint')
-  }
-
-  async compareIntent(input: {
-    blueprint: GameplayBlueprint
-    intent: string
-    durationSeconds?: number
-    abortSignal?: AbortSignal
-  }): Promise<GameplayInference[]> {
-    const apiKey = readGeminiApiKey()
-    if (!apiKey) throw new Error('Gemini API key is not configured')
-    const baseUrl = readGeminiBaseUrl()
-    const client = new GoogleGenAI({ apiKey, httpOptions: { baseUrl } })
-    const text = [
-      'Gameplay blueprint of the reference video:',
-      JSON.stringify(input.blueprint),
-      '',
-      'What the user says they want to build. Treat it as a claim about their intent, not as a description of the video:',
-      input.intent,
-      '',
-      'Return `intentDivergence` only.',
-    ].join('\n')
-
-    // No resolution to chase here, only the schema. The dropping channel still
-    // answers usefully most of the time, so an unusable reply is just a spent
-    // attempt, as in `analyze`.
-    for (let attempt = 0; attempt < HONOURING_CHANNEL_ATTEMPTS; attempt += 1) {
-      input.abortSignal?.throwIfAborted()
-      let response: GenerateContentResponse
-      try {
-        response = await client.models.generateContent({
-          model: this.model,
-          contents: [{ role: 'user', parts: [{ text }] }],
-          config: {
-            systemInstruction: INTENT_INSTRUCTIONS,
-            responseMimeType: 'application/json',
-            responseJsonSchema: dropKeys(toJSONSchema(intentDivergenceResponseSchema), UNSUPPORTED_SCHEMA_KEYWORDS),
-            abortSignal: input.abortSignal,
-          },
-        })
-      } catch (error) {
-        logExternalRequestError('Gemini', error, [apiKey, baseUrl])
-        throw error
-      }
-      try {
-        const { intentDivergence } = intentDivergenceResponseSchema.parse(JSON.parse(unwrapJson(response.text ?? '')))
-        validateEvidenceTimes({ ...input.blueprint, intentDivergence }, input.durationSeconds)
-        return intentDivergence
-      } catch {
-        console.error('Gemini intent comparison returned an unusable result')
-      }
-    }
-    throw new Error('Gemini intent comparison produced no usable result')
-  }
 }
