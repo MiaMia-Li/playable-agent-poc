@@ -119,17 +119,42 @@ describe('OpenAIMarketResearchAgent', () => {
     expect(report.sourceCoverage.sourceIds).toEqual(['tiktok-creative-center'])
   })
 
-  it('restricts discovery to registered domains', async () => {
+  it('accepts a searched HTTPS source outside the curated source registry', async () => {
+    const publicWebCandidate: MarketResearchCandidate = {
+      ...candidate,
+      sourceUrl: 'https://playableadsmaker.com/templates/water-sort',
+      sourceTitle: 'Playable Ads Maker',
+      evidence: [
+        {
+          ...candidate.evidence[0],
+          sourceUrl: 'https://playableadsmaker.com/templates/water-sort',
+          sourceTitle: 'Playable Ads Maker',
+        },
+      ],
+    }
+    const agent = new OpenAIMarketResearchAgent({
+      discover: async () =>
+        discovery({ candidates: [publicWebCandidate], providerSourceUrls: [publicWebCandidate.sourceUrl] }),
+      analyze: async () => analysis({ candidates: [publicWebCandidate] }),
+    })
+
+    const report = await agent.search({ runId: 'run-1', apiKey: 'test-key', brief })
+
+    expect(report.candidates).toEqual([publicWebCandidate])
+    expect(report.sourceCoverage.sourceIds).toEqual([])
+  })
+
+  it('does not pass a fixed domain allowlist into discovery', async () => {
     const discover = vi.fn(async () => discovery())
     const agent = new OpenAIMarketResearchAgent({ discover, analyze: async () => analysis() })
 
     await agent.search({ runId: 'run-1', apiKey: 'test-key', brief })
 
-    expect(discover).toHaveBeenCalledWith(
-      expect.objectContaining({
-        allowedDomains: ['ads.tiktok.com', 'adstransparency.google.com', 'facebook.com', 'applovin.com', 'liftoff.io'],
-      }),
-    )
+    expect(discover).toHaveBeenCalledWith({
+      apiKey: 'test-key',
+      brief,
+      abortSignal: expect.any(AbortSignal),
+    })
   })
 
   it('drops candidates not present in provider-returned sources', async () => {

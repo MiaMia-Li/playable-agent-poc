@@ -301,25 +301,18 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               cache: toolCache,
             })
             toolResults.push(...executed)
-            const research = executed.find(
-              (entry) => entry.tool === 'search_market_references' && entry.status === 'completed',
-            )
-            if (research) {
-              return {
-                kind: 'research',
-                message: '已整理同类试玩广告的公开趋势和候选方向，请选择一个主参考并按需添加其他亮点。',
-                reasoning: '研究结果仅作为候选参考，采用后才会进入需求方案。',
-                research: marketResearchReportSchema.parse(research.result),
-              }
-            }
             continue
           }
+          const latestResearch = [...toolResults]
+            .reverse()
+            .find((entry) => entry.tool === 'search_market_references' && entry.status === 'completed')
           return executeRequirementToolPlan({
             plan: step.plan,
             currentBrief: input.brief,
             prompt: input.prompt,
             assets: input.assets,
             hasArtifact: input.hasArtifact,
+            marketResearch: latestResearch ? marketResearchReportSchema.parse(latestResearch.result) : undefined,
           }).reply
         } catch (error) {
           if (error instanceof PlayableAgentError) throw error

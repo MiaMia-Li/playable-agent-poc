@@ -59,10 +59,9 @@ import type {
   ResolvedReferenceSelection,
   SearchBrief,
 } from './research/schemas'
-import { referenceSelectionInputSchema } from './research/schemas'
+import { marketResearchReportSchema, referenceSelectionInputSchema } from './research/schemas'
 import type { MarketResearchAgent, MarketResearchProgressStage } from './research/market-research-agent'
 import {
-  allowedResearchDomains,
   createResearchCacheKey,
   MARKET_RESEARCH_CACHE_TTL_MS,
   MARKET_RESEARCH_STRATEGY_VERSION,
@@ -1073,7 +1072,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         brief: input.call.searchBrief,
         cacheKey,
         strategyVersion: MARKET_RESEARCH_STRATEGY_VERSION,
-        sourceIds: allowedResearchDomains(),
+        sourceIds: [],
       })
       await repository.appendEvent({
         taskId: input.task.id,
@@ -1430,6 +1429,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               stage = 'agent_reply'
               const referenceToolCache = new Map<string, unknown>()
               const referenceToolBudget = { imagesExecuted: false, videoExecuted: false }
+              let marketResearchCompleted = false
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -1470,8 +1470,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     if (!message && !reasoning) return
                     enqueue({ type: 'assistant_progress', message, reasoning })
                   },
-                  executeTool: (call, toolOptions) =>
-                    executeRequirementAnalysisTool({
+                  executeTool: async (call, toolOptions) => {
+                    const result = await executeRequirementAnalysisTool({
                       call,
                       task: access.task,
                       userId: access.userId,
@@ -1483,7 +1483,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                       onResearchProgress(stage) {
                         enqueue({ type: 'research_progress', stage, message: RESEARCH_PROGRESS_COPY[stage] })
                       },
-                    }),
+                    })
+                    if (
+                      call.name === 'search_market_references' &&
+                      marketResearchReportSchema.safeParse(result).success
+                    ) {
+                      marketResearchCompleted = true
+                    }
+                    return result
+                  },
                 },
               )
               if (cancelled) return
@@ -1509,10 +1517,22 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              const fallbackBrief =
-                validatedReply.kind === 'informational'
-                  ? (access.task.requirementBrief ?? createRequirementBrief())
-                  : (access.task.requirementBrief ?? createRequirementBrief(access.task.prompt))
+              if (validatedReply.kind === 'informational' && marketResearchCompleted) {
+                for (const tool of validatedReply.tools ?? []) {
+                  if (!enqueue({ type: 'tool_completed', tool })) return
+                }
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
+                enqueue({
+                  type: 'informational',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  brief: access.task.requirementBrief ?? undefined,
+                  tools: validatedReply.tools ?? [],
+                })
+                return
+              }
+              const fallbackBrief = access.task.requirementBrief ?? createRequirementBrief(access.task.prompt)
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId

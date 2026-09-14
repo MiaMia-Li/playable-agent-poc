@@ -252,7 +252,7 @@ describe('PlayableWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
 
     const card = await screen.findByRole('region', { name: '市场参考分析' })
-    expect(card).toHaveTextContent('3 个可参考方向')
+    expect(card).toHaveTextContent('3 个方向')
     fireEvent.click(within(card).getAllByRole('radio')[0])
     fireEvent.click(within(card).getByRole('button', { name: '采用此方向' }))
 
@@ -526,6 +526,9 @@ describe('PlayableWorkspace', () => {
     expect(within(replies[0]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第一版麻将配对玩法')
     expect(within(replies[0]).getByRole('img', { name: 'historical-tiles.png' })).toBeInTheDocument()
     expect(within(replies[1]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第二版跑酷战斗玩法')
+    expect(within(replies[0]).getByRole('region', { name: '确认方案' }).parentElement?.className).toBe(
+      within(replies[1]).getByRole('region', { name: '确认方案' }).parentElement?.className,
+    )
     expect(within(replies[0]).getByLabelText('玩法说明')).toBeDisabled()
     expect(within(replies[1]).getByLabelText('玩法说明')).toBeEnabled()
   })

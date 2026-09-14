@@ -1032,11 +1032,9 @@ export function ChatWorkspace({
                       />
                     </div>
                   ) : (
-                    <details className="mt-4 overflow-hidden rounded-xl border">
-                      <summary className="bg-muted/30 cursor-pointer select-none px-4 py-3 text-sm font-semibold">
-                        历史构建方案
-                      </summary>
-                      <div className="border-t p-4">
+                    <details className="mt-4">
+                      <summary className="cursor-pointer select-none font-semibold">历史构建方案</summary>
+                      <div className="mt-4">
                         <ConfirmationTable
                           proposal={item.confirmation}
                           onChange={() => undefined}
