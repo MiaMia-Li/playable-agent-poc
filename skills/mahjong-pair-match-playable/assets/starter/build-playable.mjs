@@ -74,6 +74,11 @@ const templateFile = mode === "perspective_3d"
   ? path.join(templateRoot, "playable.template.html")
   : path.join(root, "src", "playable.template.html");
 let html = await readFile(templateFile, "utf8");
+if (mode === "perspective_3d") {
+  const perspectiveBgmPattern = /(const AUDIO=\{bgm:')[^']+/;
+  if (!perspectiveBgmPattern.test(html)) throw new Error("Perspective BGM placeholder missing");
+  html = html.replace(perspectiveBgmPattern, (_match, prefix) => `${prefix}${assets.audio.bgm}`);
+}
 html = html
   .replace("__ASSETS__", JSON.stringify(assets))
   .replace("__CONFIG__", JSON.stringify(config))

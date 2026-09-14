@@ -247,6 +247,7 @@ class MemoryRepository implements PlayableTaskRepository {
       return
     task.phase = 'building'
     task.confirmation = value
+    task.updatedAt = new Date()
     this.builds.push({
       id: buildId,
       taskId,
@@ -261,11 +262,13 @@ class MemoryRepository implements PlayableTaskRepository {
 
   async compareAndSetPhase(
     taskId: string,
+    buildId: string,
     expected: PlayableTaskRecord['phase'],
     next: PlayableTaskRecord['phase'],
   ): Promise<boolean> {
     const task = this.tasks.get(taskId)
-    if (!task || task.phase !== expected) return false
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (!task || task.phase !== expected || (build && build.status !== 'building')) return false
     task.phase = next
     return true
   }
@@ -320,14 +323,42 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
-  async markFailed(taskId: string, buildId: string): Promise<void> {
+  async touchBuild(taskId: string, buildId: string): Promise<boolean> {
     const task = this.tasks.get(taskId)
-    if (task && ['building', 'validating'].includes(task.phase)) task.phase = 'failed'
     const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
-    if (build?.status === 'building') {
+    if (!task || !['building', 'validating'].includes(task.phase) || (build && build.status !== 'building'))
+      return false
+    task.updatedAt = new Date()
+    return true
+  }
+
+  async failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean> {
+    const task = await this.findOwnedTask(taskId, userId)
+    if (!task || !['building', 'validating'].includes(task.phase) || !task.updatedAt || task.updatedAt >= staleBefore)
+      return false
+    task.phase = 'failed'
+    task.updatedAt = new Date()
+    const build = this.builds
+      .filter((candidate) => candidate.taskId === taskId && candidate.status === 'building')
+      .at(-1)
+    if (build) {
       build.status = 'failed'
       build.completedAt = new Date()
     }
+    return true
+  }
+
+  async markFailed(taskId: string, buildId: string): Promise<boolean> {
+    const task = this.tasks.get(taskId)
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (!task || !['building', 'validating'].includes(task.phase) || (build && build.status !== 'building'))
+      return false
+    task.phase = 'failed'
+    if (build) {
+      build.status = 'failed'
+      build.completedAt = new Date()
+    }
+    return true
   }
 
   async listBuilds(taskId: string): Promise<PlayableBuildRecord[]> {
@@ -1786,6 +1817,96 @@ describe('playable task API', () => {
       },
       events: [],
     })
+  })
+
+  it('recovers a build whose worker stopped without recording a terminal state', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    task.updatedAt = new Date(Date.now() - 10 * 60 * 1000)
+    harness.repository.builds.push({
+      id: 'stale-build',
+      taskId: task.id,
+      status: 'building',
+      confirmation,
+      artifactKey: null,
+      createdAt: task.updatedAt,
+    })
+
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    const body = await response.json()
+
+    expect(body.task.phase).toBe('failed')
+    expect(body.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: '构建进程已停止，请重新确认方案并重试。',
+    })
+    expect(harness.repository.builds.at(-1)?.status).toBe('failed')
+  })
+
+  it('keeps a recently heartbeating build active', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    task.updatedAt = new Date()
+    harness.repository.builds.push({
+      id: 'active-build',
+      taskId: task.id,
+      status: 'building',
+      confirmation,
+      artifactKey: null,
+      createdAt: task.updatedAt,
+    })
+
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    const body = await response.json()
+
+    expect(body.task.phase).toBe('building')
+    expect(body.events).toEqual([])
+    expect(harness.repository.builds.at(-1)?.status).toBe('building')
+  })
+
+  it('ignores a recovered worker after a newer build has started', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    harness.repository.builds.push(
+      {
+        id: 'expired-build',
+        taskId: task.id,
+        status: 'failed',
+        confirmation,
+        artifactKey: null,
+        createdAt: new Date(0),
+        completedAt: new Date(1),
+      },
+      {
+        id: 'retry-build',
+        taskId: task.id,
+        status: 'building',
+        confirmation,
+        artifactKey: null,
+        createdAt: new Date(2),
+      },
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'expired-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(task.phase).toBe('building')
+    expect(harness.repository.builds.map(({ status }) => status)).toEqual(['failed', 'building'])
+    expect(harness.repository.events).toEqual([])
   })
 
   it('uses the stored validation delivery profile instead of a newer confirmation profile', async () => {

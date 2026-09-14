@@ -19,6 +19,8 @@ const infrastructure = vi.hoisted(() => {
       claimBuild: vi.fn(),
       compareAndSetPhase: vi.fn(),
       publishArtifact: vi.fn(),
+      touchBuild: vi.fn(),
+      failStaleBuild: vi.fn(),
       markFailed: vi.fn(),
       appendEvent: vi.fn(),
       listEvents: vi.fn(),
@@ -108,7 +110,9 @@ describe('real playable task route wiring', () => {
     infrastructure.repository.appendEvent.mockResolvedValue(undefined)
     infrastructure.repository.compareAndSetPhase.mockResolvedValue(true)
     infrastructure.repository.publishArtifact.mockResolvedValue(true)
-    infrastructure.repository.markFailed.mockResolvedValue(undefined)
+    infrastructure.repository.touchBuild.mockResolvedValue(true)
+    infrastructure.repository.failStaleBuild.mockResolvedValue(false)
+    infrastructure.repository.markFailed.mockResolvedValue(true)
     infrastructure.repository.listAssets.mockResolvedValue([])
     infrastructure.repository.findLatestVideoAnalysis.mockResolvedValue(undefined)
     infrastructure.agent.build.mockResolvedValue({
@@ -167,6 +171,7 @@ describe('real playable task route wiring', () => {
 
     await infrastructure.scheduled[0]()
 
+    expect(infrastructure.repository.touchBuild).toHaveBeenCalledWith('task-1', 'build-1')
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
       taskId: 'task-1',
       apiKey: 'sk-shared-key',
