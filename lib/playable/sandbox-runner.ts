@@ -1,3 +1,4 @@
+import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
@@ -8,6 +9,7 @@ import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
 import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
+import { PLAYABLE_SANDBOX_TOOLS_VERSION, PLAYABLE_TOOLS_CHECK } from './sandbox-tools'
 
 const DEFAULT_SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
@@ -126,7 +128,7 @@ function hasResponsiveViewport(html: string): boolean {
 }
 
 function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['confirmation'], html: string): void {
-  if (confirmation.routing.match === 'freeform' || confirmation.mode !== 'perspective_3d') return
+  if (!usesPerspectiveTemplate(confirmation)) return
   const requiredTokens = [
     'data-playable-template="perspective_3d"',
     `data-template-version="${MAHJONG_PLAYABLE_PLUGIN.version}"`,
@@ -139,7 +141,7 @@ function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['con
   }
 }
 
-async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
+export async function createPlayableSandbox(taskId: string, abortSignal?: AbortSignal): Promise<PlayableSandbox> {
   const explicitCredentials =
     process.env.SANDBOX_VERCEL_TOKEN && process.env.SANDBOX_VERCEL_TEAM_ID && process.env.SANDBOX_VERCEL_PROJECT_ID
       ? {
@@ -148,8 +150,14 @@ async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): 
           projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
         }
       : {}
+  const snapshotId = process.env.PLAYABLE_SANDBOX_SNAPSHOT_ID?.trim()
   const provider = createVercelSandbox({
-    runtime: 'node24',
+    // 快照自带系统环境，不能同时传 runtime；未配置快照时保留原来的 Node 24 路径。
+    ...(snapshotId ? { source: { type: 'snapshot' as const, snapshotId } } : { runtime: 'node24' }),
+    // 每个任务独立使用快照副本，不把本次素材、凭据和产物保存为下一次任务的环境。
+    persistent: false,
+    // 与确认接口的 30 分钟预算一致，避免 Sandbox 默认期限提前终止 Agent。
+    timeout: 30 * 60 * 1000,
     ports: [4000],
     fetch: createExternalErrorLoggingFetch('Vercel Sandbox', [
       process.env.SANDBOX_VERCEL_TOKEN ?? '',
@@ -159,7 +167,23 @@ async function defaultCreateSandbox(taskId: string, abortSignal?: AbortSignal): 
     ...explicitCredentials,
   })
   try {
-    return await provider.createSession({ sessionId: taskId, abortSignal })
+    const sandbox = await provider.createSession({ sessionId: taskId, abortSignal })
+    if (snapshotId) {
+      try {
+        // 仅做轻量就绪检查，不重新安装或启动浏览器；玩法验收仍由后续 Agent 执行。
+        const check = await sandbox.run({
+          command: PLAYABLE_TOOLS_CHECK,
+          env: { PLAYABLE_TOOLS_EXPECTED_VERSION: PLAYABLE_SANDBOX_TOOLS_VERSION },
+          abortSignal,
+        })
+        if (check.exitCode !== 0) throw new Error('Playable sandbox tools are incompatible; rebuild the snapshot')
+      } catch (error) {
+        // 不兼容时清理副本并报错，不静默退回重复安装，避免掩盖配置问题和构建耗时。
+        await Promise.resolve(sandbox.destroy()).catch(() => undefined)
+        throw error
+      }
+    }
+    return sandbox
   } catch (error) {
     logExternalRequestError('Vercel Sandbox', error, [
       process.env.SANDBOX_VERCEL_TOKEN ?? '',
@@ -202,13 +226,14 @@ export async function runPlayableBuild(
 ): Promise<BuildResult> {
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
+  input.onActivity?.('preparing')
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
   const freeform = confirmation.routing.match === 'freeform'
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
 
   dependencies.abortSignal?.throwIfAborted()
   const skillFiles = await readSkillFiles(dependencies.skillRoot ?? DEFAULT_SKILL_ROOT)
-  const createSandbox = dependencies.createSandbox ?? defaultCreateSandbox
+  const createSandbox = dependencies.createSandbox ?? createPlayableSandbox
   let sandbox: PlayableSandbox | undefined
   let operationError: unknown
   let stage: PlayableBuildExecutionStage = 'sandbox_create'
@@ -301,14 +326,14 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (confirmation.sourceTemplateId && input.revision?.strategy !== 'patch') {
+    } else if (confirmation.sourceTemplateId || input.revision?.strategy === 'patch') {
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),
         content: input.baseHtml,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (!freeform && input.revision?.strategy !== 'patch') {
+    } else if (!freeform) {
       stage = 'artifact_build'
       await dependencies.logger?.info('Building playable baseline')
       await requireSuccessfulCommand(
@@ -342,14 +367,12 @@ export async function runPlayableBuild(
     await assertMasterUnchanged(sandbox, masterRoot, skillFiles, dependencies.abortSignal)
 
     stage = 'validation'
+    input.onActivity?.('validating')
     await dependencies.logger?.info('Validating playable behavior')
     await requireSuccessfulCommand(
       sandbox,
       {
-        command:
-          confirmation.routing.match === 'exact'
-            ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
-            : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform,
+        command: buildValidationCommand(confirmation),
         workingDirectory: workspace,
         env: {
           PLAYABLE_MODE: confirmation.mode,

@@ -15,6 +15,15 @@ export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
 
 export const MAX_ASSET_BYTES = 4 * 1024 * 1024
 export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
+
+/**
+ * Not a cost limit — three minutes at high resolution is only about 52k tokens.
+ * The blueprint's shape is what does not scale: at most 20 entities, 20 state
+ * transitions, 8 controls. A twenty minute video forces the model to truncate
+ * and produces a document that looks complete while missing half the game,
+ * with nothing anywhere to say so.
+ */
+export const MAX_REFERENCE_VIDEO_SECONDS = 180
 export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
 export const MAX_HOME_ATTACHMENTS = 6
 export const MAX_ASSETS_PER_SLOT = 8

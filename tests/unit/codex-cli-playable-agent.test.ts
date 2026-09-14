@@ -1,3 +1,4 @@
+import { sourceTemplateIds } from '@/lib/playable/types'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -63,10 +64,31 @@ const confirmationPlan = {
   message: confirmationReply.message,
   reasoning: confirmationReply.reasoning,
   calls: [
-    { name: 'update_requirement_brief', brief, request: null, confirmation: null, revision: null },
-    { name: 'list_playable_capabilities', brief: null, request: null, confirmation: null, revision: null },
-    { name: 'validate_implementation_route', brief: null, request: null, confirmation: null, revision: null },
-    { name: 'submit_confirmation', brief: null, request: null, confirmation: proposal, revision: null },
+    { name: 'update_requirement_brief', annotations: null, brief, request: null, confirmation: null, revision: null },
+    {
+      name: 'list_playable_capabilities',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: null,
+      revision: null,
+    },
+    {
+      name: 'validate_implementation_route',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: null,
+      revision: null,
+    },
+    {
+      name: 'submit_confirmation',
+      annotations: null,
+      brief: null,
+      request: null,
+      confirmation: proposal,
+      revision: null,
+    },
   ],
 } as const
 
@@ -112,7 +134,7 @@ describe('CodexCliPlayableAgent', () => {
     expect(invocation.prompt).toContain('present_market_research')
     expect(invocation.prompt).toContain('not from keywords or fixed query categories')
     expect(invocation.prompt).toContain('update_requirement_brief')
-    expect(invocation.prompt).toContain('exact when a mode fully covers')
+    expect(invocation.prompt).toContain('exact when a template fully covers')
     expect(invocation.prompt).toContain('freeform')
     expect(invocation.prompt).toContain('AI media generation is unavailable')
     expect(invocation.prompt).toContain('"attachedAssetIds":["current-video"]')
@@ -212,6 +234,7 @@ describe('CodexCliPlayableAgent', () => {
             {
               name: 'respond_to_user',
               brief: null,
+              annotations: null,
               request: null,
               confirmation: null,
               revision: null,
@@ -258,7 +281,12 @@ describe('CodexCliPlayableAgent', () => {
   })
 
   it('runs Codex with workspace writes before delegating the isolated build', async () => {
-    const invokeCodex = vi.fn(async () => ({ completed: true }))
+    const onActivity = vi.fn()
+    const invokeCodex = vi.fn(async (invocation) => {
+      invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
+      invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
+      return { completed: true }
+    })
     const result: BuildResult = {
       html: '<script>window.__PLAYABLE__={}</script>',
       validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
@@ -266,11 +294,19 @@ describe('CodexCliPlayableAgent', () => {
     const buildRunner = vi.fn(async () => result)
     const input: ConfirmedBuildInput = {
       taskId: 'task-cli-build',
+      onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
     }
 
     await expect(new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build(input)).resolves.toBe(result)
+    expect(onActivity.mock.calls.map(([activity]) => activity)).toEqual([
+      'preparing',
+      'agent_started',
+      'command_started',
+      'command_completed',
+      'agent_completed',
+    ])
     expect(invokeCodex).toHaveBeenCalledWith(
       expect.objectContaining({
         sandbox: 'workspace-write',
@@ -281,7 +317,11 @@ describe('CodexCliPlayableAgent', () => {
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
   })
 
-  it('seeds template HTML before Codex and requests in-place changes', async () => {
+  it.each(
+    sourceTemplateIds.flatMap((sourceTemplateId) =>
+      ([undefined, 'patch', 'regenerate'] as const).map((strategy) => ({ sourceTemplateId, strategy })),
+    ),
+  )('CLI 模板基线：$sourceTemplateId / $strategy', async ({ sourceTemplateId, strategy }) => {
     const source = '<html><body>original template</body></html>'
     let inspected = false
     const invokeCodex = vi.fn(async (invocation) => {
@@ -289,6 +329,9 @@ describe('CodexCliPlayableAgent', () => {
       expect(await readFile(path.join(invocation.workspace, 'current-playable.html'), 'utf8')).toBe(source)
       expect(invocation.prompt).toContain('Modify output.html in place')
       expect(invocation.prompt).not.toContain('Create the requested game directly')
+      expect(invocation.prompt).not.toContain('Three.js')
+      expect(invocation.prompt).toContain('test-freeform-playable.mjs')
+      if (strategy === 'patch') expect(invocation.prompt).toContain('Copy current-playable.html to output.html')
       inspected = true
       return { completed: true }
     })
@@ -298,11 +341,26 @@ describe('CodexCliPlayableAgent', () => {
     }
     await new CodexCliPlayableAgent({ invokeCodex, buildRunner: vi.fn(async () => result) }).build({
       taskId: 'template-task',
+      ...(strategy
+        ? {
+            revision: {
+              id: 'revision',
+              baseBuildId: 'base',
+              baseVersion: 1,
+              targetVersion: 2,
+              strategy,
+              summary: '修改游戏',
+              changes: ['调整交互'],
+              preserved: ['保留引擎'],
+            },
+          }
+        : {}),
       apiKey: 'local-marker',
       baseHtml: source,
       confirmation: {
         ...proposal,
-        sourceTemplateId: 'zeus_scatter',
+        sourceTemplateId,
+        mode: 'perspective_3d',
         routing: { match: 'freeform', confidence: 1, differences: ['Adapt source'] },
       },
     })

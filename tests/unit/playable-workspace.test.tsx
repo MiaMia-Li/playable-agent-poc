@@ -6,6 +6,9 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConfirmationProposal, RequirementBrief, RevisionProposal } from '@/lib/playable/schemas'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
+import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
+import { sourceTemplateIds } from '@/lib/playable/types'
+import { bindSourceTemplate } from '@/lib/playable/source-template'
 import { ConfirmationTable } from '@/components/playable/confirmation-table'
 import { PlayablePreview } from '@/components/playable/playable-preview'
 import { PlayableWorkspace } from '@/components/playable/playable-workspace'
@@ -48,7 +51,7 @@ const revision: RevisionProposal = {
 }
 
 const blueprint = {
-  version: 1 as const,
+  version: 2 as const,
   summary: '点击配对',
   orientation: 'portrait' as const,
   controls: [],
@@ -61,6 +64,8 @@ const blueprint = {
   progression: [],
   tutorial: [],
   endCard: null,
+  audio: [],
+  intentDivergence: [],
   visualStyle: '卡通',
   uncertainties: [],
   overallConfidence: 1,
@@ -196,6 +201,40 @@ describe('PlayableWorkspace', () => {
     expect(tools).toHaveTextContent('分析参考视频失败')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(1, 'started')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(2, 'failed')
+  })
+
+  it('shows a video analysis that has not finished as pending rather than failed', async () => {
+    const onVideoAnalysisToolStatus = vi.fn()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            [
+              JSON.stringify({ type: 'tool_started', tool: 'analyze_reference_video' }),
+              JSON.stringify({ type: 'tool_pending', tool: 'analyze_reference_video' }),
+              JSON.stringify({ type: 'informational', message: '视频还在分析' }),
+            ].join('\n'),
+          ),
+      ),
+    )
+    render(
+      <ChatWorkspace
+        taskId="task-tools"
+        phase="draft"
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onVideoAnalysisToolStatus={onVideoAnalysisToolStatus}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '分析视频' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+
+    const tools = await screen.findByRole('region', { name: '本轮 Agent 工具' })
+    expect(tools).toHaveTextContent('分析参考视频尚未完成')
+    expect(tools).not.toHaveTextContent('失败')
+    expect(onVideoAnalysisToolStatus).toHaveBeenLastCalledWith('pending')
   })
 
   it('renders research progress and adopts persisted candidate IDs through the existing message flow', async () => {
@@ -481,6 +520,7 @@ describe('PlayableWorkspace', () => {
             filename: 'historical-tiles.png',
             mimeType: 'image/png',
             size: 5,
+            durationSeconds: null,
           },
         ]}
         initialConversation={[
@@ -617,6 +657,51 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByLabelText('免责声明')).toBeEnabled()
   })
 
+  it.each(sourceTemplateIds)('selects %s and can switch back to Mahjong', (sourceTemplateId) => {
+    const onChange = vi.fn()
+    const view = render(<ConfirmationTable proposal={proposal} onChange={onChange} onConfirm={vi.fn()} />)
+    fireEvent.keyDown(screen.getByLabelText('玩法模板'), { key: 'ArrowDown' })
+    expect(screen.getAllByRole('option')).toHaveLength(8)
+    const template = PLAYABLE_TEMPLATES.find((candidate) => candidate.id === sourceTemplateId)!
+    fireEvent.click(screen.getByRole('option', { name: `${template.label} (${template.id})` }))
+    const selected = onChange.mock.calls.at(-1)![0]
+    expect(selected).toMatchObject({
+      sourceTemplateId,
+      gameplay: template.description,
+      routing: { match: 'exact', differences: [] },
+    })
+    view.rerender(<ConfirmationTable proposal={selected} onChange={onChange} onConfirm={vi.fn()} />)
+    expect(screen.getByLabelText('玩法模板')).toHaveTextContent(template.label)
+    fireEvent.keyDown(screen.getByLabelText('玩法模板'), { key: 'ArrowDown' })
+    expect(screen.getAllByRole('option')).toHaveLength(8)
+    fireEvent.click(screen.getByRole('option', { name: '中心碰撞 (center_collision)' }))
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'center_collision', sourceTemplateId: null }),
+    )
+  })
+
+  it.each(sourceTemplateIds)('uses standard routing for %s', (sourceTemplateId) => {
+    const template = PLAYABLE_TEMPLATES.find((candidate) => candidate.id === sourceTemplateId)!
+    for (const match of ['exact', 'approximate', 'freeform'] as const) {
+      const routing = { match, confidence: 0.85, differences: match === 'exact' ? [] : ['增加奖励流程'] }
+      const confirmation = bindSourceTemplate({ ...proposal, routing }, sourceTemplateId)
+      expect(confirmation.routing).toEqual(routing)
+      const view = render(<ConfirmationTable proposal={confirmation} onChange={vi.fn()} onConfirm={vi.fn()} />)
+      expect(screen.queryByText('基于模板修改')).not.toBeInTheDocument()
+      const routeRow = screen.getByText('路由').closest('tr')!
+      expect(
+        within(routeRow).getByText({ exact: '完全匹配', approximate: '近似匹配', freeform: 'Agent 自由生成' }[match]),
+      ).toBeInTheDocument()
+      if (match !== 'freeform') {
+        expect(screen.queryByText('实现方式')).not.toBeInTheDocument()
+        expect(screen.getByLabelText('玩法模板')).toHaveTextContent(template.label)
+      } else {
+        expect(screen.getByText('实现方式')).toBeInTheDocument()
+      }
+      view.unmount()
+    }
+  })
+
   it('labels unsupported gameplay as direct freeform generation', () => {
     render(
       <ConfirmationTable
@@ -639,7 +724,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    expect(screen.getByText('自由生成')).toBeInTheDocument()
+    expect(screen.getAllByText('Agent 自由生成')).toHaveLength(2)
     expect(screen.getByText('实现方式')).toBeInTheDocument()
     expect(screen.getByText('英雄与怪物')).toBeInTheDocument()
     expect(screen.getByText('战斗场景')).toBeInTheDocument()
@@ -761,17 +846,26 @@ describe('PlayableWorkspace', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('does not block the initial prompt or automatically start video analysis', async () => {
+  it('holds the initial prompt until the reference video analysis settles, without starting another', async () => {
     const videoAsset = {
       id: 'video-2',
       slot: 'referenceVideo' as const,
       filename: 'new-gameplay.mp4',
       mimeType: 'video/mp4',
       size: 5,
+      durationSeconds: 12,
     }
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    let finishAnalysis!: () => void
+    const analysisFinished = new Promise<void>((resolve) => {
+      finishAnalysis = resolve
+    })
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       if (String(input).endsWith('/messages')) {
         return new Response(`${JSON.stringify({ type: 'informational', message: '已进入需求 Agent' })}\n`)
+      }
+      if (String(input).endsWith('/analysis')) {
+        await analysisFinished
+        return Response.json({ analysis: { assetId: 'video-2', status: 'succeeded', blueprint } })
       }
       return new Response(null, { status: 404 })
     })
@@ -782,25 +876,55 @@ describe('PlayableWorkspace', () => {
         initialApiKeyConfigured
         initialPrompt="参考视频制作试玩"
         initialAssets={[videoAsset]}
+        initialActiveReferenceVideoId="video-2"
         initialVideoAnalysisStatus="analyzing"
       />,
     )
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/api/playable-tasks/task-7/messages',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ message: '参考视频制作试玩', attachmentIds: ['video-2'] }),
-        }),
-      ),
-    )
-    expect(
-      fetchMock.mock.calls.some((call) => {
-        const [input, init] = call as unknown as [RequestInfo | URL, RequestInit?]
-        return String(input).endsWith('/analysis') && init?.method === 'POST'
+    expect(await screen.findByText('参考视频分析中，完成后自动发送…')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/messages'))).toBe(false)
+
+    finishAnalysis()
+
+    expect(await screen.findByText('已进入需求 Agent')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playable-tasks/task-7/messages',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: '参考视频制作试玩', attachmentIds: ['video-2'] }),
       }),
+    )
+    expect(screen.queryByText('参考视频分析中，完成后自动发送…')).not.toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/analysis') && init?.method === 'POST'),
     ).toBe(false)
+  })
+
+  it('drops a message stopped while it waits for the video analysis, without sending it', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      // The analysis never settles within this test.
+      if (String(input).endsWith('/analysis')) return new Promise<Response>(() => {})
+      return new Response(`${JSON.stringify({ type: 'informational', message: '不应发送' })}\n`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <PlayableWorkspace
+        taskId="task-7"
+        initialApiKeyConfigured
+        initialActiveReferenceVideoId="video-2"
+        initialVideoAnalysisStatus="analyzing"
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '做成五选二' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    expect(await screen.findByText('参考视频分析中，完成后自动发送…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '停止生成' }))
+
+    expect(await screen.findByText('发送失败')).toBeInTheDocument()
+    expect(screen.getByText('已停止生成确认方案')).toBeInTheDocument()
+    expect(screen.queryByText('参考视频分析中，完成后自动发送…')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/messages'))).toBe(false)
   })
 
   it('uploads exactly one file into its selected pending resource slot', async () => {
@@ -1010,6 +1134,7 @@ describe('PlayableWorkspace', () => {
         filename: 'gameplay.mp4',
         mimeType: 'video/mp4',
         size: 5,
+        durationSeconds: 12,
       },
     ]
     let uploadIndex = 0
@@ -1088,6 +1213,7 @@ describe('PlayableWorkspace', () => {
       filename: 'retry.mp4',
       mimeType: 'video/mp4',
       size: 5,
+      durationSeconds: 12,
     }
     let videoAttempts = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

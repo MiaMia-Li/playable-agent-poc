@@ -7,6 +7,7 @@ import {
   maxAssetBytesForSlot,
   MAX_ASSET_BYTES,
   MAX_ASSETS_PER_SLOT,
+  MAX_REFERENCE_VIDEO_SECONDS,
   MAX_TASK_ASSETS,
   MAX_UPLOAD_BYTES,
   type PlayableAssetSlot,
@@ -23,17 +24,33 @@ export interface PlayableAsset {
   filename: string
   mimeType: string
   size: number
+  /**
+   * Reported by the browser, so trivially forgeable. That is acceptable: it
+   * drives an upload guard and an evidence sanity check, neither of which is a
+   * security boundary. Null when the container gave no finite duration.
+   */
+  durationSeconds: number | null
   storageKey: string
   createdAt: Date
 }
 
-export type SafePlayableAsset = Pick<PlayableAsset, 'id' | 'slot' | 'filename' | 'mimeType' | 'size'>
+export type SafePlayableAsset = Pick<
+  PlayableAsset,
+  'id' | 'slot' | 'filename' | 'mimeType' | 'size' | 'durationSeconds'
+>
 
 interface AssetHandlerDependencies {
   authenticate(request: NextRequest): Promise<string | undefined>
   findOwnedTask(taskId: string, userId: string): Promise<boolean>
   saveAsset(asset: PlayableAsset): Promise<void>
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
+  /**
+   * The newest reference video becomes the one analysis targets. Done here
+   * rather than in the analysis route so the pointer is already correct when
+   * the browser's follow-up request names the asset; otherwise a second video
+   * uploaded in the same session would be refused as not active.
+   */
+  activateReferenceVideo(taskId: string, userId: string, assetId: string): Promise<void>
   store: ArtifactStore
   generateId(): string
 }
@@ -42,8 +59,22 @@ type RouteContext = { params: Promise<{ taskId: string }> }
 type AssetRouteContext = { params: Promise<{ taskId: string; assetId: string }> }
 
 export function safeAsset(asset: PlayableAsset): SafePlayableAsset {
-  const { id, slot, filename, mimeType, size } = asset
-  return { id, slot, filename, mimeType, size }
+  const { id, slot, filename, mimeType, size, durationSeconds } = asset
+  return { id, slot, filename, mimeType, size, durationSeconds }
+}
+
+/**
+ * Parses the duration the browser reported alongside the upload.
+ *
+ * Returns null for anything unusable rather than rejecting. Some webm and
+ * streamed mp4 containers report `Infinity` or `NaN` for `<video>.duration`,
+ * and refusing a valid video because its metadata is awkward costs more than
+ * letting one long video through a guard that is about experience, not safety.
+ */
+function parseUploadedDuration(value: FormDataEntryValue | null | undefined): number | null {
+  if (typeof value !== 'string') return null
+  const duration = Number(value)
+  return Number.isFinite(duration) && duration > 0 ? duration : null
 }
 
 export function createPlayableAssetHandler(dependencies: AssetHandlerDependencies) {
@@ -70,6 +101,13 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
       return Response.json({ error: 'File too large' }, { status: 413 })
     }
+    const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(form?.get('durationSeconds')) : null
+    if (durationSeconds !== null && durationSeconds > MAX_REFERENCE_VIDEO_SECONDS) {
+      return Response.json(
+        { error: 'Video too long', maxDurationSeconds: MAX_REFERENCE_VIDEO_SECONDS },
+        { status: 413 },
+      )
+    }
     const currentAssets = await dependencies.listAssets(taskId, userId)
     if (currentAssets.length >= MAX_TASK_ASSETS) {
       return Response.json({ error: 'Too many assets' }, { status: 409 })
@@ -91,11 +129,13 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       filename: filename || 'asset',
       mimeType: file.type,
       size: file.size,
+      durationSeconds,
       storageKey,
       createdAt: new Date(),
     }
     await dependencies.store.put(storageKey, new Uint8Array(await file.arrayBuffer()), file.type)
     await dependencies.saveAsset(asset)
+    if (slot === 'referenceVideo') await dependencies.activateReferenceVideo(taskId, userId, id)
     return Response.json({ asset: safeAsset(asset) }, { status: 201 })
   }
 }
@@ -136,7 +176,16 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
   }
 }
 
-export function createPlayableAssetDeleteHandler(dependencies: AssetAccessHandlerDependencies) {
+interface AssetDeleteHandlerDependencies extends AssetAccessHandlerDependencies {
+  /**
+   * Clears the active pointer when it names the deleted video. It is not moved
+   * to another remaining video: choosing one would silently decide which video
+   * gets analysed and paid for, and how the user picks is still open.
+   */
+  releaseReferenceVideo(taskId: string, userId: string, assetId: string): Promise<void>
+}
+
+export function createPlayableAssetDeleteHandler(dependencies: AssetDeleteHandlerDependencies) {
   return async (request: NextRequest, context: AssetRouteContext) => {
     const userId = await dependencies.authenticate(request)
     if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
@@ -146,6 +195,7 @@ export function createPlayableAssetDeleteHandler(dependencies: AssetAccessHandle
     await dependencies.store.delete(asset.storageKey)
     const deleted = await dependencies.deleteOwnedAsset(taskId, userId, assetId)
     if (!deleted) return Response.json({ error: 'Not found' }, { status: 404 })
+    if (deleted.slot === 'referenceVideo') await dependencies.releaseReferenceVideo(taskId, userId, assetId)
     return new Response(null, { status: 204 })
   }
 }

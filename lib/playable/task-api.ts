@@ -1,3 +1,6 @@
+import { mergeReasoning } from './reasoning-history'
+import { sanitizeBuildActivityDetail } from './build-activity-detail'
+import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -13,13 +16,19 @@ import {
 } from './playable-agent-adapter'
 import {
   confirmationProposalSchema,
+  gameplayAnnotationsSchema,
   gameplayBlueprintSchema,
   playableAgentReplySchema,
   requirementBriefSchema,
   revisionProposalSchema,
+  toGameplayBlueprintDocument,
   videoAnalysisStatusSchema,
+  MAX_GAMEPLAY_ANNOTATIONS,
   type ConfirmationProposal,
+  type GameplayAnnotation,
+  type GameplayAnnotationDraft,
   type GameplayBlueprint,
+  type GameplayBlueprintDocument,
   type PlayableAgentReply,
   type PlayableTaskPhase,
   type RequirementBrief,
@@ -34,9 +43,10 @@ import { createAssetSourceManifest, createProductionConfig } from './production-
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { isPlayableResourceAssetSlot } from './asset-policy'
 import { createRequirementBrief } from './requirement-tools'
-import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
-import { VIDEO_ANALYSIS_MODEL, VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
-import { runVideoAnalysis } from './video-analysis-service'
+import type { AppliedMediaResolution, VideoGameplayAnalyst } from './video-gameplay-analyst'
+import { VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
+import { runIntentComparison, runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
+import { deriveGameplayIntent } from './gameplay-intent'
 import { PlayableBuildExecutionError } from './sandbox-runner'
 import {
   deliveryProfileIdFor,
@@ -44,7 +54,6 @@ import {
   getDeliveryProfile,
   isDeliveryProfileId,
 } from './delivery-standards'
-import type { VideoPreprocessor } from './video-preprocessor'
 import {
   referenceImageAnalysisSchema,
   type ReferenceImageAnalyst,
@@ -69,11 +78,42 @@ import {
 
 type RouteContext = { params: Promise<{ taskId: string }> }
 
+const RUNNING_ANALYSIS_STATUSES: ReadonlySet<VideoAnalysisStatus> = new Set(['pending', 'preprocessing', 'analyzing'])
+
+/**
+ * How long an analysis may sit in a running state before it is presumed dead.
+ * Sized well above the worst observed end-to-end time including retries, so a
+ * slow run is never mistaken for an abandoned one.
+ */
+const STALE_ANALYSIS_MS = 15 * 60 * 1000
+
+/**
+ * An intent comparison runs in the background of the message route, which has
+ * no raised `maxDuration`. It is text only and far quicker than a video run,
+ * so it is cut off well inside the platform default.
+ */
+const INTENT_COMPARISON_BUDGET_MS = 240_000
+
+/**
+ * The analysis a task currently has for its active video, as three views that
+ * used to be one. `latest` carries the status the user sees; `source` is the
+ * newest succeeded attempt, which the blueprint is read from so a re-run or an
+ * intent comparison never leaves the agent without one; `intentPending` says
+ * the brief has moved on since `source` was compared against it.
+ */
+interface CurrentVideoAnalysis {
+  latest: PlayableVideoAnalysisRecord
+  source?: PlayableVideoAnalysisRecord
+  intentPending: boolean
+}
+
 export interface PlayableTaskRecord {
   id: string
   userId: string
   prompt: string
   phase: PlayableTaskPhase
+  activeReferenceVideoAssetId: string | null
+  gameplayAnnotations: GameplayAnnotation[]
   requirementBrief: RequirementBrief | null
   confirmation: ConfirmationProposal | null
   pendingRevision?: RevisionProposal | null
@@ -108,6 +148,14 @@ export interface PlayableVideoAnalysisRecord {
   status: VideoAnalysisStatus
   pipelineVersion: string
   model: string
+  attempt: number
+  mediaResolution: AppliedMediaResolution | null
+  /**
+   * The intent this blueprint's divergence was computed against. Null for
+   * rows written before it was recorded, which are treated as "unknown" and
+   * so compared again once any intent exists.
+   */
+  intentText: string | null
   blueprint: GameplayBlueprint | null
   errorCode: string | null
   createdAt: Date
@@ -168,6 +216,8 @@ export interface PlayableTaskRepository {
   appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void>
   listMessages(taskId: string): Promise<PlayableTaskMessageRecord[]>
   updateRequirementBrief(taskId: string, userId: string, brief: RequirementBrief): Promise<boolean>
+  updateGameplayAnnotations(taskId: string, userId: string, annotations: GameplayAnnotation[]): Promise<boolean>
+  setActiveReferenceVideo(taskId: string, userId: string, assetId: string | null): Promise<boolean>
   setDraft(taskId: string, userId: string): Promise<boolean>
   setAwaitingConfirmation(taskId: string, userId: string, confirmation: ConfirmationProposal): Promise<boolean>
   setAwaitingRevision(
@@ -212,23 +262,57 @@ export interface PlayableTaskRepository {
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
   findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
   deleteOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
-  createVideoAnalysis(input: {
+  // Required rather than optional. While it was optional the caller fell back
+  // to a plain insert, which bypasses the claim entirely — harmless while the
+  // unique index rejected duplicates, but now that `attempt` is part of that
+  // index the fallback would quietly let two analyses of one video run at once.
+  claimVideoAnalysis(input: {
     id: string
     taskId: string
     assetId: string
     pipelineVersion: string
     model: string
-  }): Promise<PlayableVideoAnalysisRecord>
-  claimVideoAnalysis?(input: {
-    id: string
-    taskId: string
-    assetId: string
-    pipelineVersion: string
-    model: string
+    /**
+     * Lets a claim start a new attempt past a succeeded one, for the user's
+     * "look again" request. A running attempt still blocks regardless, so a
+     * re-run can never bill two concurrent analyses of one video.
+     */
+    rerun?: boolean
   }): Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>
-  findLatestVideoAnalysis(taskId: string): Promise<PlayableVideoAnalysisRecord | undefined>
+  findLatestVideoAnalysis(taskId: string, pipelineVersion: string): Promise<PlayableVideoAnalysisRecord | undefined>
+  /**
+   * What the blueprint is read from while a newer attempt is running or has
+   * failed. Without it every re-run, and every intent comparison, would leave
+   * the agent and the build without a blueprint until it finished.
+   */
+  findLatestSucceededVideoAnalysis(
+    taskId: string,
+    pipelineVersion: string,
+    assetId: string,
+  ): Promise<PlayableVideoAnalysisRecord | undefined>
+  /**
+   * Inserts an already-succeeded attempt at exactly `attempt`, returning
+   * undefined if that number is taken. The fixed number is the guard: it only
+   * lands if nothing was claimed after the analysis it was derived from.
+   */
+  recordIntentComparison(input: {
+    id: string
+    taskId: string
+    assetId: string
+    pipelineVersion: string
+    model: string
+    attempt: number
+    blueprint: GameplayBlueprint
+    mediaResolution: AppliedMediaResolution | null
+    intentText: string
+  }): Promise<PlayableVideoAnalysisRecord | undefined>
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
-  completeVideoAnalysis(id: string, blueprint: GameplayBlueprint): Promise<void>
+  completeVideoAnalysis(
+    id: string,
+    blueprint: GameplayBlueprint,
+    mediaResolution: AppliedMediaResolution | null,
+    intentText: string,
+  ): Promise<void>
   failVideoAnalysis(id: string, errorCode: string): Promise<void>
   createResearchRun?(input: {
     id: string
@@ -280,8 +364,6 @@ interface HandlerDependencies {
   mediaGenerator?: MediaGenerator
   imageAnalyst?: ReferenceImageAnalyst
   videoAnalyst?: VideoGameplayAnalyst
-  videoPreprocessor?: VideoPreprocessor
-  videoToolTimeoutMs?: number
   marketResearchAgent?: MarketResearchAgent
   generateId(): string
 }
@@ -301,7 +383,7 @@ interface ConfirmedBuildDependencies {
   agent: PlayableAgentAdapter
   artifactStore: ArtifactStore
   mediaGenerator?: MediaGenerator
-  gameplayBlueprint?: GameplayBlueprint
+  gameplayBlueprint?: GameplayBlueprintDocument
   buildHeartbeatIntervalMs?: number
 }
 
@@ -402,16 +484,33 @@ function taskListItem(task: PlayableTaskRecord) {
   }
 }
 
-function safeVideoAnalysis(analysis: PlayableVideoAnalysisRecord | undefined) {
-  if (!analysis) return null
+/**
+ * Annotations are bound to the asset they describe and outlive a change of
+ * active video, but only the active video's are in play: they are what the
+ * agent resends, what the user sees, and what joins the blueprint document.
+ */
+function activeGameplayAnnotations(task: PlayableTaskRecord): GameplayAnnotation[] {
+  const assetId = task.activeReferenceVideoAssetId
+  return assetId ? task.gameplayAnnotations.filter((annotation) => annotation.assetId === assetId) : []
+}
+
+function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
+  if (!current) return null
+  const { latest, source } = current
   return {
-    id: analysis.id,
-    assetId: analysis.assetId,
-    status: videoAnalysisStatusSchema.parse(analysis.status),
-    blueprint: analysis.blueprint ? gameplayBlueprintSchema.parse(analysis.blueprint) : null,
-    errorCode: analysis.errorCode,
-    createdAt: analysis.createdAt.toISOString(),
-    completedAt: analysis.completedAt?.toISOString() ?? null,
+    id: latest.id,
+    assetId: latest.assetId,
+    status: videoAnalysisStatusSchema.parse(latest.status),
+    attempt: latest.attempt,
+    // Surfaced so the UI can say the analysis ran degraded and offer a re-run.
+    // Without it, a low-resolution result is indistinguishable from a good one.
+    // Taken from the blueprint's own attempt, since that is what it describes.
+    mediaResolution: source?.mediaResolution ?? null,
+    blueprint: source?.blueprint ? gameplayBlueprintSchema.parse(source.blueprint) : null,
+    intentPending: current.intentPending,
+    errorCode: latest.errorCode,
+    createdAt: latest.createdAt.toISOString(),
+    completedAt: latest.completedAt?.toISOString() ?? null,
   }
 }
 
@@ -419,16 +518,19 @@ const TOOL_PROGRESS_COPY = {
   inspect_reference_images: {
     tool_started: '正在分析参考图片',
     tool_completed: '参考图片分析完成',
+    tool_pending: '参考图片分析尚未完成',
     tool_failed: '参考图片分析暂不可用',
   },
   analyze_reference_video: {
     tool_started: '正在分析参考视频',
     tool_completed: '参考视频分析完成',
+    tool_pending: '参考视频分析尚未完成',
     tool_failed: '参考视频分析暂不可用',
   },
   search_market_references: {
     tool_started: '正在搜索同类试玩参考',
     tool_completed: '同类试玩参考搜索完成',
+    tool_pending: '同类试玩参考搜索尚未完成',
     tool_failed: '同类试玩参考搜索暂不可用',
   },
 } as const
@@ -441,7 +543,7 @@ const RESEARCH_PROGRESS_COPY: Record<MarketResearchProgressStage, string> = {
 }
 
 function toolProgressEvent(
-  type: 'tool_started' | 'tool_completed' | 'tool_failed',
+  type: 'tool_started' | 'tool_completed' | 'tool_pending' | 'tool_failed',
   tool: RequirementAnalysisToolCall['name'],
 ) {
   return { type, tool, message: TOOL_PROGRESS_COPY[tool][type] }
@@ -449,8 +551,10 @@ function toolProgressEvent(
 
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
+// Packed game bootstrappers evaluate embedded scripts. Keep this capability scoped to
+// the opaque-origin sandbox, without same-origin access or network connections.
 const PREVIEW_CSP =
-  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
@@ -512,6 +616,7 @@ type RequirementProcessingStage =
   | 'user_message_store'
   | 'agent_reply'
   | 'reply_validation'
+  | 'annotation_store'
   | 'brief_store'
   | 'agent_message_store'
   | 'phase_transition'
@@ -520,6 +625,7 @@ function requirementStageFailureMessage(stage: RequirementProcessingStage): stri
   if (stage === 'context_load') return '无法读取任务上下文，请检查数据库连接后重试'
   if (stage === 'user_message_store') return '无法保存你的消息，请检查数据库连接后重试'
   if (stage === 'reply_validation') return 'Agent 返回的需求方案未通过校验，请重试'
+  if (stage === 'annotation_store') return '无法保存玩法标注，请检查数据库后重试'
   if (stage === 'brief_store') return '无法保存实时 Brief，请检查数据库后重试'
   if (stage === 'agent_message_store') return '无法保存助手回复，请检查数据库后重试'
   if (stage === 'phase_transition') return '任务状态已变化，请刷新后重试'
@@ -537,6 +643,10 @@ function logRequirementStageFailure(stage: RequirementProcessingStage): void {
   }
   if (stage === 'reply_validation') {
     console.error('Playable requirement processing failed: reply validation failed')
+    return
+  }
+  if (stage === 'annotation_store') {
+    console.error('Playable requirement processing failed: annotation store failed')
     return
   }
   if (stage === 'brief_store') {
@@ -625,7 +735,7 @@ const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，自动�
 const CODEX_AUTH_BUILD_FAILURE_MESSAGE = 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。'
 const CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE = 'Codex 请求频率已达到限制，请稍后再试。'
 const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，自动重试后仍未完成，请稍后再试。'
-const CODEX_BUILD_FAILURE_MESSAGE = 'Codex 生成试玩时发生错误，请稍后重试；如持续失败，请检查 API Key 和模型访问权限。'
+const CODEX_BUILD_FAILURE_MESSAGE = 'Agent 执行失败，未发布试玩产物。请查看构建步骤和服务端错误日志后重试。'
 
 function externalErrorText(error: unknown): string {
   const parts: string[] = []
@@ -710,6 +820,7 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
       ) {
         return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
       }
+      if (message.includes('agent stream failed')) return 'Agent 响应流中断，未完成构建，请重试。'
       return CODEX_BUILD_FAILURE_MESSAGE
     }
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
@@ -857,6 +968,33 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
   )
 
+  // 顺序写入步骤事件，确保工具先开始再结束；终止事件前要等待队列排空。
+  // 公开详情在排队前统一脱敏，不写入控制台；原始事件、环境和隐藏推理不落库。
+  const activitySecrets = [
+    apiKey,
+    mediaApiKey ?? '',
+    ...Object.entries(process.env)
+      .filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|POSTGRES_URL|TEAM_ID|PROJECT_ID/.test(key))
+      .map(([, value]) => value ?? ''),
+  ]
+  let activityQueue = Promise.resolve()
+  const onActivity: BuildActivityCallback = (activity, detail) => {
+    if (!Object.hasOwn(buildActivityLabels, activity)) return
+    const message = detail
+      ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
+      : buildActivityLabels[activity]
+    activityQueue = activityQueue
+      .then(async () => {
+        await repository.appendEvent({
+          taskId: task.id,
+          type: `build_activity_${activity}`,
+          message,
+        })
+      })
+      .catch(() => {
+        console.error('Unable to persist build activity')
+      })
+  }
   let stage: ConfirmedBuildStage = 'confirmation'
   try {
     if (
@@ -938,6 +1076,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
+      onActivity,
       taskId: task.id,
       apiKey,
       confirmation: sanitizedConfirmation,
@@ -946,6 +1085,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
+    await activityQueue
     stage = 'validation'
     if (
       !result.validation.buildPassed ||
@@ -996,6 +1136,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       })
       .catch(() => undefined)
   } catch (cause) {
+    await activityQueue
     logConfirmedBuildFailure(stage, cause)
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   } finally {
@@ -1004,39 +1145,162 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 }
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
-  const videoToolLocks = new Set<string>()
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
-  const claimVideoAnalysis = async (taskId: string, assetId: string) => {
-    const key = `${assetId}:${VIDEO_ANALYSIS_PIPELINE_VERSION}:${VIDEO_ANALYSIS_MODEL}`
+  const claimVideoAnalysis = async (taskId: string, assetId: string, model: string, rerun: boolean) => {
+    // Deliberately keyed without `attempt`. This map exists to collapse
+    // concurrent requests within one process into a single claim; including the
+    // attempt number would make every key unique and defeat the whole purpose.
+    const key = `${assetId}:${VIDEO_ANALYSIS_PIPELINE_VERSION}:${model}`
     const pending = videoAnalysisClaims.get(key)
     if (pending) {
       const result = await pending
       return { analysis: result.analysis, claimed: false }
     }
-    const claim = dependencies.repository.claimVideoAnalysis
-      ? dependencies.repository.claimVideoAnalysis({
-          id: dependencies.generateId(),
-          taskId,
-          assetId,
-          pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
-          model: VIDEO_ANALYSIS_MODEL,
-        })
-      : dependencies.repository
-          .createVideoAnalysis({
-            id: dependencies.generateId(),
-            taskId,
-            assetId,
-            pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
-            model: VIDEO_ANALYSIS_MODEL,
-          })
-          .then((analysis) => ({ analysis, claimed: true }))
+    const claim = dependencies.repository.claimVideoAnalysis({
+      id: dependencies.generateId(),
+      taskId,
+      assetId,
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model,
+      rerun,
+    })
     videoAnalysisClaims.set(key, claim)
     try {
       return await claim
     } finally {
       videoAnalysisClaims.delete(key)
     }
+  }
+
+  /**
+   * Returns the current analysis for a task, treating an abandoned one as
+   * failed. A function killed by the platform never reaches `failVideoAnalysis`,
+   * so without this the row sits in `analyzing` forever and the UI spins. The
+   * gap has always existed; analysing on upload just makes it easy to hit.
+   */
+  const readCurrentAnalysis = async (
+    task: PlayableTaskRecord,
+    assetId: string | null,
+  ): Promise<CurrentVideoAnalysis | undefined> => {
+    const found = await dependencies.repository.findLatestVideoAnalysis(task.id, VIDEO_ANALYSIS_PIPELINE_VERSION)
+    // The active video can change, and the latest analysis may belong to the
+    // one it replaced. That is "not analysed yet", not a result.
+    if (!found || !assetId || found.assetId !== assetId) return undefined
+    let latest = found
+    if (RUNNING_ANALYSIS_STATUSES.has(found.status) && Date.now() - found.createdAt.getTime() >= STALE_ANALYSIS_MS) {
+      await dependencies.repository.failVideoAnalysis(found.id, 'analysis_abandoned').catch(() => undefined)
+      latest = { ...found, status: 'failed', errorCode: 'analysis_abandoned' }
+    }
+    const source =
+      latest.status === 'succeeded'
+        ? latest
+        : await dependencies.repository.findLatestSucceededVideoAnalysis(
+            task.id,
+            VIDEO_ANALYSIS_PIPELINE_VERSION,
+            assetId,
+          )
+    // Only owed against a settled result. A running attempt records whatever
+    // intent was current when it started, and is reconciled when it finishes.
+    const intent = deriveGameplayIntent(task.requirementBrief, task.prompt)
+    const intentPending =
+      latest.status === 'succeeded' && Boolean(latest.blueprint) && intent !== '' && intent !== latest.intentText
+    return { latest, source, intentPending }
+  }
+
+  /**
+   * The single place a stored blueprint becomes the document handed to the
+   * requirement agent and the build sandbox. Annotations are filtered to the
+   * analysed asset: they are bound to an asset and outlive a change of active
+   * video, so an unfiltered join would describe the old video's timeline.
+   */
+  const gameplayBlueprintDocumentFor = async (task: PlayableTaskRecord) => {
+    const source = (await readCurrentAnalysis(task, task.activeReferenceVideoAssetId))?.source
+    if (!source?.blueprint) return undefined
+    return toGameplayBlueprintDocument(
+      gameplayBlueprintSchema.parse(source.blueprint),
+      task.gameplayAnnotations.filter((annotation) => annotation.assetId === source.assetId),
+    )
+  }
+
+  const intentComparisonsInFlight = new Set<string>()
+
+  /**
+   * Brings intent divergence up to date with the brief (spec section 6.4). Run
+   * after a brief is stored and after a video analysis finishes, which between
+   * them cover uploading before describing as well as the reverse. Text only
+   * and never re-reads the video, so it is cheap enough to run on every change.
+   */
+  const reconcileIntentDivergence = async (taskId: string, userId: string) => {
+    const analyst = dependencies.videoAnalyst
+    if (!analyst) return
+    const task = await dependencies.repository.findOwnedTask(taskId, userId)
+    if (!task) return
+    const current = await readCurrentAnalysis(task, task.activeReferenceVideoAssetId)
+    if (!current?.intentPending) return
+    const base = current.latest
+    // Collapses a burst of brief updates in one process into one comparison;
+    // the next update after it lands will see whether the intent moved again.
+    if (intentComparisonsInFlight.has(base.id)) return
+    intentComparisonsInFlight.add(base.id)
+    try {
+      const asset = await dependencies.repository.findOwnedAsset(task.id, userId, base.assetId)
+      if (!asset) return
+      await runIntentComparison({
+        id: dependencies.generateId(),
+        task,
+        asset,
+        analysis: base,
+        intent: deriveGameplayIntent(task.requirementBrief, task.prompt),
+        repository: dependencies.repository,
+        analyst,
+        abortSignal: AbortSignal.timeout(INTENT_COMPARISON_BUDGET_MS),
+      })
+    } finally {
+      intentComparisonsInFlight.delete(base.id)
+    }
+  }
+
+  const scheduleIntentReconciliation = (taskId: string, userId: string) => {
+    try {
+      dependencies.schedule(() =>
+        reconcileIntentDivergence(taskId, userId).catch(() => {
+          console.error('Intent divergence reconciliation failed')
+        }),
+      )
+    } catch {
+      console.error('Unable to schedule intent divergence reconciliation')
+    }
+  }
+
+  /**
+   * The agent resends the whole list every turn, so this replaces rather than
+   * appends; an annotation the agent dropped is a deletion. Ids are minted per
+   * write because the drafts carry none, and the list is bound to the active
+   * reference video so it stays attributable after the user swaps videos.
+   */
+  const storeGameplayAnnotations = async (
+    task: PlayableTaskRecord,
+    userId: string,
+    drafts: readonly GameplayAnnotationDraft[],
+  ) => {
+    const assetId = task.activeReferenceVideoAssetId
+    if (!assetId) return
+    const current: GameplayAnnotation[] = drafts.map((draft) => ({
+      ...draft,
+      id: dependencies.generateId(),
+      assetId,
+      source: 'user',
+      confidence: 1,
+    }))
+    // Only the active video's list is replaced. The agent is shown just that
+    // list, so another video's annotations were never its to resend; dropping
+    // them here would delete the user's statements about a video they merely
+    // switched away from.
+    const others = task.gameplayAnnotations.filter((annotation) => annotation.assetId !== assetId)
+    const annotations = [...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
+    await dependencies.repository.updateGameplayAnnotations(task.id, userId, annotations)
+    task.gameplayAnnotations = annotations
   }
 
   const executeRequirementAnalysisTool = async (input: {
@@ -1046,7 +1310,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     apiKey: string
     allowedAssetIds: ReadonlySet<string>
     cache: Map<string, unknown>
-    budget: { imagesExecuted: boolean; videoExecuted: boolean }
+    budget: { imagesExecuted: boolean }
     abortSignal?: AbortSignal
     onResearchProgress?: (stage: MarketResearchProgressStage) => void
   }): Promise<
@@ -1167,6 +1431,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       return result
     }
 
+    // Reads an analysis that upload already started; it no longer runs one.
+    // The synchronous path used to hold the whole NDJSON stream open for as
+    // long as Gemini took, which is what forced the per-tool locks. Waiting is
+    // now the caller's problem: the agent is told the state and moves on.
     const cacheKey = JSON.stringify({ name: input.call.name, assetId: input.call.assetId })
     if (input.cache.has(cacheKey)) {
       return input.cache.get(cacheKey) as { status: string; blueprint?: GameplayBlueprint; reason?: string }
@@ -1174,60 +1442,22 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     if (!input.allowedAssetIds.has(input.call.assetId)) {
       return { status: 'unavailable', reason: 'asset_not_attached' }
     }
-    if (input.budget.videoExecuted) return { status: 'unavailable', reason: 'budget_exceeded' }
-    if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
-      return { status: 'unavailable', reason: 'analysis_unavailable' }
-    }
+    if (!dependencies.videoAnalyst) return { status: 'unavailable', reason: 'analysis_unavailable' }
     const asset = await dependencies.repository.findOwnedAsset(input.task.id, input.userId, input.call.assetId)
     if (!asset || asset.slot !== 'referenceVideo') return { status: 'unavailable', reason: 'asset_unavailable' }
-    const lockKey = `${input.task.id}:${asset.id}`
-    if (videoToolLocks.has(lockKey)) return { status: 'unavailable', reason: 'analysis_pending' }
-    videoToolLocks.add(lockKey)
-    try {
-      const latest = await dependencies.repository.findLatestVideoAnalysis(input.task.id)
-      if (latest?.assetId === asset.id && latest.status === 'succeeded' && latest.blueprint) {
-        const result = { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(latest.blueprint) }
-        input.cache.set(cacheKey, result)
-        return result
-      }
-      if (latest?.assetId === asset.id && ['pending', 'preprocessing', 'analyzing'].includes(latest.status)) {
-        return { status: 'unavailable', reason: 'analysis_pending' }
-      }
-      const timeoutSignal = AbortSignal.timeout(dependencies.videoToolTimeoutMs ?? 5 * 60 * 1000)
-      const abortSignal = input.abortSignal ? AbortSignal.any([input.abortSignal, timeoutSignal]) : timeoutSignal
-      const claim = await claimVideoAnalysis(input.task.id, asset.id)
-      if (!claim.claimed) {
-        if (claim.analysis.status === 'succeeded' && claim.analysis.blueprint) {
-          return { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(claim.analysis.blueprint) }
-        }
-        return { status: 'unavailable', reason: 'analysis_pending' }
-      }
-      input.budget.videoExecuted = true
-      const analysis = claim.analysis
-      await dependencies.repository.appendEvent({
-        taskId: input.task.id,
-        type: 'video_gameplay_analysis_queued',
-        message: 'Reference video analysis queued',
-      })
-      const blueprint = await runVideoAnalysis({
-        task: input.task,
-        asset,
-        analysis,
-        apiKey: input.apiKey,
-        repository: dependencies.repository,
-        artifactStore: dependencies.artifactStore,
-        preprocessor: dependencies.videoPreprocessor,
-        analyst: dependencies.videoAnalyst,
-        abortSignal,
-      })
-      const result = blueprint
-        ? { status: 'succeeded', blueprint }
-        : { status: 'analysis_failed', reason: 'analysis_failed' }
-      input.cache.set(cacheKey, result)
+
+    const current = await readCurrentAnalysis(input.task, asset.id)
+    if (!current) return { status: 'unavailable', reason: 'analysis_not_started' }
+    const { latest, source } = current
+    // A blueprint from an earlier attempt is still an observation of this
+    // video, so a re-run in progress does not take it away from the agent.
+    if (source?.blueprint) {
+      const result = { status: 'succeeded', blueprint: gameplayBlueprintSchema.parse(source.blueprint) }
+      if (source === latest) input.cache.set(cacheKey, result)
       return result
-    } finally {
-      videoToolLocks.delete(lockKey)
     }
+    if (latest.status === 'failed') return { status: 'analysis_failed', reason: latest.errorCode ?? 'analysis_failed' }
+    return { status: 'unavailable', reason: 'analysis_pending' }
   }
 
   return {
@@ -1414,21 +1644,25 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             )
             stopKeepalive = () => clearInterval(keepalive)
             const prompt = safeString(message, [apiKey])
+            // 每个请求单独收集，不能让工具后的新摘要覆盖本轮前面的公开摘要。
+            let reasoningHistory: string | undefined
             let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
-              const [history, assets, videoAnalysis, builds] = await Promise.all([
+              const [history, assets, gameplayBlueprint, builds] = await Promise.all([
                 dependencies.repository.listMessages(access.task.id),
                 dependencies.repository.listAssets(access.task.id, access.userId),
-                dependencies.repository.findLatestVideoAnalysis(access.task.id),
+                gameplayBlueprintDocumentFor(access.task),
                 dependencies.repository.listBuilds(access.task.id),
               ])
-              const latestReferenceVideo = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
               stage = 'user_message_store'
               await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
               stage = 'agent_reply'
               const referenceToolCache = new Map<string, unknown>()
-              const referenceToolBudget = { imagesExecuted: false, videoExecuted: false }
+              // Only the image tool is budgeted. Reading a stored blueprint
+              // costs nothing, so capping the video tool would only stop the
+              // agent from re-checking an analysis that finished mid-turn.
+              const referenceToolBudget = { imagesExecuted: false }
               let marketResearchCompleted = false
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
@@ -1451,12 +1685,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   pendingRevision: access.task.pendingRevision
                     ? sanitizeRevisionProposal(access.task.pendingRevision, [apiKey])
                     : null,
-                  gameplayBlueprint:
-                    videoAnalysis?.status === 'succeeded' &&
-                    videoAnalysis.blueprint &&
-                    videoAnalysis.assetId === latestReferenceVideo?.id
-                      ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
-                      : undefined,
+                  gameplayBlueprint,
+                  // Drafts come back without an asset id and are bound to the
+                  // active video on store, so showing the agent another video's
+                  // annotations would let it rebind them to this one.
+                  annotations: activeGameplayAnnotations(access.task),
                   referenceSelection,
                 },
                 {
@@ -1468,7 +1701,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     const message = progress.message ? safeString(progress.message, [apiKey]) : undefined
                     const reasoning = progress.reasoning ? safeString(progress.reasoning, [apiKey]) : undefined
                     if (!message && !reasoning) return
-                    enqueue({ type: 'assistant_progress', message, reasoning })
+                    reasoningHistory = mergeReasoning(reasoningHistory, reasoning)
+                    enqueue({ type: 'assistant_progress', message, reasoning: reasoningHistory })
                   },
                   executeTool: async (call, toolOptions) => {
                     const result = await executeRequirementAnalysisTool({
@@ -1501,6 +1735,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 throw new Error('Agent reply contains a credential')
               }
               const validatedReply = sanitizeAgentReply(parsedReply, [apiKey])
+              validatedReply.reasoning =
+                mergeReasoning(reasoningHistory, validatedReply.reasoning) ?? validatedReply.reasoning
               if (validatedReply.kind === 'research') {
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
@@ -1536,7 +1772,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId
-              if (templateId) nextBrief.sourceTemplateId = templateId
+              if (templateId !== undefined) nextBrief.sourceTemplateId = templateId
+              if (validatedReply.annotations) {
+                stage = 'annotation_store'
+                await storeGameplayAnnotations(access.task, access.userId, validatedReply.annotations)
+                // The stored list, with ids, rather than the reply's drafts: it
+                // is what the user deletes from.
+                enqueue({ type: 'annotations', annotations: activeGameplayAnnotations(access.task) })
+              }
               stage = 'brief_store'
               const briefUpdated = await dependencies.repository.updateRequirementBrief(
                 access.task.id,
@@ -1544,6 +1787,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 nextBrief,
               )
               if (!briefUpdated) throw new Error('Task phase conflict')
+              access.task.requirementBrief = nextBrief
+              // Checked here rather than in the background job so a turn that
+              // owes no comparison schedules nothing at all.
+              const analysisAfterBrief = await readCurrentAnalysis(
+                access.task,
+                access.task.activeReferenceVideoAssetId,
+              ).catch(() => undefined)
+              if (analysisAfterBrief?.intentPending) scheduleIntentReconciliation(access.task.id, access.userId)
               for (const tool of validatedReply.tools ?? []) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
@@ -1680,36 +1931,56 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async analysis(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      const latest = await dependencies.repository.findLatestVideoAnalysis(access.task.id)
       if (request.method === 'GET') {
+        const current = await readCurrentAnalysis(access.task, access.task.activeReferenceVideoAssetId)
         return Response.json(
-          { analysis: safeVideoAnalysis(latest) },
+          { analysis: safeVideoAnalysis(current) },
           { headers: { 'Cache-Control': 'private, no-store' } },
         )
       }
       if (request.method !== 'POST') return jsonError(405, 'Method not allowed')
-      if (!dependencies.videoAnalyst || !dependencies.videoPreprocessor) {
-        return jsonError(503, 'Video analysis is unavailable')
-      }
+      // The composition root leaves this undefined when no Gemini key is
+      // configured. A missing key used to surface only as a failed run rather
+      // than as an honest "analysis is unavailable".
+      if (!dependencies.videoAnalyst) return jsonError(503, 'Video analysis is unavailable')
+
+      const body = (await request.json().catch(() => undefined)) as { assetId?: unknown; rerun?: unknown } | undefined
+      // An explicit re-run is the only way past a succeeded analysis. Without it
+      // a result that came back degraded, or simply wrong, would be final.
+      const rerun = body?.rerun === true
       const assets = await dependencies.repository.listAssets(access.task.id, access.userId)
-      const video = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
+      const activeId = access.task.activeReferenceVideoAssetId
+      // Callers must name the video. Picking the newest upload implicitly used
+      // to be fine when analysis only ran on send; now that upload triggers it,
+      // two uploads in quick succession would both resolve to the same asset.
+      const requestedId = typeof body?.assetId === 'string' ? body.assetId : activeId
+      if (!requestedId) return jsonError(404, 'Reference video not found')
+      const video = assets.find((asset) => asset.id === requestedId && asset.slot === 'referenceVideo')
       if (!video) return jsonError(404, 'Reference video not found')
-      if (
-        latest?.assetId === video.id &&
-        ['pending', 'preprocessing', 'analyzing', 'succeeded'].includes(latest.status)
-      ) {
+      if (activeId && video.id !== activeId) return jsonError(409, 'Reference video is not the active one')
+      if (!activeId) await dependencies.repository.setActiveReferenceVideo(access.task.id, access.userId, video.id)
+
+      const current = await readCurrentAnalysis(access.task, video.id)
+      const latest = current?.latest
+      if (latest && latest.status !== 'failed' && !(rerun && latest.status === 'succeeded')) {
         return Response.json(
-          { analysis: safeVideoAnalysis(latest) },
+          { analysis: safeVideoAnalysis(current) },
           { status: latest.status === 'succeeded' ? 200 : 202 },
         )
       }
-      const apiKey = await dependencies.readApiKey(request, access.userId)
-      if (!apiKey) return jsonError(503, 'AI service unavailable')
-      const claim = await claimVideoAnalysis(access.task.id, video.id)
+      const claim = await claimVideoAnalysis(access.task.id, video.id, dependencies.videoAnalyst.model, rerun)
       const analysis = claim.analysis
+      // The previous blueprint rides along with the new attempt's status, so a
+      // re-run shows as "in progress" without the card going blank.
+      const claimedView: CurrentVideoAnalysis = {
+        latest: analysis,
+        source: analysis.status === 'succeeded' ? analysis : (current?.source ?? current?.latest),
+        intentPending: false,
+      }
+      if (claimedView.source?.status !== 'succeeded') claimedView.source = undefined
       if (!claim.claimed) {
         return Response.json(
-          { analysis: safeVideoAnalysis(analysis) },
+          { analysis: safeVideoAnalysis(claimedView) },
           { status: analysis.status === 'succeeded' ? 200 : 202 },
         )
       }
@@ -1724,18 +1995,55 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             task: access.task,
             asset: video,
             analysis,
-            apiKey,
             repository: dependencies.repository,
             artifactStore: dependencies.artifactStore,
-            preprocessor: dependencies.videoPreprocessor!,
             analyst: dependencies.videoAnalyst!,
+            abortSignal: AbortSignal.timeout(VIDEO_ANALYSIS_BUDGET_MS),
+          })
+          // Covers describing while the video was still being analysed: the
+          // run used the intent current when it started, and the brief may
+          // have moved on since.
+          await reconcileIntentDivergence(access.task.id, access.userId).catch(() => {
+            console.error('Intent divergence reconciliation failed')
           })
         })
       } catch {
         await dependencies.repository.failVideoAnalysis(analysis.id, 'schedule_failed')
         return jsonError(500, 'Unable to schedule video analysis')
       }
-      return Response.json({ analysis: safeVideoAnalysis(analysis) }, { status: 202 })
+      return Response.json({ analysis: safeVideoAnalysis(claimedView) }, { status: 202 })
+    },
+
+    /**
+     * The always-visible annotation list reads and deletes through here. It is
+     * the only defence against the agent silently dropping an annotation when
+     * it resends the list, so the user must be able to see and prune it
+     * without going through the agent.
+     */
+    async annotations(request: NextRequest, context: RouteContext): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      if (request.method === 'DELETE') {
+        const id = request.nextUrl.searchParams.get('id')
+        if (!id) return jsonError(400, 'Invalid request')
+        if (!access.task.gameplayAnnotations.some((annotation) => annotation.id === id)) {
+          return jsonError(404, 'Annotation not found')
+        }
+        const remaining = access.task.gameplayAnnotations.filter((annotation) => annotation.id !== id)
+        const updated = await dependencies.repository.updateGameplayAnnotations(
+          access.task.id,
+          access.userId,
+          remaining,
+        )
+        if (!updated) return jsonError(404, 'Not found')
+        access.task.gameplayAnnotations = remaining
+      } else if (request.method !== 'GET') {
+        return jsonError(405, 'Method not allowed')
+      }
+      return Response.json(
+        { annotations: activeGameplayAnnotations(access.task) },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      )
     },
 
     async confirm(request: NextRequest, context: RouteContext): Promise<Response> {
@@ -1744,7 +2052,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const body = (await request.json().catch(() => undefined)) as
         | { confirmation?: unknown; revisionId?: unknown }
         | undefined
-      const revision =
+      let revision =
         typeof body?.revisionId === 'string' && access.task.pendingRevision?.id === body.revisionId
           ? access.task.pendingRevision
           : undefined
@@ -1758,7 +2066,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       let sanitized: ConfirmationProposal
       try {
-        sanitized = sanitizeConfirmation(bindSourceTemplate(parsed.data, selectedSourceTemplate(access.task)))
+        sanitized = sanitizeConfirmation(
+          bindSourceTemplate(
+            parsed.data,
+            parsed.data.sourceTemplateId !== undefined
+              ? parsed.data.sourceTemplateId
+              : selectedSourceTemplate(access.task),
+          ),
+        )
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -1775,16 +2090,24 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (needsGeneratedMedia && !mediaApiKey) {
         return jsonError(503, 'AI media service unavailable')
       }
-      const [assets, videoAnalysis] = await Promise.all([
+      const [assets, gameplayBlueprint] = await Promise.all([
         dependencies.repository.listAssets(access.task.id, access.userId),
-        dependencies.repository.findLatestVideoAnalysis(access.task.id),
+        gameplayBlueprintDocumentFor(access.task),
       ])
-      const latestReferenceVideo = assets.filter((asset) => asset.slot === 'referenceVideo').at(-1)
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+
+      if (revision?.strategy === 'patch') {
+        const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
+        const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
+        const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
+        if (baseBuild && previousTemplate !== nextTemplate) {
+          revision = { ...revision, strategy: 'regenerate' }
+        }
+      }
 
       const buildId = dependencies.generateId()
       const claimed = await dependencies.repository.claimBuild(
@@ -1816,12 +2139,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             artifactStore: dependencies.artifactStore,
             mediaGenerator: dependencies.mediaGenerator,
             buildHeartbeatIntervalMs: dependencies.buildHeartbeatIntervalMs,
-            gameplayBlueprint:
-              videoAnalysis?.status === 'succeeded' &&
-              videoAnalysis.blueprint &&
-              videoAnalysis.assetId === latestReferenceVideo?.id
-                ? gameplayBlueprintSchema.parse(videoAnalysis.blueprint)
-                : undefined,
+            gameplayBlueprint,
           })
         })
       } catch {

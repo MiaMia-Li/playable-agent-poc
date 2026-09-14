@@ -1,4 +1,8 @@
-import { SOURCE_TEMPLATE_BUILD_PROMPT } from './source-template'
+import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
+import type { BuildActivityCallback } from './build-activity'
+import { createHarnessActivityReporter } from './build-activity-detail'
+import { sourceTemplateBuildPrompt } from './source-template'
+import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { HarnessAgent } from '@ai-sdk/harness/agent'
@@ -35,14 +39,14 @@ const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable'
 const CODEX_INSTRUCTIONS = [
   'Follow the supplied Mahjong playable Skill exactly.',
   'Collect requirements over multiple turns. Ask one focused clarification at a time and never repeat information already answered in conversation history.',
-  'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the four registered gameplay modes as concise selectable options.',
+  'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the available gameplay templates as concise selectable options.',
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
   'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
   'Raw uploaded referenceImage and referenceVideo entries provide metadata only. You may acknowledge their filenames, but never claim to have inspected their visual or audio content directly.',
   'When a QDAI gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
   'For clarification output, set confirmation to null and provide one to six options. For confirmation output, set options to an empty array and provide the complete confirmation object.',
-  'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by a registered mode. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
-  'If the core input model, state machine, or win/loss rules cannot be represented by a registered mode, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
+  'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by an included template. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
+  'If the core input model, state machine, or win/loss rules cannot be represented by an included template, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
   'Use confirmation.presentation to show only fields relevant to the requested game. Give asset slots gameplay-specific labels, omit irrelevant asset and copy fields, and do not use Mahjong labels for non-Mahjong freeform games.',
   'When requirements are sufficient, return one consolidated confirmation and a short user-visible decision rationale.',
   'Validate all required confirmation fields; never silently repair invalid JSON.',
@@ -160,6 +164,10 @@ async function createProposal(
     uploadedAssets: input.assets ?? [],
     attachedAssetIds: input.attachedAssetIds ?? [],
     gameplayBlueprint: input.gameplayBlueprint ?? null,
+    // Supplied on its own because the blueprint document only exists once an
+    // analysis has succeeded, and the agent resends the whole list: without
+    // this it would erase annotations recorded before the analysis finished.
+    gameplayAnnotations: input.annotations ?? [],
     currentArtifact: {
       hasArtifact: Boolean(input.hasArtifact),
       pendingRevision: input.pendingRevision ?? null,
@@ -273,6 +281,7 @@ async function executeBuildAgent(
   revision: ConfirmedBuildInput['revision'],
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
+  onActivity?: BuildActivityCallback,
 ) {
   const skill = await loadSkill(skillRoot)
   const agent = createCodexBuildAgent({ apiKey: input.authEnvironment.CODEX_API_KEY, skill })
@@ -289,11 +298,32 @@ async function executeBuildAgent(
   }
   try {
     try {
-      await agent.generate({
+      onActivity?.('agent_started')
+      const result = await agent.stream({
         session,
-        prompt: createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
+        // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
+        prompt: [PLAYABLE_TOOLS_PROMPT, createCodexBuildPrompt(route, revision, sourceTemplateId, mode)].join('\n'),
         abortSignal: input.abortSignal,
       })
+      // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
+      const progress = createHarnessActivityReporter(onActivity)
+      try {
+        for await (const event of result.fullStream) {
+          if (event.type === 'error') {
+            // 保留提供方错误，供已有脱敏日志和失败分类使用；不能用通用文案覆盖根因。
+            throw event.error instanceof Error
+              ? event.error
+              : new Error(typeof event.error === 'string' ? event.error : 'Agent stream failed', {
+                  cause: event.error,
+                })
+          }
+          progress.accept(event)
+        }
+      } finally {
+        progress.flush()
+      }
+      input.abortSignal?.throwIfAborted()
+      onActivity?.('agent_completed')
     } catch (error) {
       logExternalRequestError('Codex agent', error, [input.authEnvironment.CODEX_API_KEY])
       throw error
@@ -326,14 +356,18 @@ export function createCodexBuildPrompt(
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
 ): string {
-  const validationCommand =
-    route === 'exact'
-      ? 'node assets/starter/work/test-playable.mjs output.html'
-      : 'node assets/starter/work/test-freeform-playable.mjs output.html'
+  // 首次生成与修改共用模板优先级，不能让 patch 绕过独立 HTML 的规则。
+  if (sourceTemplateId) return sourceTemplateBuildPrompt(revision?.strategy)
+  const selection = {
+    sourceTemplateId,
+    mode: mode ?? 'center_collision',
+    routing: { match: route, confidence: 1, differences: [] },
+  }
+  const validationCommand = buildValidationCommand(selection)
   const finalInstructions = [
     'Treat output.html as the final artifact.',
     'Do not run the registered template build command after modifying output.html because it overwrites adaptations.',
-    ...(mode === 'perspective_3d'
+    ...(usesPerspectiveTemplate(selection)
       ? [
           'Use the prebuilt output.html as the current perspective_3d template and adapt it rather than recreating the game.',
           'Preserve its Three.js/WebGL gameplay skeleton: the 8x8 outer ring, 4x4 center opening, eight-layer wall, tile lift, center collision, fracture, and lower-layer reveal.',
@@ -353,8 +387,6 @@ export function createCodexBuildPrompt(
       ...finalInstructions,
     ].join('\n')
   }
-
-  if (sourceTemplateId) return SOURCE_TEMPLATE_BUILD_PROMPT
 
   if (route === 'freeform') {
     return [
@@ -407,6 +439,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
               input.revision,
               input.confirmation.sourceTemplateId,
               input.confirmation.mode,
+              input.onActivity,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,
