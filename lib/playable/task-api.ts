@@ -1,3 +1,4 @@
+import { mergeReasoning } from './reasoning-history'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -1417,6 +1418,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             )
             stopKeepalive = () => clearInterval(keepalive)
             const prompt = safeString(message, [apiKey])
+            // 每个请求单独收集，不能让工具后的新摘要覆盖本轮前面的公开摘要。
+            let reasoningHistory: string | undefined
             let stage: RequirementProcessingStage = 'context_load'
             try {
               if (!enqueue({ type: 'started' })) return
@@ -1470,7 +1473,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     const message = progress.message ? safeString(progress.message, [apiKey]) : undefined
                     const reasoning = progress.reasoning ? safeString(progress.reasoning, [apiKey]) : undefined
                     if (!message && !reasoning) return
-                    enqueue({ type: 'assistant_progress', message, reasoning })
+                    reasoningHistory = mergeReasoning(reasoningHistory, reasoning)
+                    enqueue({ type: 'assistant_progress', message, reasoning: reasoningHistory })
                   },
                   executeTool: (call, toolOptions) =>
                     executeRequirementAnalysisTool({
@@ -1495,6 +1499,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 throw new Error('Agent reply contains a credential')
               }
               const validatedReply = sanitizeAgentReply(parsedReply, [apiKey])
+              validatedReply.reasoning =
+                mergeReasoning(reasoningHistory, validatedReply.reasoning) ?? validatedReply.reasoning
               if (validatedReply.kind === 'research') {
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))

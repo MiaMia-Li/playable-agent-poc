@@ -1,5 +1,7 @@
 'use client'
 
+import { AgentText, ReasoningText } from './reasoning-text'
+import { mergeReasoning } from '@/lib/playable/reasoning-history'
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -345,7 +347,7 @@ export function ChatWorkspace({
           ? `请参考已上传素材：${attachmentSnapshot.map((attachment) => attachment.filename).join('、')}`
           : '')
       if (!content || sending || !canCompose) return false
-      const id = Date.now()
+      const id = crypto.randomUUID()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
       let terminalEventReceived = false
@@ -460,7 +462,11 @@ export function ChatWorkspace({
                 },
               ]
             }
-            return items.map((item) => (item.id === assistantId ? { ...item, ...next } : item))
+            return items.map((item) =>
+              item.id === assistantId
+                ? { ...item, ...next, reasoning: mergeReasoning(item.reasoning, next.reasoning) }
+                : item,
+            )
           })
         }
         const handleLine = (line: string) => {
@@ -961,11 +967,11 @@ export function ChatWorkspace({
                 {item.reasoning && (
                   <details className="text-muted-foreground mb-2 text-xs">
                     <summary className="cursor-pointer select-none">Thinking</summary>
-                    <p className="mt-1 border-l pl-3 leading-5">{item.reasoning}</p>
+                    <ReasoningText>{item.reasoning}</ReasoningText>
                   </details>
                 )}
-                <div className="whitespace-pre-wrap break-words">
-                  {item.content || (item.status === 'streaming' ? 'Loading…' : '')}
+                <div className="break-words">
+                  <AgentText>{item.content || (item.status === 'streaming' ? 'Loading…' : '')}</AgentText>
                   {item.status === 'streaming' && <span className="ml-0.5 inline-block animate-pulse">▍</span>}
                 </div>
                 {item.request && item.request.question !== item.content && (

@@ -1307,6 +1307,9 @@ describe('playable task API', () => {
     expect(events.map(({ type }) => type)).toContain('assistant_progress')
     expect(events.find(({ type }) => type === 'assistant_progress')?.message).toBe('方案正在整理')
     expect(events.at(-1)?.type).toBe('confirmation')
+    const stored = (await harness.repository.listMessages('owned')).findLast((item) => item.role === 'agent')
+    expect(JSON.parse(stored!.content).reasoning).toContain('正在匹配可用玩法')
+    expect(JSON.parse(stored!.content).reasoning).toContain(confirmationReply.reasoning)
   })
 
   it('streams an informational answer without changing phase or routing the brief', async () => {
