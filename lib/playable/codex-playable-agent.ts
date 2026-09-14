@@ -1,4 +1,5 @@
-import { SOURCE_TEMPLATE_BUILD_PROMPT } from './source-template'
+import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
+import { sourceTemplateBuildPrompt } from './source-template'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { HarnessAgent } from '@ai-sdk/harness/agent'
@@ -35,14 +36,14 @@ const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable'
 const CODEX_INSTRUCTIONS = [
   'Follow the supplied Mahjong playable Skill exactly.',
   'Collect requirements over multiple turns. Ask one focused clarification at a time and never repeat information already answered in conversation history.',
-  'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the four registered gameplay modes as concise selectable options.',
+  'Respond with clarification when the gameplay mechanic is not explicit; a visual theme alone is not a mechanic. Offer the available gameplay templates as concise selectable options.',
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
   'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
   'Raw uploaded referenceImage and referenceVideo entries provide metadata only. You may acknowledge their filenames, but never claim to have inspected their visual or audio content directly.',
   'When a QDAI gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
   'For clarification output, set confirmation to null and provide one to six options. For confirmation output, set options to an empty array and provide the complete confirmation object.',
-  'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by a registered mode. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
-  'If the core input model, state machine, or win/loss rules cannot be represented by a registered mode, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
+  'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by an included template. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
+  'If the core input model, state machine, or win/loss rules cannot be represented by an included template, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
   'Use confirmation.presentation to show only fields relevant to the requested game. Give asset slots gameplay-specific labels, omit irrelevant asset and copy fields, and do not use Mahjong labels for non-Mahjong freeform games.',
   'When requirements are sufficient, return one consolidated confirmation and a short user-visible decision rationale.',
   'Validate all required confirmation fields; never silently repair invalid JSON.',
@@ -333,14 +334,18 @@ export function createCodexBuildPrompt(
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
 ): string {
-  const validationCommand =
-    route === 'exact'
-      ? 'node assets/starter/work/test-playable.mjs output.html'
-      : 'node assets/starter/work/test-freeform-playable.mjs output.html'
+  // 首次生成与修改共用模板优先级，不能让 patch 绕过独立 HTML 的规则。
+  if (sourceTemplateId) return sourceTemplateBuildPrompt(revision?.strategy)
+  const selection = {
+    sourceTemplateId,
+    mode: mode ?? 'center_collision',
+    routing: { match: route, confidence: 1, differences: [] },
+  }
+  const validationCommand = buildValidationCommand(selection)
   const finalInstructions = [
     'Treat output.html as the final artifact.',
     'Do not run the registered template build command after modifying output.html because it overwrites adaptations.',
-    ...(mode === 'perspective_3d'
+    ...(usesPerspectiveTemplate(selection)
       ? [
           'Use the prebuilt output.html as the current perspective_3d template and adapt it rather than recreating the game.',
           'Preserve its Three.js/WebGL gameplay skeleton: the 8x8 outer ring, 4x4 center opening, eight-layer wall, tile lift, center collision, fracture, and lower-layer reveal.',
@@ -360,8 +365,6 @@ export function createCodexBuildPrompt(
       ...finalInstructions,
     ].join('\n')
   }
-
-  if (sourceTemplateId) return SOURCE_TEMPLATE_BUILD_PROMPT
 
   if (route === 'freeform') {
     return [

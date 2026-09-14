@@ -1518,7 +1518,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId
-              if (templateId) nextBrief.sourceTemplateId = templateId
+              if (templateId !== undefined) nextBrief.sourceTemplateId = templateId
               stage = 'brief_store'
               const briefUpdated = await dependencies.repository.updateRequirementBrief(
                 access.task.id,
@@ -1726,7 +1726,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const body = (await request.json().catch(() => undefined)) as
         | { confirmation?: unknown; revisionId?: unknown }
         | undefined
-      const revision =
+      let revision =
         typeof body?.revisionId === 'string' && access.task.pendingRevision?.id === body.revisionId
           ? access.task.pendingRevision
           : undefined
@@ -1740,7 +1740,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       let sanitized: ConfirmationProposal
       try {
-        sanitized = sanitizeConfirmation(bindSourceTemplate(parsed.data, selectedSourceTemplate(access.task)))
+        sanitized = sanitizeConfirmation(
+          bindSourceTemplate(
+            parsed.data,
+            parsed.data.sourceTemplateId !== undefined
+              ? parsed.data.sourceTemplateId
+              : selectedSourceTemplate(access.task),
+          ),
+        )
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
@@ -1767,6 +1774,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+
+      if (revision?.strategy === 'patch') {
+        const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
+        const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
+        const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
+        if (baseBuild && previousTemplate !== nextTemplate) {
+          revision = { ...revision, strategy: 'regenerate' }
+        }
+      }
 
       const buildId = dependencies.generateId()
       const claimed = await dependencies.repository.claimBuild(

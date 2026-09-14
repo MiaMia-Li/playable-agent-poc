@@ -1,3 +1,4 @@
+import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
@@ -126,7 +127,7 @@ function hasResponsiveViewport(html: string): boolean {
 }
 
 function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['confirmation'], html: string): void {
-  if (confirmation.routing.match === 'freeform' || confirmation.mode !== 'perspective_3d') return
+  if (!usesPerspectiveTemplate(confirmation)) return
   const requiredTokens = [
     'data-playable-template="perspective_3d"',
     `data-template-version="${MAHJONG_PLAYABLE_PLUGIN.version}"`,
@@ -301,14 +302,14 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (confirmation.sourceTemplateId && input.revision?.strategy !== 'patch') {
+    } else if (confirmation.sourceTemplateId || input.revision?.strategy === 'patch') {
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),
         content: input.baseHtml,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (!freeform && input.revision?.strategy !== 'patch') {
+    } else if (!freeform) {
       stage = 'artifact_build'
       await dependencies.logger?.info('Building playable baseline')
       await requireSuccessfulCommand(
@@ -346,10 +347,7 @@ export async function runPlayableBuild(
     await requireSuccessfulCommand(
       sandbox,
       {
-        command:
-          confirmation.routing.match === 'exact'
-            ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
-            : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform,
+        command: buildValidationCommand(confirmation),
         workingDirectory: workspace,
         env: {
           PLAYABLE_MODE: confirmation.mode,

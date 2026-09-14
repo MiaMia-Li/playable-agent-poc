@@ -9,6 +9,7 @@ export interface PlayableProductionConfig {
     pluginVersion: string
     runtimeVersion: string
     mode: ConfirmationProposal['mode']
+    sourceTemplateId?: NonNullable<ConfirmationProposal['sourceTemplateId']>
     gameplay: string
     routing: ConfirmationProposal['routing']
   }
@@ -41,6 +42,7 @@ export function createProductionConfig(confirmation: ConfirmationProposal): Play
       pluginVersion: mode.pluginVersion,
       runtimeVersion: mode.runtimeVersion,
       mode: confirmation.mode,
+      ...(confirmation.sourceTemplateId ? { sourceTemplateId: confirmation.sourceTemplateId } : {}),
       gameplay: confirmation.gameplay,
       routing: confirmation.routing,
     },

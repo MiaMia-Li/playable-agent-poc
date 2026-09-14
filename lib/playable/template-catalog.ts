@@ -14,7 +14,7 @@ export interface PlayableTemplate {
   description: string
 }
 
-// Imported HTML games use the freeform build route; they are not Mahjong runtime modes.
+// Standalone HTML templates share the routing policy with Mahjong templates but use their own runtime.
 export const PLAYABLE_TEMPLATES: readonly PlayableTemplate[] = [
   ...PLAYABLE_MODES,
   { id: 'balloon_master', label: '彩球转盘消除', description: '转动各层圆盘对齐同色球列，下滑消除外层并揭开内层' },

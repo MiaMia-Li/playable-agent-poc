@@ -24,7 +24,7 @@ When `sourceTemplateId` is present in the confirmed configuration, read only its
 | `zeus_scatter` | 宙斯 Scatter 转轴 | [references/templates/zeus_scatter.md](references/templates/zeus_scatter.md) |
 | `balloon_master` | 彩球转盘消除 | [references/templates/balloon_master.md](references/templates/balloon_master.md) |
 
-These templates use the `freeform` pipeline with their own Cocos or Laya engine. They are separate from `plugin.json.modes`, whose IDs select the shared Mahjong runtime. A legacy `mode` such as `gravity_fill` is only scaffold metadata when `sourceTemplateId` is set; it must not replace the selected game's input model or rules. The confirmed gameplay and revision requirements override source defaults. Preserve only behavior the user has not requested to change.
+These templates use their own Cocos or Laya engine and the standalone HTML build pipeline. Classify their gameplay match with the same `exact` / `approximate` / `freeform` policy as the Mahjong templates; the build pipeline does not determine the match. They are separate from `plugin.json.modes`, whose IDs select the shared Mahjong runtime. A legacy `mode` such as `gravity_fill` is only scaffold metadata when `sourceTemplateId` is set; it must not replace the selected game's input model or rules. The confirmed gameplay and revision requirements override source defaults. Preserve only behavior the user has not requested to change.
 
 ### Configurable Mahjong modes and new games
 
@@ -46,9 +46,9 @@ When the user already names an included mode, do not ask again. Load only that m
 
 Classify every request as `exact`, `approximate`, or `freeform` and report confidence plus every known difference:
 
-- `exact`: operation, state machine, and ending are fully expressed by an included mode.
+- `exact`: operation, state machine, and ending are fully expressed by an included template.
 - `approximate`: the core state machine matches, but camera, 3D depth, animation, Boss wrapper, or reward presentation differs. List the differences for user confirmation.
-- `freeform`: the core input model, state machine, or win/loss rules cannot be expressed by an included mode. Use the closest mode only as a workspace scaffold, then let the build model implement the confirmed gameplay directly. Do not create a new Plugin request.
+- `freeform`: the core input model, state machine, or win/loss rules cannot be expressed by an included template. Use the closest mode only as a workspace scaffold, then let the build model implement the confirmed gameplay directly. Do not create a new Plugin request.
 
 ## 2. One consolidated confirmation
 

@@ -1,3 +1,4 @@
+import { sourceTemplateIds } from '@/lib/playable/types'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -109,7 +110,7 @@ describe('CodexCliPlayableAgent', () => {
     expect(invocation.prompt).toContain('domain tools')
     expect(invocation.prompt).toContain('respond_to_user')
     expect(invocation.prompt).toContain('update_requirement_brief')
-    expect(invocation.prompt).toContain('exact when a mode fully covers')
+    expect(invocation.prompt).toContain('exact when a template fully covers')
     expect(invocation.prompt).toContain('freeform')
     expect(invocation.prompt).toContain('AI media generation is unavailable')
     expect(invocation.prompt).toContain('"attachedAssetIds":["current-video"]')
@@ -207,7 +208,11 @@ describe('CodexCliPlayableAgent', () => {
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
   })
 
-  it('seeds template HTML before Codex and requests in-place changes', async () => {
+  it.each(
+    sourceTemplateIds.flatMap((sourceTemplateId) =>
+      ([undefined, 'patch', 'regenerate'] as const).map((strategy) => ({ sourceTemplateId, strategy })),
+    ),
+  )('CLI 模板基线：$sourceTemplateId / $strategy', async ({ sourceTemplateId, strategy }) => {
     const source = '<html><body>original template</body></html>'
     let inspected = false
     const invokeCodex = vi.fn(async (invocation) => {
@@ -215,6 +220,9 @@ describe('CodexCliPlayableAgent', () => {
       expect(await readFile(path.join(invocation.workspace, 'current-playable.html'), 'utf8')).toBe(source)
       expect(invocation.prompt).toContain('Modify output.html in place')
       expect(invocation.prompt).not.toContain('Create the requested game directly')
+      expect(invocation.prompt).not.toContain('Three.js')
+      expect(invocation.prompt).toContain('test-freeform-playable.mjs')
+      if (strategy === 'patch') expect(invocation.prompt).toContain('Copy current-playable.html to output.html')
       inspected = true
       return { completed: true }
     })
@@ -224,11 +232,26 @@ describe('CodexCliPlayableAgent', () => {
     }
     await new CodexCliPlayableAgent({ invokeCodex, buildRunner: vi.fn(async () => result) }).build({
       taskId: 'template-task',
+      ...(strategy
+        ? {
+            revision: {
+              id: 'revision',
+              baseBuildId: 'base',
+              baseVersion: 1,
+              targetVersion: 2,
+              strategy,
+              summary: '修改游戏',
+              changes: ['调整交互'],
+              preserved: ['保留引擎'],
+            },
+          }
+        : {}),
       apiKey: 'local-marker',
       baseHtml: source,
       confirmation: {
         ...proposal,
-        sourceTemplateId: 'zeus_scatter',
+        sourceTemplateId,
+        mode: 'perspective_3d',
         routing: { match: 'freeform', confidence: 1, differences: ['Adapt source'] },
       },
     })

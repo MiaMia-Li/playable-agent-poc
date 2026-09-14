@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { sourceTemplateIds } from '@/lib/playable/types'
 import { templatePrompts } from '@/lib/playable/template-catalog'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
@@ -22,7 +23,11 @@ import type {
 } from '@/lib/playable/schemas'
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
-import { createAssetSourceManifest, createValidationReport } from '@/lib/playable/production-contract'
+import {
+  createAssetSourceManifest,
+  createProductionConfig,
+  createValidationReport,
+} from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 import type { ReferenceImageAnalysis } from '@/lib/playable/reference-image-analyst'
 import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
@@ -247,6 +252,7 @@ class MemoryRepository implements PlayableTaskRepository {
       return
     task.phase = 'building'
     task.confirmation = value
+    task.pendingRevision = revision ?? null
     task.updatedAt = new Date()
     this.builds.push({
       id: buildId,
@@ -2048,6 +2054,118 @@ describe('playable task API', () => {
     ])
   })
 
+  it.each(sourceTemplateIds.flatMap((id) => [null, 'zeus_scatter' as const].map((initial) => [id, initial] as const)))(
+    'persists and builds %s instead of the initial template %s',
+    async (sourceTemplateId, initial) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'awaiting_confirmation'
+      task.prompt = templatePrompts[initial ?? 'center_collision']
+      task.requirementBrief = { ...createRequirementBrief(), sourceTemplateId: initial }
+      task.confirmation = { ...confirmation, sourceTemplateId: initial }
+      const selected = { ...confirmation, sourceTemplateId }
+      const response = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: selected }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(response.status).toBe(202)
+      expect(task.confirmation).toEqual(selected)
+      expect(harness.repository.builds.at(-1)?.confirmation).toEqual(selected)
+      await harness.scheduled.at(-1)!()
+      expect(harness.agent.build).toHaveBeenCalledWith(
+        expect.objectContaining({
+          confirmation: selected,
+          baseHtml: await readFile(
+            `skills/mahjong-pair-match-playable/assets/templates/${sourceTemplateId}/source.html`,
+            'utf8',
+          ),
+        }),
+      )
+      expect(createProductionConfig(selected).core.sourceTemplateId).toBe(sourceTemplateId)
+      const state = await (
+        await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+          params: Promise.resolve({ taskId: 'owned' }),
+        })
+      ).json()
+      expect(state.task.confirmation.sourceTemplateId).toBe(sourceTemplateId)
+    },
+  )
+
+  it('keeps an explicit Mahjong selection after build, reload, and another requirement turn', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.prompt = templatePrompts.zeus_scatter
+    task.requirementBrief = { ...createRequirementBrief(), sourceTemplateId: 'zeus_scatter' }
+    task.confirmation = { ...confirmation, sourceTemplateId: 'zeus_scatter' }
+    const selected = { ...confirmation, mode: 'gravity_fill' as const, sourceTemplateId: null }
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: selected }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(response.status).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenCalledWith(expect.objectContaining({ confirmation: selected }))
+    const state = await (
+      await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+    ).json()
+    expect(state.task.confirmation).toMatchObject({ mode: 'gravity_fill', sourceTemplateId: null })
+    expect(vi.mocked(harness.agent.build).mock.calls.at(-1)![0].baseHtml).toBeUndefined()
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      ...confirmationReply,
+      confirmation: { ...confirmation, mode: 'gravity_fill' },
+    })
+    task.phase = 'failed'
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '继续调整玩法' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+    expect(task.requirementBrief?.sourceTemplateId).toBeNull()
+    expect(task.confirmation).toMatchObject({ mode: 'gravity_fill', sourceTemplateId: null })
+  })
+
+  it('regenerates from the newly selected template when a patch changes templates', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_revision_confirmation'
+    task.confirmation = confirmation
+    task.pendingRevision = {
+      ...patchRevision,
+      id: 'revision-1',
+      baseBuildId: 'build-1',
+      baseVersion: 1,
+      targetVersion: 2,
+    }
+    harness.repository.builds.push({
+      id: 'build-1',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation,
+      artifactKey: 'old-html',
+      createdAt: new Date(),
+    })
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        revisionId: 'revision-1',
+        confirmation: { ...confirmation, sourceTemplateId: 'balloon_master' },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(response.status).toBe(202)
+    expect(harness.repository.builds.at(-1)?.revision?.strategy).toBe('regenerate')
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revision: expect.objectContaining({ strategy: 'regenerate' }),
+        baseHtml: await readFile(
+          'skills/mahjong-pair-match-playable/assets/templates/balloon_master/source.html',
+          'utf8',
+        ),
+      }),
+    )
+  })
+
   it.each(['structured', 'legacy'])('loads selected source HTML for %s template tasks', async (selection) => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'
@@ -2067,7 +2185,7 @@ describe('playable task API', () => {
       expect.objectContaining({
         confirmation: expect.objectContaining({
           sourceTemplateId: 'zeus_scatter',
-          routing: expect.objectContaining({ match: 'freeform' }),
+          routing: confirmation.routing,
         }),
         baseHtml: await readFile(
           'skills/mahjong-pair-match-playable/assets/templates/zeus_scatter/source.html',
