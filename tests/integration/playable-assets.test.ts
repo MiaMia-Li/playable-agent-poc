@@ -4,6 +4,8 @@ import {
   createPlayableAssetContentHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
+  createPlayableAssetUploadCompleteHandler,
+  createPlayableAssetUploadTokenHandler,
   MAX_ASSET_BYTES,
   type PlayableAsset,
 } from '@/lib/playable/task-assets'
@@ -206,6 +208,181 @@ describe('playable asset upload', () => {
     ])
     expect(responses.map((response) => response.status)).toEqual([415, 400, 415, 415, 413])
     expect(store.put).not.toHaveBeenCalled()
+  })
+})
+
+describe('playable direct asset upload', () => {
+  const context = { params: Promise.resolve({ taskId: 'owned' }) }
+  const key = 'users/user-1/tasks/owned/assets/asset-1'
+
+  function jsonRequest(path: string, body: unknown) {
+    return new NextRequest(`https://app.example/api/playable-tasks/owned/assets/${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  }
+
+  function directHarness(options: { stored?: { size: number; contentType: string }; direct?: boolean } = {}) {
+    const metadata: PlayableAsset[] = []
+    const store = { put: vi.fn(), get: vi.fn(), delete: vi.fn(async () => undefined) }
+    const directUploads = {
+      issueUploadToken: vi.fn(async () => 'client-token'),
+      describe: vi.fn(async () => options.stored),
+    }
+    const activateReferenceVideo = vi.fn(async () => undefined)
+    const dependencies = {
+      authenticate: async () => 'user-1',
+      findOwnedTask: async (taskId: string) => taskId === 'owned',
+      saveAsset: async (asset: PlayableAsset) => void metadata.push(asset),
+      listAssets: async () => metadata,
+      activateReferenceVideo,
+      store,
+      directUploads: options.direct === false ? undefined : directUploads,
+      generateId: () => 'asset-1',
+    }
+    return {
+      token: createPlayableAssetUploadTokenHandler(dependencies),
+      complete: createPlayableAssetUploadCompleteHandler(dependencies),
+      metadata,
+      store,
+      directUploads,
+      activateReferenceVideo,
+    }
+  }
+
+  // Vercel refuses function bodies over 4.5 MB, so a video past that size
+  // only ever reaches storage this way.
+  it('issues a token for a large video scoped to a key the server chose', async () => {
+    const { token, directUploads } = directHarness()
+
+    const response = await token(
+      jsonRequest('uploads', {
+        slot: 'referenceVideo',
+        mimeType: 'video/mp4',
+        size: 50 * 1024 * 1024,
+        durationSeconds: 21,
+      }),
+      context,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ pathname: key, clientToken: 'client-token' })
+    expect(directUploads.issueUploadToken).toHaveBeenCalledWith(key, {
+      contentType: 'video/mp4',
+      maxBytes: 100 * 1024 * 1024,
+    })
+  })
+
+  it('refuses a token on the same terms as the multipart route', async () => {
+    const { token, directUploads } = directHarness()
+    const responses = await Promise.all([
+      token(jsonRequest('uploads', { slot: 'referenceVideo', mimeType: 'image/png', size: 10 }), context),
+      token(jsonRequest('uploads', { slot: 'audio', mimeType: 'audio/mpeg', size: MAX_ASSET_BYTES + 1 }), context),
+      token(
+        jsonRequest('uploads', {
+          slot: 'referenceVideo',
+          mimeType: 'video/mp4',
+          size: 10,
+          durationSeconds: MAX_REFERENCE_VIDEO_SECONDS + 1,
+        }),
+        context,
+      ),
+      token(jsonRequest('uploads', { slot: 'everything', mimeType: 'video/mp4', size: 10 }), context),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([415, 413, 413, 400])
+    expect(directUploads.issueUploadToken).not.toHaveBeenCalled()
+  })
+
+  it('tells the browser to fall back when the store has no direct uploads', async () => {
+    const { token, complete } = directHarness({ direct: false })
+
+    const responses = await Promise.all([
+      token(jsonRequest('uploads', { slot: 'referenceVideo', mimeType: 'video/mp4', size: 10 }), context),
+      complete(jsonRequest('uploads/complete', { slot: 'referenceVideo', pathname: key, filename: 'x.mp4' }), context),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([501, 501])
+  })
+
+  it('records a completed upload from what storage holds and makes the video active', async () => {
+    const { complete, metadata, activateReferenceVideo } = directHarness({
+      stored: { size: 50 * 1024 * 1024, contentType: 'video/mp4' },
+    })
+
+    const response = await complete(
+      jsonRequest('uploads/complete', {
+        slot: 'referenceVideo',
+        pathname: key,
+        filename: 'rec.mp4',
+        durationSeconds: 21,
+      }),
+      context,
+    )
+
+    expect(response.status).toBe(201)
+    await expect(response.json()).resolves.toEqual({
+      asset: {
+        id: 'asset-1',
+        slot: 'referenceVideo',
+        filename: 'rec.mp4',
+        mimeType: 'video/mp4',
+        size: 50 * 1024 * 1024,
+        durationSeconds: 21,
+      },
+    })
+    expect(metadata).toEqual([expect.objectContaining({ storageKey: key, userId: 'user-1', taskId: 'owned' })])
+    expect(activateReferenceVideo).toHaveBeenCalledWith('owned', 'user-1', 'asset-1')
+  })
+
+  it('records a retried completion only once', async () => {
+    const { complete, metadata } = directHarness({ stored: { size: 10, contentType: 'video/mp4' } })
+    const body = { slot: 'referenceVideo', pathname: key, filename: 'rec.mp4' }
+
+    await complete(jsonRequest('uploads/complete', body), context)
+    const retried = await complete(jsonRequest('uploads/complete', body), context)
+
+    expect(retried.status).toBe(200)
+    expect(metadata).toHaveLength(1)
+  })
+
+  it('refuses to record a key outside this task or a blob that never arrived', async () => {
+    const { complete, metadata } = directHarness()
+    const responses = await Promise.all([
+      complete(
+        jsonRequest('uploads/complete', {
+          slot: 'referenceVideo',
+          pathname: 'users/user-2/tasks/owned/assets/asset-1',
+          filename: 'x.mp4',
+        }),
+        context,
+      ),
+      complete(
+        jsonRequest('uploads/complete', {
+          slot: 'referenceVideo',
+          pathname: `${key}/../../other`,
+          filename: 'x.mp4',
+        }),
+        context,
+      ),
+      complete(jsonRequest('uploads/complete', { slot: 'referenceVideo', pathname: key, filename: 'x.mp4' }), context),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 404])
+    expect(metadata).toEqual([])
+  })
+
+  it('deletes a stored blob that fails the checks instead of recording it', async () => {
+    const { complete, metadata, store } = directHarness({ stored: { size: 10, contentType: 'image/png' } })
+
+    const response = await complete(
+      jsonRequest('uploads/complete', { slot: 'referenceVideo', pathname: key, filename: 'x.mp4' }),
+      context,
+    )
+
+    expect(response.status).toBe(415)
+    expect(store.delete).toHaveBeenCalledWith(key)
+    expect(metadata).toEqual([])
   })
 })
 

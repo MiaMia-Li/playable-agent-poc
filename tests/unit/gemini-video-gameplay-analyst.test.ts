@@ -13,7 +13,7 @@ vi.mock('@google/genai', async (importOriginal) => {
   }
 })
 
-const { GeminiVideoGameplayAnalyst } = await import('@/lib/playable/video-gameplay-analyst')
+const { GeminiVideoGameplayAnalyst } = await import('@/lib/playable/gemini-video-gameplay-analyst')
 
 const blueprint: GameplayBlueprint = {
   version: 2,

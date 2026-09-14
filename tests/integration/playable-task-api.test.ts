@@ -3411,6 +3411,8 @@ describe('PrivateVercelArtifactStore', () => {
       })),
       get: vi.fn(async () => ({ stream: sourceStream })),
       del: vi.fn(async () => undefined),
+      head: vi.fn(async () => null),
+      issueClientToken: vi.fn(async () => 'client-token'),
     }
     const store = new PrivateVercelArtifactStore(blobClient)
 
@@ -3427,5 +3429,32 @@ describe('PrivateVercelArtifactStore', () => {
     expect(blobClient.get).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html', { access: 'private' })
     await expect(store.delete('users/u/tasks/t/b/playable.html')).resolves.toBeUndefined()
     expect(blobClient.del).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html')
+  })
+
+  // The browser writes large videos itself, so the token is the only thing
+  // stopping it from writing anywhere else or anything else.
+  it('scopes a direct upload token to one private key, type, and size', async () => {
+    const blobClient: PrivateBlobClient = {
+      put: vi.fn(),
+      get: vi.fn(),
+      del: vi.fn(),
+      head: vi.fn(async () => ({ size: 9, contentType: 'video/mp4' })),
+      issueClientToken: vi.fn(async () => 'client-token'),
+    }
+    const store = new PrivateVercelArtifactStore(blobClient)
+
+    await expect(
+      store.issueUploadToken('users/u/tasks/t/assets/a', { contentType: 'video/mp4', maxBytes: 100 }),
+    ).resolves.toBe('client-token')
+    expect(blobClient.issueClientToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: 'users/u/tasks/t/assets/a',
+        allowedContentTypes: ['video/mp4'],
+        maximumSizeInBytes: 100,
+        addRandomSuffix: false,
+        allowOverwrite: false,
+      }),
+    )
+    await expect(store.describe('users/u/tasks/t/assets/a')).resolves.toEqual({ size: 9, contentType: 'video/mp4' })
   })
 })

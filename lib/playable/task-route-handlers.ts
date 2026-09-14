@@ -1,7 +1,7 @@
 import { after } from 'next/server'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
-import { readGeminiApiKey, readSharedPlayableAIKey } from './shared-ai-key'
+import { readSharedPlayableAIKey } from './shared-ai-key'
 import { CodexPlayableAgent } from './codex-playable-agent'
 import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
@@ -9,6 +9,9 @@ import {
   createPlayableAssetContentHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
+  createPlayableAssetUploadCompleteHandler,
+  createPlayableAssetUploadTokenHandler,
+  type PlayableAsset,
 } from './task-assets'
 import { authenticateLocalDemo, isLocalDemoMode, localDemoRuntime, readLocalDemoApiKey } from './local-demo-prototype'
 import { CodexCliPlayableAgent } from './codex-cli-playable-agent'
@@ -18,7 +21,7 @@ import {
   isLocalHarnessMode,
   readLocalCodexAuthMarker,
 } from './local-codex-runtime'
-import { GeminiVideoGameplayAnalyst } from './video-gameplay-analyst'
+import { createVideoGameplayAnalyst } from './video-analysis-backend'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 import { OpenAIMarketResearchAgent } from './research/openai-market-research-agent'
@@ -34,12 +37,12 @@ const playableAgent = localDemo
   : localCodex
     ? new CodexCliPlayableAgent()
     : new CodexPlayableAgent()
-// Wired in every mode, including local demo. Availability is decided by
-// whether a Gemini key is configured, not by which runtime is active, so that
+// Wired in every mode, including local demo. Availability is decided by the
+// configured backend and its key, not by which runtime is active, so that
 // "no key, no analysis" means the same thing everywhere. Leaving this
 // undefined is the single signal the handlers read; they do not look at the
 // environment themselves.
-const videoAnalyst = readGeminiApiKey() ? new GeminiVideoGameplayAnalyst() : undefined
+const videoAnalyst = createVideoGameplayAnalyst()
 const imageAnalyst = localDemo
   ? undefined
   : localCodex
@@ -68,17 +71,25 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   generateId,
 })
 
-export const playableAssetHandler = createPlayableAssetHandler({
+const playableAssetUploadDependencies = {
   authenticate,
-  findOwnedTask: async (taskId, userId) => Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
-  saveAsset: (asset) => playableTaskRepository.saveAsset(asset),
-  listAssets: (taskId, userId) => playableTaskRepository.listAssets(taskId, userId),
-  activateReferenceVideo: async (taskId, userId, assetId) => {
+  findOwnedTask: async (taskId: string, userId: string) =>
+    Boolean(await playableTaskRepository.findOwnedTask(taskId, userId)),
+  saveAsset: (asset: PlayableAsset) => playableTaskRepository.saveAsset(asset),
+  listAssets: (taskId: string, userId: string) => playableTaskRepository.listAssets(taskId, userId),
+  activateReferenceVideo: async (taskId: string, userId: string, assetId: string) => {
     await playableTaskRepository.setActiveReferenceVideo(taskId, userId, assetId)
   },
   store: playableArtifactStore,
+  directUploads: playableArtifactStore instanceof PrivateVercelArtifactStore ? playableArtifactStore : undefined,
   generateId,
-})
+}
+
+export const playableAssetHandler = createPlayableAssetHandler(playableAssetUploadDependencies)
+export const playableAssetUploadTokenHandler = createPlayableAssetUploadTokenHandler(playableAssetUploadDependencies)
+export const playableAssetUploadCompleteHandler = createPlayableAssetUploadCompleteHandler(
+  playableAssetUploadDependencies,
+)
 
 const playableAssetAccessDependencies = {
   authenticate,
