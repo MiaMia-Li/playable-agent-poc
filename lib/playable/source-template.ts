@@ -45,6 +45,7 @@ export const SOURCE_TEMPLATE_BUILD_PROMPT = [
   'Adapt the existing HTML to the confirmed delivery requirements, including initial mute, first-interaction gameplay, playable:set-muted and window.__PLAYABLE__ validation hooks.',
   `Validate with ${buildValidationCommand({ routing: { match: 'freeform', confidence: 1, differences: [] } })}.`,
   'That command checks structure only. Also exercise every confirmed gameplay change in a browser and record expected versus observed results in a requirement-to-evidence checklist under work/. Do not claim completion for unchanged or unverified requested behavior.',
+  'Use the bounded validation workflow in adaptation.md: combine checks in one browser session, reuse evidence for unchanged output, and stop once required checks pass. Do not add a second final-review cycle or rerun gameplay for report-only edits.',
   'When structural validation and the confirmed gameplay checks pass, return {"completed":true}.',
 ].join('\n')
 

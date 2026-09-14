@@ -2,6 +2,7 @@ import { buildValidationCommand, usesPerspectiveTemplate } from './build-templat
 import type { BuildActivityCallback } from './build-activity'
 import { createHarnessActivityReporter } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
+import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { HarnessAgent } from '@ai-sdk/harness/agent'
@@ -307,7 +308,8 @@ async function executeBuildAgent(
       onActivity?.('agent_started')
       const result = await agent.stream({
         session,
-        prompt: createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
+        // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
+        prompt: [PLAYABLE_TOOLS_PROMPT, createCodexBuildPrompt(route, revision, sourceTemplateId, mode)].join('\n'),
         abortSignal: input.abortSignal,
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。

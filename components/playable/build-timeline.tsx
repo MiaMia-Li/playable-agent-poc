@@ -5,7 +5,11 @@ import { AgentText, ReasoningText } from './reasoning-text'
 import { Sparkles, Terminal, FilePenLine } from 'lucide-react'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { buildEventLabel, type BuildTimelineEvent } from '@/lib/playable/build-activity'
-import { readBuildActivityDetail, type BuildActivityDetail } from '@/lib/playable/build-activity-detail'
+import {
+  isBuildCompletionMessage,
+  readBuildActivityDetail,
+  type BuildActivityDetail,
+} from '@/lib/playable/build-activity-detail'
 
 /** 同一次调用只占一行：完成事件补充结果，保留开始时的参数。重试会重置调用编号。 */
 function compactSteps(events: BuildTimelineEvent[]) {
@@ -15,6 +19,8 @@ function compactSteps(events: BuildTimelineEvent[]) {
     if (event.type === 'build_activity_agent_started') calls.clear()
     if (!buildEventLabel(event.type)) continue
     const detail = readBuildActivityDetail(event.message)
+    // 兼容已经落库的历史记录；新事件虽在采集端过滤，旧的完成 JSON 仍需在展示时隐藏。
+    if (event.type === 'build_activity_agent_message' && isBuildCompletionMessage(detail?.text)) continue
     const tool = /build_activity_(command_|tool_|file_changed)/.test(event.type)
     if (tool && detail?.id) {
       const index = calls.get(detail.id)
@@ -59,7 +65,7 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
         <AccordionItem value="progress" className="border-0">
           <AccordionTrigger className="text-muted-foreground justify-start gap-2 py-1 text-xs font-normal hover:no-underline [&>svg]:size-3">
             <span role="status" className="truncate">
-              {running ? 'Thinking' : `已工作 ${duration}`} · {latest ? buildEventLabel(latest.type) : '准备构建'}
+              {running ? '正在构建' : `已工作 ${duration}`} · {latest ? buildEventLabel(latest.type) : '准备构建'}
             </span>
           </AccordionTrigger>
           <AccordionContent className="pb-1">
@@ -123,6 +129,10 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
             </ol>
           </AccordionContent>
         </AccordionItem>
+        {/* 完成文案只认应用发布成功，不能根据 Agent 返回的 completed 提前宣告产物可用。 */}
+        {latest?.type === 'build_succeeded' && !running && (
+          <p className="mt-2 text-sm">试玩已生成，可以开始体验。需要调整时，直接描述想改的地方。</p>
+        )}
       </Accordion>
     </section>
   )
