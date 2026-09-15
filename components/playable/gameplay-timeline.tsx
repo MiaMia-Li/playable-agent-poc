@@ -4,9 +4,23 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import type { GameplayAnnotation, GameplayTimelineSegment, TimelineCorrection } from '@/lib/playable/schemas'
+import type {
+  GameplayAnnotation,
+  GameplayTimelineSegment,
+  ReferenceKeyframeStatus,
+  TimelineCorrection,
+} from '@/lib/playable/schemas'
 
 export type { TimelineCorrection }
+
+/** One Reference Keyframe as the analysis route reports it. */
+export interface ReferenceKeyframeView {
+  index: number
+  seconds: number
+  focus: string
+  /** False for a frame that could not be cut. */
+  available: boolean
+}
 
 type InputAction = NonNullable<GameplayTimelineSegment['playerInput']>['action']
 
@@ -179,22 +193,32 @@ export function GameplayTimeline({
   annotations,
   videoUrl,
   onCorrect,
+  keyframes = [],
+  keyframeStatus,
+  keyframeUrl,
 }: {
   segments: GameplayTimelineSegment[]
   annotations: GameplayAnnotation[]
   videoUrl?: string
   onCorrect?: (correction: TimelineCorrection) => Promise<boolean>
+  /** Read-only: the model picked them, and a wrong pick is corrected by annotation or re-run (spec §6). */
+  keyframes?: ReferenceKeyframeView[]
+  keyframeStatus?: ReferenceKeyframeStatus | null
+  keyframeUrl?: (index: number) => string
 }) {
   const video = useSeekableVideo(videoUrl)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [correctingIndex, setCorrectingIndex] = useState<number>()
+  const extracting = keyframeStatus === 'pending' || keyframeStatus === 'extracting'
+  const shownKeyframes = keyframeUrl ? keyframes.filter((keyframe) => keyframe.available) : []
 
-  const jump = (segment: GameplayTimelineSegment) => {
+  const jumpTo = (seconds: number) => {
     const element = videoRef.current
     if (!element) return
-    element.currentTime = segment.startSeconds
+    element.currentTime = seconds
     void element.play()?.catch(() => undefined)
   }
+  const jump = (segment: GameplayTimelineSegment) => jumpTo(segment.startSeconds)
 
   return (
     <section aria-label="玩法时间轴" className="space-y-2 rounded-xl border p-3">
@@ -220,6 +244,41 @@ export function GameplayTimeline({
             {video?.failed ? '参考视频载入失败，暂时无法跳转。' : '正在载入参考视频…'}
           </p>
         ))}
+      {keyframes.length > 0 && (
+        <div role="group" aria-label="参考关键帧" className="space-y-1">
+          {extracting && <p className="text-muted-foreground text-xs">正在截取关键帧…</p>}
+          {(keyframeStatus === 'failed' || keyframeStatus === 'unavailable') && (
+            <p className="text-muted-foreground text-xs">关键帧不可用</p>
+          )}
+          {shownKeyframes.length > 0 && (
+            <ul className="flex gap-2 overflow-x-auto pb-1">
+              {shownKeyframes.map((keyframe) => (
+                <li key={keyframe.index} className="w-28 shrink-0">
+                  <button
+                    type="button"
+                    aria-label={`跳到关键帧 ${formatClock(keyframe.seconds)}`}
+                    title={keyframe.focus}
+                    className="w-full space-y-0.5 text-left text-xs disabled:cursor-default"
+                    disabled={!video?.objectUrl}
+                    onClick={() => jumpTo(keyframe.seconds)}
+                  >
+                    {/* A private, authenticated route: next/image cannot optimise it. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={keyframeUrl!(keyframe.index)}
+                      alt={keyframe.focus}
+                      loading="lazy"
+                      className="aspect-video w-full rounded border bg-black object-contain"
+                    />
+                    <span className="text-primary block font-mono tabular-nums">{formatClock(keyframe.seconds)}</span>
+                    <span className="text-muted-foreground line-clamp-2 block">{keyframe.focus}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <ol className="space-y-1.5">
         {segments.map((segment, index) => {
           const input = segment.playerInput

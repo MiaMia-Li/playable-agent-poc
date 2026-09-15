@@ -141,4 +141,42 @@ describe('gameplay timeline', () => {
       Reflect.deleteProperty(URL, 'revokeObjectURL')
     }
   })
+
+  const keyframes = [
+    { index: 0, seconds: 3, focus: '主界面布局', available: true },
+    { index: 1, seconds: 29, focus: '结算页', available: false },
+  ]
+
+  // Read-only: the user checks the model's pick, and a frame that could not be
+  // cut is simply not shown.
+  it('shows the keyframes that were cut, each with what to look at', () => {
+    render(
+      <GameplayTimeline
+        segments={segments}
+        annotations={[]}
+        keyframes={keyframes}
+        keyframeStatus="succeeded"
+        keyframeUrl={(index) => `/keyframes/${index}`}
+      />,
+    )
+    const group = screen.getByRole('group', { name: '参考关键帧' })
+    const image = within(group).getByRole('img', { name: '主界面布局' })
+    expect(image).toHaveAttribute('src', '/keyframes/0')
+    expect(within(group).getByRole('button', { name: '跳到关键帧 00:03' })).toBeInTheDocument()
+    expect(within(group).queryByRole('img', { name: '结算页' })).not.toBeInTheDocument()
+    expect(within(group).queryByText('关键帧不可用')).not.toBeInTheDocument()
+  })
+
+  it('says keyframes are being cut, and greys out ones that could not be', () => {
+    const { rerender } = render(
+      <GameplayTimeline segments={segments} annotations={[]} keyframes={keyframes} keyframeStatus="extracting" />,
+    )
+    expect(screen.getByText('正在截取关键帧…')).toBeInTheDocument()
+
+    rerender(
+      <GameplayTimeline segments={segments} annotations={[]} keyframes={keyframes} keyframeStatus="unavailable" />,
+    )
+    expect(screen.getByText('关键帧不可用')).toHaveClass('text-muted-foreground')
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
 })

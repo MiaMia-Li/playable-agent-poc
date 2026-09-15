@@ -136,6 +136,8 @@ interface ChatWorkspaceProps {
   initialAssets?: SafePlayableAsset[]
   videoAnalysisStatus?: VideoAnalysisStatus
   gameplayBlueprint?: GameplayBlueprint
+  referenceKeyframes?: import('./gameplay-timeline').ReferenceKeyframeView[]
+  referenceKeyframeStatus?: import('@/lib/playable/schemas').ReferenceKeyframeStatus | null
   onAssetsChange?: (assets: SafePlayableAsset[]) => void
   onVideoAnalysisToolStatus?: (status: ToolStatus) => void
   /**
@@ -347,6 +349,8 @@ export function ChatWorkspace({
   initialAssets = [],
   videoAnalysisStatus,
   gameplayBlueprint,
+  referenceKeyframes = [],
+  referenceKeyframeStatus,
   onAssetsChange,
   onVideoAnalysisToolStatus,
   waitForVideoAnalysis,
@@ -1134,6 +1138,11 @@ export function ChatWorkspace({
             annotations={gameplayAnnotations}
             videoUrl={referenceVideoUrl}
             onCorrect={onCorrectTimeline}
+            keyframes={referenceKeyframes}
+            keyframeStatus={referenceKeyframeStatus}
+            keyframeUrl={(index) =>
+              `/api/playable-tasks/${encodeURIComponent(taskId)}/analysis/keyframes/${encodeURIComponent(String(index))}`
+            }
           />
         )}
 
