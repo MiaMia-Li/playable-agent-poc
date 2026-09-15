@@ -931,6 +931,47 @@ describe('playable task API', () => {
     })
   })
 
+  it('hands a reference-matching build the keyframes of the active video', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    const video = referenceVideo('video-keyframe-build')
+    harness.repository.assets.push(video)
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.artifacts.set('keyframe-1', new Uint8Array([255, 216, 255]))
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-keyframe-build',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: 'model',
+      attempt: 1,
+      mediaResolution: 'high',
+      intentText: null,
+      blueprint: { ...gameplayBlueprint, keyframes: [{ seconds: 3, focus: '主界面布局' }] },
+      keyframeStatus: 'succeeded',
+      keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+    const confirmAs = async (visualDirection: 'match_reference' | 'custom') => {
+      task.phase = 'awaiting_confirmation'
+      task.confirmation = confirmation
+      await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: { ...confirmation, visualDirection } }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      await harness.scheduled.at(-1)!()
+      return vi.mocked(harness.agent.build).mock.lastCall![0]
+    }
+
+    expect((await confirmAs('match_reference')).referenceKeyframes).toEqual([
+      { seconds: 3, focus: '主界面布局', mimeType: 'image/jpeg', bytes: new Uint8Array([255, 216, 255]) },
+    ])
+    // Borrowing the gameplay only: the build gets no visual target to copy.
+    expect((await confirmAs('custom')).referenceKeyframes).toBeUndefined()
+  })
+
   it('does not pass an older video blueprint after a new reference video is uploaded', async () => {
     harness.repository.assets.push(
       {

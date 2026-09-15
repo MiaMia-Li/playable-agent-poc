@@ -9,6 +9,7 @@ import type {
   RevisionProposal,
 } from './schemas'
 import type { PlayableResourceAssetSlot } from './asset-policy'
+import type { ReferenceKeyframeBuildInput, VisualComparison } from './reference-keyframes-build'
 import type { ResolvedReferenceSelection, SearchBrief } from './research/schemas'
 import type { SafePlayableAsset } from './task-assets'
 
@@ -166,12 +167,16 @@ export interface ConfirmedBuildInput {
   assets?: PlayableBuildAsset[]
   referenceImages?: (ReferenceImageEvidence & { mimeType: string; bytes: Uint8Array })[]
   gameplayBlueprint?: GameplayBlueprintDocument
+  /** Only when the confirmation matches the reference's look (spec §5). */
+  referenceKeyframes?: ReferenceKeyframeBuildInput[]
   revision?: RevisionProposal
   baseHtml?: string
 }
 
 export interface BuildResult {
   reusableScenarios?: { preview: string; full: string }
+  /** The build agent's own comparison against the keyframes; a record, never a gate. */
+  visualComparison?: VisualComparison
   html: string
   assetManifest?: PlayableAssetManifest
   validation: PlayableValidationReport

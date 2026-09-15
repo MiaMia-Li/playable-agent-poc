@@ -57,9 +57,11 @@ import { VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
 import { runIntentComparison, runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
 import {
   effectiveKeyframeStatus,
+  loadReferenceKeyframesForBuild,
   REFERENCE_KEYFRAME_BUDGET_MS,
   runReferenceKeyframeExtraction,
   type ReferenceKeyframeExtractor,
+  type ReferenceKeyframeSnapshot,
 } from './reference-keyframes'
 import { deriveGameplayIntent } from './gameplay-intent'
 import { PlayableBuildExecutionError } from './sandbox-runner'
@@ -433,6 +435,8 @@ interface ConfirmedBuildDependencies {
   artifactStore: ArtifactStore
   mediaGenerator?: MediaGenerator
   gameplayBlueprint?: GameplayBlueprintDocument
+  /** Read from the same analysis as the blueprint; re-read while extraction is still running. */
+  readReferenceKeyframes?: () => Promise<ReferenceKeyframeSnapshot | undefined>
   buildHeartbeatIntervalMs?: number
 }
 
@@ -1212,6 +1216,25 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       }),
     )
     const assets = [...uploadedAssets, ...generatedAssets]
+    // Only a confirmation that matches the reference's look gets its keyframes;
+    // missing ones cost the keyframes, never the build (spec §5.2).
+    const matchesReference = sanitizedConfirmation.visualDirection === 'match_reference'
+    const referenceKeyframes =
+      matchesReference && dependencies.readReferenceKeyframes
+        ? await loadReferenceKeyframesForBuild({
+            read: dependencies.readReferenceKeyframes,
+            artifactStore,
+          }).catch(() => [])
+        : []
+    if (matchesReference && referenceKeyframes.length === 0) {
+      await repository
+        .appendEvent({
+          taskId: task.id,
+          type: 'build_without_reference_keyframes',
+          message: 'Building without reference keyframes',
+        })
+        .catch(() => undefined)
+    }
     stage = 'agent'
     const result = await agent.build({
       onPreview: async (html) => {
@@ -1256,6 +1279,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       confirmation: sanitizedConfirmation,
       assets,
       ...(referenceImages.length ? { referenceImages } : {}),
+      ...(referenceKeyframes.length ? { referenceKeyframes } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
@@ -1293,6 +1317,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       await artifactStore.put(
         `${prefix}/gameplay-blueprint.json`,
         JSON.stringify(dependencies.gameplayBlueprint),
+        'application/json',
+      )
+    }
+    if (result.visualComparison) {
+      await artifactStore.put(
+        `${prefix}/visual-comparison.json`,
+        redactSecrets(JSON.stringify(result.visualComparison), [apiKey]),
         'application/json',
       )
     }
@@ -1452,6 +1483,22 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       gameplayBlueprintSchema.parse(source.blueprint),
       task.gameplayAnnotations.filter((annotation) => annotation.assetId === source.assetId),
     )
+  }
+
+  /**
+   * Read through the same analysis as `gameplayBlueprintDocumentFor`, so the
+   * keyframes a build gets always belong to the blueprint it gets.
+   */
+  const referenceKeyframeSnapshotFor = async (
+    task: PlayableTaskRecord,
+  ): Promise<ReferenceKeyframeSnapshot | undefined> => {
+    const source = (await readCurrentAnalysis(task, task.activeReferenceVideoAssetId))?.source
+    if (!source?.blueprint) return undefined
+    return {
+      status: effectiveKeyframeStatus(source),
+      keyframes: source.blueprint.keyframes,
+      images: source.keyframeImages ?? [],
+    }
   }
 
   /**
@@ -2694,6 +2741,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             mediaGenerator: dependencies.mediaGenerator,
             buildHeartbeatIntervalMs: dependencies.buildHeartbeatIntervalMs,
             gameplayBlueprint,
+            readReferenceKeyframes: () => referenceKeyframeSnapshotFor(claimed),
           })
         })
       } catch {

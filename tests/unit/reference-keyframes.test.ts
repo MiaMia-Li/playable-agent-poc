@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   effectiveKeyframeStatus,
   keyframeFfmpegArgs,
+  loadReferenceKeyframesForBuild,
   runReferenceKeyframeExtraction,
+  type ReferenceKeyframeSnapshot,
   SandboxReferenceKeyframeExtractor,
   type ReferenceKeyframeExtractor,
 } from '@/lib/playable/reference-keyframes'
@@ -248,5 +250,53 @@ describe('keyframe helpers', () => {
     expect(effectiveKeyframeStatus({ keyframeStatus: 'extracting', completedAt }, now + 60_000)).toBe('extracting')
     expect(effectiveKeyframeStatus({ keyframeStatus: 'extracting', completedAt }, now + 16 * 60_000)).toBe('failed')
     expect(effectiveKeyframeStatus({ keyframeStatus: 'succeeded', completedAt }, now + 16 * 60_000)).toBe('succeeded')
+  })
+})
+
+describe('reference keyframes for a build', () => {
+  const images = [{ keyframeIndex: 1, storageKey: 'keyframe-2', mimeType: 'image/jpeg' as const }]
+  const store = {
+    get: vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([5]))
+            controller.close()
+          },
+        }),
+    ),
+  }
+  const snapshot = (status: ReferenceKeyframeSnapshot['status']): ReferenceKeyframeSnapshot => ({
+    status,
+    keyframes: blueprint.keyframes,
+    images: status === 'succeeded' ? images : [],
+  })
+
+  it('waits for keyframes still being cut, then loads each with what it is for', async () => {
+    const read = vi
+      .fn<() => Promise<ReferenceKeyframeSnapshot | undefined>>()
+      .mockResolvedValueOnce(snapshot('extracting'))
+      .mockResolvedValueOnce(snapshot('succeeded'))
+    const sleep = vi.fn(async () => undefined)
+
+    await expect(loadReferenceKeyframesForBuild({ read, artifactStore: store, sleep })).resolves.toEqual([
+      { seconds: 29, focus: 'EPIC WIN 结算页', mimeType: 'image/jpeg', bytes: new Uint8Array([5]) },
+    ])
+    expect(sleep).toHaveBeenCalledOnce()
+  })
+
+  // Keyframes are extra evidence: the build goes ahead without them.
+  it('gives up after the wait and builds without keyframes that failed or never arrived', async () => {
+    const stillRunning = vi.fn(async () => snapshot('extracting'))
+    await expect(
+      loadReferenceKeyframesForBuild({ read: stillRunning, artifactStore: store, waitMs: 0, sleep: vi.fn() }),
+    ).resolves.toEqual([])
+
+    await expect(
+      loadReferenceKeyframesForBuild({ read: async () => snapshot('failed'), artifactStore: store }),
+    ).resolves.toEqual([])
+    await expect(
+      loadReferenceKeyframesForBuild({ read: async () => undefined, artifactStore: store }),
+    ).resolves.toEqual([])
   })
 })

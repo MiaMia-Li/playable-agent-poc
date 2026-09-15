@@ -1,5 +1,6 @@
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
+import { referenceVisualsBuildPrompt } from './reference-keyframes-build'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
@@ -300,6 +301,8 @@ export async function executeBuildAgent(
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
   onActivity?: BuildActivityCallback,
+  /** From `referenceVisualsBuildPrompt`; sent in every phase, since the self-comparison follows acceptance. */
+  visualPrompt = '',
 ) {
   const skill = await loadSkill(skillRoot, {
     sourceTemplateId,
@@ -329,12 +332,15 @@ export async function executeBuildAgent(
           PLAYABLE_TOOLS_PROMPT,
           NATIVE_TEMPLATE_UI_PROMPT,
           REFERENCE_IMAGES_BUILD_PROMPT,
+          visualPrompt,
           input.phase === 'preview'
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'acceptance'
               ? FULL_ACCEPTANCE_PROMPT
               : createCodexBuildPrompt(route, revision, sourceTemplateId, mode),
-        ].join('\n'),
+        ]
+          .filter(Boolean)
+          .join('\n'),
         abortSignal: input.abortSignal,
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
@@ -478,6 +484,11 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
               input.confirmation.sourceTemplateId,
               input.confirmation.mode,
               input.onActivity,
+              referenceVisualsBuildPrompt({
+                visualDirection: input.confirmation.visualDirection,
+                hasKeyframes: Boolean(input.referenceKeyframes?.length),
+                patch: input.revision?.strategy === 'patch',
+              }),
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,

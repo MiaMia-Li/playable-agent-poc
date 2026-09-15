@@ -1,4 +1,9 @@
 import { referenceImageWorkspaceFiles } from './reference-images'
+import {
+  parseVisualComparison,
+  referenceKeyframeWorkspaceFiles,
+  VISUAL_COMPARISON_WORKSPACE_PATH,
+} from './reference-keyframes-build'
 import { readBuildSkillFiles } from './build-skill'
 import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
@@ -262,6 +267,13 @@ export async function runPlayableBuild(
         abortSignal: dependencies.abortSignal,
       })
     }
+    for (const file of referenceKeyframeWorkspaceFiles(input.referenceKeyframes)) {
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, file.path),
+        content: file.bytes,
+        abortSignal: dependencies.abortSignal,
+      })
+    }
     const assetManifest: PlayableAssetManifest = createAssetSourceManifest(confirmation, [])
     for (const asset of input.assets ?? []) {
       if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
@@ -473,7 +485,16 @@ export async function runPlayableBuild(
       path: path.join(workspace, 'work/scenario.mjs'),
       abortSignal: dependencies.abortSignal,
     })
+    const visualComparison = input.referenceKeyframes?.length
+      ? parseVisualComparison(
+          await sandbox.readTextFile({
+            path: path.join(workspace, VISUAL_COMPARISON_WORKSPACE_PATH),
+            abortSignal: dependencies.abortSignal,
+          }),
+        )
+      : undefined
     return {
+      ...(visualComparison ? { visualComparison } : {}),
       ...(previewScenario && fullScenario && previewScenario.length <= 128000 && fullScenario.length <= 128000
         ? { reusableScenarios: { preview: previewScenario, full: fullScenario } }
         : {}),

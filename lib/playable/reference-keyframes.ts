@@ -5,7 +5,8 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { ArtifactStore } from './artifact-store'
 import { createPlayableSandbox, type PlayableSandbox } from './sandbox-runner'
-import type { ReferenceKeyframeImage, ReferenceKeyframeStatus } from './schemas'
+import type { ReferenceKeyframeBuildInput } from './reference-keyframes-build'
+import type { ReferenceKeyframe, ReferenceKeyframeImage, ReferenceKeyframeStatus } from './schemas'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
 import { readAll } from './video-analysis-service'
@@ -161,6 +162,67 @@ export class LocalFfmpegReferenceKeyframeExtractor implements ReferenceKeyframeE
       await rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
   }
+}
+
+/** What a build needs to know about the active video's keyframes. */
+export interface ReferenceKeyframeSnapshot {
+  status: ReferenceKeyframeStatus | null
+  keyframes: ReferenceKeyframe[]
+  images: ReferenceKeyframeImage[]
+}
+
+/** How long a build waits for keyframes still being cut (spec §5.2). */
+export const REFERENCE_KEYFRAME_BUILD_WAIT_MS = 60_000
+const REFERENCE_KEYFRAME_BUILD_POLL_MS = 3_000
+
+const delay = (milliseconds: number, abortSignal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds)
+    abortSignal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(abortSignal.reason)
+      },
+      { once: true },
+    )
+  })
+
+/**
+ * Waits a bounded time for keyframes still being cut, then hands over
+ * whatever exists. An empty result means "build without them", never a
+ * failure: they are extra evidence (spec §7).
+ */
+export async function loadReferenceKeyframesForBuild(input: {
+  read: () => Promise<ReferenceKeyframeSnapshot | undefined>
+  artifactStore: Pick<ArtifactStore, 'get'>
+  waitMs?: number
+  pollMs?: number
+  sleep?: (milliseconds: number, abortSignal?: AbortSignal) => Promise<void>
+  abortSignal?: AbortSignal
+}): Promise<ReferenceKeyframeBuildInput[]> {
+  const sleep = input.sleep ?? delay
+  const deadline = Date.now() + (input.waitMs ?? REFERENCE_KEYFRAME_BUILD_WAIT_MS)
+  let snapshot = await input.read()
+  while (snapshot && (snapshot.status === 'pending' || snapshot.status === 'extracting') && Date.now() < deadline) {
+    await sleep(input.pollMs ?? REFERENCE_KEYFRAME_BUILD_POLL_MS, input.abortSignal)
+    snapshot = await input.read()
+  }
+  if (!snapshot || snapshot.status !== 'succeeded') return []
+  const loaded: ReferenceKeyframeBuildInput[] = []
+  for (const image of snapshot.images) {
+    const keyframe = snapshot.keyframes[image.keyframeIndex]
+    if (!keyframe) continue
+    const stream = await input.artifactStore.get(image.storageKey)
+    if (!stream) continue
+    loaded.push({
+      seconds: keyframe.seconds,
+      focus: keyframe.focus,
+      mimeType: image.mimeType,
+      bytes: await readAll(stream),
+    })
+  }
+  return loaded
 }
 
 export function referenceKeyframeStorageKey(

@@ -1,5 +1,11 @@
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { referenceImageWorkspaceFiles, REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
+import {
+  parseVisualComparison,
+  referenceKeyframeWorkspaceFiles,
+  referenceVisualsBuildPrompt,
+  VISUAL_COMPARISON_WORKSPACE_PATH,
+} from './reference-keyframes-build'
 import { readBuildSkillFiles } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT, supportsFastPreview } from './preview-build'
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
@@ -244,7 +250,10 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
   }
 
   // 与云端共用截图打包规则，避免运行模式切换后参考图丢失或语义不一致。
-  for (const file of referenceImageWorkspaceFiles(input.referenceImages)) {
+  for (const file of [
+    ...referenceImageWorkspaceFiles(input.referenceImages),
+    ...referenceKeyframeWorkspaceFiles(input.referenceKeyframes),
+  ]) {
     const target = path.join(workspace, file.path)
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, file.bytes)
@@ -429,6 +438,12 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           '\n' +
           REFERENCE_IMAGES_BUILD_PROMPT +
           '\n' +
+          referenceVisualsBuildPrompt({
+            visualDirection: input.confirmation.visualDirection,
+            hasKeyframes: Boolean(input.referenceKeyframes?.length),
+            patch: input.revision?.strategy === 'patch',
+          }) +
+          '\n' +
           (input.confirmation.sourceTemplateId
             ? sourceTemplateBuildPrompt(input.revision?.strategy)
             : input.revision?.strategy === 'patch'
@@ -516,7 +531,14 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         },
       })
       console.log('Vercel Sandbox playable validation completed')
-      return buildResult
+      // The comparison was written by the local Codex run, before validation
+      // moved to the sandbox; read it before the workspace is removed below.
+      const visualComparison = input.referenceKeyframes?.length
+        ? parseVisualComparison(
+            await readFile(path.join(workspace, VISUAL_COMPARISON_WORKSPACE_PATH), 'utf8').catch(() => null),
+          )
+        : undefined
+      return visualComparison ? { ...buildResult, visualComparison } : buildResult
     } finally {
       this.activeTasks.delete(input.taskId)
       if (workspace) await rm(workspace, { recursive: true, force: true })
