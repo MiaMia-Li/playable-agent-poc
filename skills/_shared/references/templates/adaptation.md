@@ -29,33 +29,18 @@ Do not require generic DOM selectors for engine-rendered controls. Add
 `playable-native-ui-preserved-v1` only after verifying and fixing duplicate UI;
 this marker permits future copy-only updates to reuse the accepted native layout.
 
-## Validate the requested behavior
+## Validate once
 
-Run `node assets/starter/work/test-freeform-playable.mjs output.html` for structural compatibility. This script checks strings only; it does not exercise the engine, confirm mute behavior, or validate a spin, reward, or stage sequence.
+If the build prompt says full validation is disabled, skip this section: do not run validation commands, open a browser, or create a checklist.
 
-Use a browser to exercise the real input path and every confirmed change. For a requested sequence, inspect the board before and after each transition, including input locking, refill/clear timing, rewards, and ending. Observe real game state through read-only QA hooks when useful; do not return hard-coded success snapshots disconnected from the engine.
+Otherwise perform one bounded pass:
 
-Keep a requirement-to-evidence checklist in `work/`: each change, the implementation location, the input sequence, expected result, and observed result. Compare the final artifact with its base to confirm the relevant business script changed. A byte difference alone is insufficient. Do not report completion when requested gameplay is unchanged or has not been verified; describe missing evidence or failures accurately.
+1. Run `node assets/starter/work/test-freeform-playable.mjs output.html` once for structural compatibility.
+2. Write `work/scenario.mjs` with real inputs and `check(name, observedCondition)` assertions for each confirmed change. Cover only affected state transitions; do not explore unrelated branches.
+3. Run `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs` once. Use its network/console results and portrait/landscape screenshots instead of starting a separate visual review.
+4. Write `work/validation-checklist.md` once with four columns: requirement, expected, observed, pass/fail. Tie it to the final artifact hash.
 
-Also verify offline loading, responsive portrait/landscape layout, initial mute and parent mute messages, first-interaction gameplay, and the confirmed CTA destination without opening it during tests. Preserve source logical coordinates and scale responsively unless the confirmed delivery requires changing them. Report soft size-limit warnings separately from functional failures.
-
-## Keep acceptance bounded
-
-Run browser acceptance through `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs`.
-Write only the scenario module: export a default async function receiving `{ page, context, check, capture, clickCanvas }`.
-Use real inputs, bounded `page.waitForFunction` waits and `check('requirement', observedCondition)` assertions for
-every requested change; `clickCanvas(x, y)` takes normalized coordinates from 0 to 1. `capture('stage')` records a
-stage screenshot. The runner supplies offline loading, request/console collection, popup blocking, orientation
-screenshots and an artifact-hash-bound JSON report in `work/browser-acceptance/`. It fails when the scenario has
-no assertions. Inspect its screenshots and include any required layout/mute/CTA assertions in the scenario;
-the runner does not prove those game-specific properties automatically. Every invocation is timed by the host.
-
-- Before testing, collect the requested changes into one short checklist. For a patch, focus gameplay assertions on those changes and the transitions they affect; keep the delivery smoke checks above. Do not explore unrelated game branches.
-- Use one browser session to collect gameplay state, console/network failures, and portrait/landscape screenshots. Review these same screenshots for visual acceptance rather than replaying the game for a separate final review.
-- Wait for observable engine states with explicit timeouts derived from the expected animation duration. On timeout, capture the current state and diagnose the failed transition before retrying; do not repeatedly replay the whole sequence with longer sleeps. Never skip animations or force success states in the delivered game to make a test pass.
-- After a fix, rerun the failed check and affected downstream transitions. A state-machine change requires the affected sequence to pass end to end; unrelated passing checks need not be repeated. Tie evidence to the tested output hash and check scope. Reuse it only while the artifact and relevant test assertions remain unchanged; never carry stale evidence across builds.
-- Generate the concise requirement-to-evidence checklist from collected results once. Stop when required checks pass. Editing only reports does not require another structural check, ZIP extraction, screenshot run, or full gameplay replay. Report optional size warnings without restarting acceptance.
-- Use the available Node.js runtime for JSON summaries and hashes instead of assuming tools such as `jq` are installed. Keep report formatting separate from test exit status. A report-rendering failure does not invalidate already recorded test results, and a required test failure must never be reported as passed.
+The same browser pass must cover offline loading, initial mute, parent mute messages, first-interaction gameplay, responsive layout, ending, and the stored CTA destination without opening it. Use bounded waits based on animation duration. After a failure, make at most one focused repair and rerun only the failed assertion and affected downstream transitions. Never force success state, replay unchanged passing checks, or rerun tests for report-only edits. Report size-limit warnings without restarting acceptance.
 
 ## Inspect and patch obfuscated Cocos business scripts
 
