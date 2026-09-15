@@ -26,3 +26,7 @@ Collect network requests, console errors, actual gameplay state and both
 viewport screenshots in one browser session. Use real input and bounded
 state-based waits. The environment check only verifies browser availability;
 it is not a gameplay acceptance result. Follow the selected template's checks.
+
+## Per-task tool availability
+
+The host writes `sandbox-tools.json` in each task workspace after probing actual commands. Use that inventory instead of assuming optional tools such as `xxd`, Python or ffmpeg are present. `node assets/starter/work/node-tools.mjs header|json|hash INPUT OUTPUT` uses Node built-ins and writes results to a file. Missing optional tools do not require installation.

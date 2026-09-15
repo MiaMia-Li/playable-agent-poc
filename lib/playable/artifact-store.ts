@@ -4,7 +4,12 @@ import { logExternalRequestError } from './external-request-logging'
 import type { DirectAssetUploads } from './task-assets'
 
 export interface ArtifactStore {
-  put(key: string, value: string | Uint8Array, contentType: string): Promise<void>
+  put(
+    key: string,
+    value: string | Uint8Array,
+    contentType: string,
+    options?: { allowOverwrite?: boolean },
+  ): Promise<void>
   get(key: string): Promise<ReadableStream<Uint8Array> | undefined>
   delete(key: string): Promise<void>
 }
@@ -19,7 +24,7 @@ export interface PrivateBlobClient {
     options: {
       access: 'private'
       addRandomSuffix: false
-      allowOverwrite: false
+      allowOverwrite: boolean
       contentType: string
     },
   ): PromiseLike<{ url: string; pathname: string }>
@@ -58,12 +63,17 @@ const vercelBlobClient: PrivateBlobClient = {
 export class PrivateVercelArtifactStore implements ArtifactStore, DirectAssetUploads {
   constructor(private readonly client: PrivateBlobClient = vercelBlobClient) {}
 
-  async put(key: string, value: string | Uint8Array, contentType: string): Promise<void> {
+  async put(
+    key: string,
+    value: string | Uint8Array,
+    contentType: string,
+    options?: { allowOverwrite?: boolean },
+  ): Promise<void> {
     try {
       await this.client.put(key, value, {
         access: 'private',
         addRandomSuffix: false,
-        allowOverwrite: false,
+        allowOverwrite: options?.allowOverwrite ?? false,
         contentType,
       })
     } catch (error) {

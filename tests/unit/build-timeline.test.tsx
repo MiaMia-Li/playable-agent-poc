@@ -153,3 +153,27 @@ it('合并调用并保留参数与结果，结束后收起为耗时摘要', () =
   expect(screen.getByRole('status')).toHaveTextContent('已工作 2 分 38 秒 · 构建完成')
   expect(screen.queryByText('pwd')).not.toBeInTheDocument()
 })
+
+it('失败后可展开预览验收诊断', () => {
+  render(
+    <BuildTimeline
+      running={false}
+      events={[
+        { id: 'start', type: 'build_started' },
+        {
+          id: 'diagnostic',
+          type: 'build_activity_preview_check_failed',
+          message: JSON.stringify({
+            version: 1,
+            detail: { output: '{"failureStage":"browser_errors","errors":["Ad platform unavailable"]}' },
+          }),
+        },
+        { id: 'failed', type: 'build_failed' },
+      ]}
+    />,
+  )
+  fireEvent.click(screen.getByRole('button', { name: /已工作/ }))
+  fireEvent.click(screen.getByRole('button', { name: '预览交互检查失败' }))
+  expect(screen.getByText(/Ad platform unavailable/)).toBeVisible()
+  expect(screen.queryByText(/试玩已生成/)).not.toBeInTheDocument()
+})

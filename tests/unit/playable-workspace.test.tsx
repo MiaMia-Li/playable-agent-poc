@@ -1249,7 +1249,6 @@ describe('PlayableWorkspace', () => {
         body: JSON.stringify({
           message: '参考这些素材制作',
           referenceImageIds: ['image-1'],
-          screenshotPurpose: 'target',
           attachmentIds: ['image-1', 'video-1'],
         }),
       }),
@@ -1327,7 +1326,6 @@ describe('PlayableWorkspace', () => {
         body: JSON.stringify({
           message: '带附件重试',
           referenceImageIds: ['image-success'],
-          screenshotPurpose: 'target',
           attachmentIds: ['image-success', 'video-retry'],
         }),
       }),
@@ -1825,11 +1823,11 @@ it('shows a provisional playable without enabling delivery, then switches to the
     'src',
     '/api/playable-tasks/preview-task/artifact?kind=playable&preview=pending',
   )
-  expect(screen.getByText('预览已就绪，完整验收中。当前版本仅供体验。')).toBeInTheDocument()
+  expect(screen.getByText('预览已保存，验收中。当前版本仅供预览。')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '下载试玩' })).toBeDisabled()
   rerender(<PlayablePreview taskId="preview-task" phase="failed" previewVersion="pending" />)
   expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
-  expect(screen.getByText('预览可体验，完整验收未通过。请继续修改后再交付。')).toBeInTheDocument()
+  expect(screen.getByText('预览已保留，验收未通过。请继续修改后再交付。')).toBeInTheDocument()
   rerender(<PlayablePreview taskId="preview-task" phase="ready" previewVersion="pending" artifactVersion="accepted" />)
   expect(screen.getByTitle('Playable preview')).toHaveAttribute(
     'src',
@@ -1860,7 +1858,7 @@ it('shows a saved failed-acceptance version with download controls and honest st
     />,
   )
   expect(await screen.findByText('v1')).toBeInTheDocument()
-  expect(screen.getByText('可试玩版本已保存，完整验收未通过。可下载，或基于此版本继续修改。')).toBeInTheDocument()
+  expect(screen.getByText('版本已保存，验收未通过。可下载，或基于此版本继续修改。')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '下载交付物' })).toBeEnabled()
   expect(screen.getByTitle('Playable preview')).toHaveAttribute(
     'src',

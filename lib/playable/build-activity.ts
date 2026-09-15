@@ -7,6 +7,9 @@ export const buildActivityLabels = {
   stage_completed: '阶段结束',
   transferring: '正在传输构建文件',
   preview_checking: '正在检查预览交互',
+  preview_check_failed: '预览交互检查失败',
+  preview_repair_started: '正在定向修复预览（仅一次）',
+  preview_repair_unchanged: '未产生有效修改，停止重试',
   parameters_applied: '已应用模板参数，跳过模型修改',
   agent_message: 'Agent 说明',
   reasoning_summary: '思考摘要',
@@ -75,7 +78,7 @@ export interface BuildTimelineEvent {
 
 // 整体终态只认应用落库的成功或失败事件；模型的单步结束不代表产物已发布。
 export function buildEventLabel(type: string): string | undefined {
-  if (type === 'build_preview_ready') return '预览已就绪，完整验收中'
+  if (type === 'build_preview_ready') return '预览已保存，等待验收'
   if (type === 'build_started') return '构建已开始'
   if (type === 'build_succeeded') return '构建完成'
   if (type === 'build_failed') return '构建失败'

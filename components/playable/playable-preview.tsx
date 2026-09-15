@@ -265,8 +265,8 @@ export function PlayablePreview({
       {showingPreview && (
         <p role="status" className="mx-4 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
           {phase === 'failed'
-            ? '预览可体验，完整验收未通过。请继续修改后再交付。'
-            : '预览已就绪，完整验收中。当前版本仅供体验。'}
+            ? '预览已保留，验收未通过。请继续修改后再交付。'
+            : '预览已保存，验收中。当前版本仅供预览。'}
         </p>
       )}
       {hasArtifact && !showingPreview && (
@@ -295,8 +295,8 @@ export function PlayablePreview({
       {hasArtifact && !showingPreview && activeValidation && !activeValidation.buildPassed && (
         <p role="status" className="mx-4 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
           {phase === 'building' || phase === 'validating'
-            ? '可试玩版本已保存，完整验收中。可下载当前产物。'
-            : '可试玩版本已保存，完整验收未通过。可下载，或基于此版本继续修改。'}
+            ? '版本已保存，验收中。可下载当前产物。'
+            : '版本已保存，验收未通过。可下载，或基于此版本继续修改。'}
         </p>
       )}
       {hasArtifact && !showingPreview && activeValidation && !activeValidation.deliveryCompliant && (
@@ -322,7 +322,7 @@ export function PlayablePreview({
         <p className="text-destructive shrink-0 px-4 pb-2 text-center text-xs" role="alert">
           {failureMessage ??
             (activeValidation?.buildPassed === false
-              ? '本次完整验收未通过，已保留可试玩产物。'
+              ? '本次验收未通过，已保留生成产物。'
               : '本次构建失败，正在展示上一成功版本。')}
         </p>
       )}

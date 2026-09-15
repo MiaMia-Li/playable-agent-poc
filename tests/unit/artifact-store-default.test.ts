@@ -40,4 +40,17 @@ describe('default Vercel Blob adapter', () => {
     await expect(store.get('users/u/tasks/t/b/playable.html')).resolves.toBe(stream)
     expect(blob.get).toHaveBeenCalledWith('users/u/tasks/t/b/playable.html', { access: 'private' })
   })
+
+  it('allows explicitly requested preview updates without changing the default', async () => {
+    const store = new PrivateVercelArtifactStore()
+    await store.put('users/u/tasks/t/b/preview.html', 'updated', 'text/html', { allowOverwrite: true })
+    expect(blob.put).toHaveBeenLastCalledWith('users/u/tasks/t/b/preview.html', 'updated', {
+      access: 'private',
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: 'text/html',
+    })
+    await store.put('users/u/tasks/t/b/playable.html', 'final', 'text/html')
+    expect(blob.put.mock.lastCall?.[2].allowOverwrite).toBe(false)
+  })
 })
