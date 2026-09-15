@@ -1422,7 +1422,8 @@ export function ChatWorkspace({
         </section>
       )}
 
-      <div className="bg-background shrink-0 border-t p-4">
+      {/* 构建和验收期间隐藏输入区，保留组件与草稿状态，结束或失败后自动恢复。 */}
+      <div hidden={buildInProgress} className="bg-background shrink-0 border-t p-4">
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
           {hasArtifact && (
             <div className="mb-2 space-y-1 px-1">
