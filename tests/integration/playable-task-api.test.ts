@@ -25,6 +25,7 @@ import type {
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import type { GameplayAnnotation } from '@/lib/playable/schemas'
+import { MATCH_REFERENCE_DIFFERENCE } from '@/lib/playable/schemas'
 import {
   createAssetSourceManifest,
   createProductionConfig,
@@ -37,6 +38,7 @@ import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-a
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
+  visualDirection: 'custom',
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {
@@ -878,6 +880,55 @@ describe('playable task API', () => {
     expect(new Uint8Array(await served.arrayBuffer())).toEqual(new Uint8Array([255, 216, 255]))
     expect((await keyframe('1')).status).toBe(404)
     expect((await keyframe('../x')).status).toBe(404)
+  })
+
+  // An exact route never reads the blueprint, so the server lifts it rather
+  // than trusting the table to have done so (spec §4.2).
+  it('builds a reference-matching confirmation on an approximate route, and only with a blueprint', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    const confirmAs = async (visualDirection: 'match_reference' | 'custom') => {
+      task.phase = 'awaiting_confirmation'
+      task.confirmation = confirmation
+      const response = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: { ...confirmation, visualDirection } }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(response.status).toBe(202)
+      await harness.scheduled.at(-1)!()
+      return vi.mocked(harness.agent.build).mock.lastCall![0].confirmation
+    }
+
+    // No blueprint yet: there is nothing to match, so the route stays exact.
+    expect(await confirmAs('match_reference')).toMatchObject({
+      visualDirection: 'custom',
+      routing: { match: 'exact', differences: [] },
+    })
+
+    const video = referenceVideo('video-visuals')
+    harness.repository.assets.push(video)
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-visuals',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: 'model',
+      attempt: 1,
+      mediaResolution: 'high',
+      intentText: null,
+      blueprint: gameplayBlueprint,
+      keyframeStatus: 'succeeded',
+      keyframeImages: [],
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+
+    expect(await confirmAs('match_reference')).toMatchObject({
+      visualDirection: 'match_reference',
+      routing: { match: 'approximate', differences: [MATCH_REFERENCE_DIFFERENCE] },
+    })
   })
 
   it('does not pass an older video blueprint after a new reference video is uploaded', async () => {

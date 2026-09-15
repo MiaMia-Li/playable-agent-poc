@@ -179,6 +179,7 @@ function createProposal(
     : ({ status: '内置默认', treatment: '使用系统提供的音频并默认静音' } as const)
   return {
     routing,
+    visualDirection: 'custom',
     presentation:
       routing.match === 'freeform'
         ? {

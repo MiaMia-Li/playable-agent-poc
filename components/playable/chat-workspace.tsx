@@ -1284,6 +1284,7 @@ export function ChatWorkspace({
                           proposal={proposal ?? item.confirmation}
                           onChange={updateCurrentProposal}
                           onConfirm={confirm}
+                          hasReferenceVisuals={Boolean(gameplayBlueprint)}
                           title={
                             item.revision && 'targetVersion' in item.revision
                               ? `候选构建方案 v${item.revision.targetVersion}`
@@ -1310,6 +1311,7 @@ export function ChatWorkspace({
                         <div className="mt-4">
                           <ConfirmationTable
                             proposal={item.confirmation}
+                            hasReferenceVisuals={item.confirmation.visualDirection === 'match_reference'}
                             onChange={() => undefined}
                             onConfirm={() => undefined}
                             showHeader={false}
@@ -1363,6 +1365,7 @@ export function ChatWorkspace({
           <div>
             <ConfirmationTable
               proposal={proposal}
+              hasReferenceVisuals={Boolean(gameplayBlueprint)}
               onChange={updateCurrentProposal}
               onConfirm={confirm}
               confirming={confirming}

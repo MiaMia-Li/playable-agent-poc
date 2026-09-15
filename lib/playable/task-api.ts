@@ -17,6 +17,7 @@ import {
   type PlayableValidationSummary,
 } from './playable-agent-adapter'
 import {
+  applyVisualDirection,
   confirmationProposalSchema,
   gameplayAnnotationsSchema,
   gameplayBlueprintSchema,
@@ -2252,10 +2253,16 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
               if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
-                validatedReply.confirmation = {
-                  ...bindSourceTemplate(validatedReply.confirmation, templateId),
-                  referenceImages: referenceImages.length ? referenceImages : undefined,
-                }
+                // Applied after the agent's route was checked against its brief:
+                // the agent routes by gameplay, and matching the reference's look
+                // is what lifts an exact route to approximate (spec §4.2).
+                validatedReply.confirmation = applyVisualDirection(
+                  {
+                    ...bindSourceTemplate(validatedReply.confirmation, templateId),
+                    referenceImages: referenceImages.length ? referenceImages : undefined,
+                  },
+                  { hasReferenceVisuals: Boolean(gameplayBlueprint) },
+                )
               }
               const serialized = JSON.stringify(validatedReply)
               stage = 'agent_message_store'
@@ -2634,6 +2641,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+      // The table may have switched the visual direction; the server applies
+      // the same rule so an exact route can never claim to match the reference.
+      sanitized = applyVisualDirection(sanitized, { hasReferenceVisuals: Boolean(gameplayBlueprint) })
 
       if (revision?.strategy === 'patch') {
         const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)

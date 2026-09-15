@@ -14,6 +14,7 @@ import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const validProposal = {
+  visualDirection: 'custom' as const,
   routing: { match: 'exact', confidence: 1, differences: [] as string[] },
   presentation: defaultConfirmationPresentation,
   mode: 'center_collision',

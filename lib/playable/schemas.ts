@@ -390,6 +390,47 @@ const generatedDeliverySchema = z
   })
   .superRefine(validateDeliveryProfileSnapshot)
 
+/**
+ * Whether the build reproduces the Reference Video's look (its Visual Spec and
+ * Reference Keyframes) or follows its own. Without this the build had no way to
+ * tell "copy this ad" from "borrow its gameplay only".
+ */
+export const visualDirections = ['match_reference', 'custom'] as const
+export type VisualDirection = (typeof visualDirections)[number]
+
+/** The routing difference added when matching the reference lifts an exact route. */
+export const MATCH_REFERENCE_DIFFERENCE = '还原参考视频的视觉呈现'
+
+/**
+ * The single rule for what `visualDirection` does to a confirmation, applied
+ * wherever one is written: from the agent, from the confirmation table, and on
+ * confirm. Matching the reference cannot be exact, because an exact route
+ * never reads the blueprint, so it becomes approximate; switching back undoes
+ * exactly that and nothing else. Without a blueprint there is nothing to match.
+ */
+export function applyVisualDirection<
+  T extends { visualDirection: VisualDirection; routing: z.infer<typeof routingDecisionSchema> },
+>(confirmation: T, options: { hasReferenceVisuals: boolean }): T {
+  const visualDirection = options.hasReferenceVisuals ? confirmation.visualDirection : 'custom'
+  const { routing } = confirmation
+  if (visualDirection === 'match_reference' && routing.match === 'exact') {
+    return {
+      ...confirmation,
+      visualDirection,
+      routing: { ...routing, match: 'approximate', differences: [MATCH_REFERENCE_DIFFERENCE] },
+    }
+  }
+  if (
+    visualDirection === 'custom' &&
+    routing.match === 'approximate' &&
+    routing.differences.length === 1 &&
+    routing.differences[0] === MATCH_REFERENCE_DIFFERENCE
+  ) {
+    return { ...confirmation, visualDirection, routing: { ...routing, match: 'exact', differences: [] } }
+  }
+  return visualDirection === confirmation.visualDirection ? confirmation : { ...confirmation, visualDirection }
+}
+
 const confirmationProposalShape = {
   mode: z.enum(playableModeIds),
   gameplay: z.string().trim().min(1),
@@ -457,6 +498,8 @@ export const confirmationProposalSchema = z
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),
+    // Confirmations stored before this field existed never matched the reference.
+    visualDirection: z.enum(visualDirections).default('custom'),
     ...confirmationProposalShape,
   })
   .superRefine((proposal, context) => {
@@ -468,6 +511,7 @@ export const generatedConfirmationProposalSchema = z
   .strictObject({
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,
+    visualDirection: z.enum(visualDirections),
     ...confirmationProposalShape,
     delivery: generatedDeliverySchema,
   })

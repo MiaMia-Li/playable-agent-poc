@@ -4,6 +4,7 @@ import type { ConfirmationProposal } from '@/lib/playable/schemas'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
+  visualDirection: 'custom',
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞并消除',
   resources: {

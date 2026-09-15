@@ -33,6 +33,7 @@ describe('gameplay annotation origin', () => {
 })
 
 const validProposal = {
+  visualDirection: 'custom' as const,
   routing: { match: 'approximate', confidence: 0.84, differences: ['奖励表现使用模板默认效果'] },
   presentation: defaultConfirmationPresentation,
   mode: 'center_collision',
@@ -70,6 +71,7 @@ describe('confirmation proposal schema', () => {
     expect(Object.keys(parsed)).toEqual([
       'routing',
       'presentation',
+      'visualDirection',
       'mode',
       'gameplay',
       'resources',

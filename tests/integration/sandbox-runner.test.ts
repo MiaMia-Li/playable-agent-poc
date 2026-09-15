@@ -31,6 +31,9 @@ function deferred() {
 
 const baseConfirmation = {
   routing: { match: 'exact', confidence: 1, differences: [] as string[] },
+  // After routing, as the schema orders it: the parameter-only fast path
+  // compares confirmations as serialised JSON, so key order matters there.
+  visualDirection: 'custom' as const,
   mode: 'center_collision',
   gameplay: '相同牌向中心碰撞、破碎并计分',
   resources: {

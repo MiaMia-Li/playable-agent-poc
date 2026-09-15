@@ -10,6 +10,7 @@ import { LocalDemoMarketResearchAgent } from '@/lib/playable/research/local-demo
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const proposal = {
+  visualDirection: 'custom' as const,
   routing: { match: 'exact', confidence: 1, differences: [] as string[] },
   presentation: defaultConfirmationPresentation,
   mode: 'center_collision',

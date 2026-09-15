@@ -19,6 +19,7 @@ Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true,
 
 const proposal: ConfirmationProposal = {
   routing: { match: 'approximate', confidence: 0.8, differences: ['奖励表现使用模板默认效果'] },
+  visualDirection: 'custom',
   mode: 'top_rack',
   gameplay: '相同牌进入牌架后消除',
   resources: {
