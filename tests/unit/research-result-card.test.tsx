@@ -83,9 +83,13 @@ describe('ResearchResultCard', () => {
       />,
     )
 
-    expect(screen.getByRole('region', { name: '市场参考分析' })).toHaveTextContent('3 个可参考方向')
+    expect(screen.getByRole('region', { name: '市场参考分析' })).toHaveTextContent('3 个方向')
+    expect(screen.queryByText(/可信度/)).not.toBeInTheDocument()
     const candidates = screen.getAllByRole('article')
+    expect(within(candidates[0]).getByText('https://ads.tiktok.com/example-1')).toBeVisible()
+    expect(within(candidates[0]).getByRole('link')).toHaveAttribute('href', 'https://ads.tiktok.com/example-1')
     fireEvent.click(within(candidates[1]).getByRole('radio'))
+    fireEvent.click(within(candidates[2]).getByText('查看玩法细节'))
     fireEvent.click(within(candidates[2]).getByRole('checkbox', { name: '奖励目标' }))
     fireEvent.click(screen.getByRole('button', { name: '采用此方向' }))
 

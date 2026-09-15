@@ -291,7 +291,7 @@ describe('PlayableWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
 
     const card = await screen.findByRole('region', { name: '市场参考分析' })
-    expect(card).toHaveTextContent('3 个可参考方向')
+    expect(card).toHaveTextContent('3 个方向')
     fireEvent.click(within(card).getAllByRole('radio')[0])
     fireEvent.click(within(card).getByRole('button', { name: '采用此方向' }))
 
@@ -344,7 +344,9 @@ describe('PlayableWorkspace', () => {
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
 
-    expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
+    const chat = screen.getByRole('region', { name: '需求对话' })
+    expect(chat).toBeInTheDocument()
+    expect(chat.firstElementChild).toHaveClass('overscroll-y-none')
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('方案生成中可试玩')
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
@@ -564,6 +566,9 @@ describe('PlayableWorkspace', () => {
     expect(within(replies[0]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第一版麻将配对玩法')
     expect(within(replies[0]).getByRole('img', { name: 'historical-tiles.png' })).toBeInTheDocument()
     expect(within(replies[1]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第二版跑酷战斗玩法')
+    expect(within(replies[0]).getByRole('region', { name: '确认方案' }).parentElement?.className).toBe(
+      within(replies[1]).getByRole('region', { name: '确认方案' }).parentElement?.className,
+    )
     expect(within(replies[0]).getByLabelText('玩法说明')).toBeDisabled()
     expect(within(replies[1]).getByLabelText('玩法说明')).toBeEnabled()
   })

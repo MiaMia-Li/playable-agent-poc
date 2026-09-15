@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import type { SearchBrief } from './schemas'
 
 export const CURATED_RESEARCH_SOURCES = [
@@ -9,7 +10,7 @@ export const CURATED_RESEARCH_SOURCES = [
   { id: 'liftoff-resources', domains: ['liftoff.io'] },
 ] as const
 
-export const MARKET_RESEARCH_STRATEGY_VERSION = 'public-web-v1'
+export const MARKET_RESEARCH_STRATEGY_VERSION = 'public-web-v2'
 export const MARKET_RESEARCH_CACHE_TTL_MS = 86_400_000
 
 const TRACKING_PARAMETERS = new Set(['fbclid', 'gclid', 'mc_cid', 'mc_eid'])
@@ -22,24 +23,45 @@ function domainMatches(hostname: string, domain: string): boolean {
   return hostname === domain || hostname.endsWith(`.${domain}`)
 }
 
-function parseAllowedUrl(value: string): URL | undefined {
+function isPublicHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (normalized === 'localhost' || normalized.endsWith('.localhost')) return false
+  const ipVersion = isIP(normalized)
+  if (ipVersion === 4) {
+    const [first = 0, second = 0] = normalized.split('.').map(Number)
+    return !(
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      first >= 224
+    )
+  }
+  if (ipVersion === 6) {
+    return normalized !== '::' && normalized !== '::1' && !/^f[cd]/.test(normalized) && !/^fe[89ab]/.test(normalized)
+  }
+  return true
+}
+
+function parseResearchUrl(value: string): URL | undefined {
   try {
     const url = new URL(value)
     if (url.protocol !== 'https:' || url.username || url.password || url.hash) return undefined
-    const hostname = url.hostname.toLowerCase()
-    if (!allowedResearchDomains().some((domain) => domainMatches(hostname, domain))) return undefined
+    if (!isPublicHostname(url.hostname)) return undefined
     return url
   } catch {
     return undefined
   }
 }
 
-export function isAllowedResearchUrl(value: string): boolean {
-  return Boolean(parseAllowedUrl(value))
+export function isValidResearchUrl(value: string): boolean {
+  return Boolean(parseResearchUrl(value))
 }
 
 export function researchSourceIdForUrl(value: string): string | undefined {
-  const url = parseAllowedUrl(value)
+  const url = parseResearchUrl(value)
   if (!url) return undefined
   return CURATED_RESEARCH_SOURCES.find((source) =>
     source.domains.some((domain) => domainMatches(url.hostname.toLowerCase(), domain)),
@@ -47,7 +69,7 @@ export function researchSourceIdForUrl(value: string): string | undefined {
 }
 
 export function canonicalResearchUrl(value: string): string | undefined {
-  const url = parseAllowedUrl(value)
+  const url = parseResearchUrl(value)
   if (!url) return undefined
   url.hostname = url.hostname.toLowerCase()
   url.pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '')

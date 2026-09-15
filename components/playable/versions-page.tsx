@@ -100,7 +100,7 @@ export function VersionsPage() {
     const normalized = query.trim().toLocaleLowerCase()
     if (!normalized) return versions
     return versions.filter((item) => {
-      const searchable = [item.id, item.task.title, item.task.prompt, item.delivery.label]
+      const searchable = [item.confirmation.copy.title, item.id, item.task.title, item.task.prompt, item.delivery.label]
         .filter(Boolean)
         .join(' ')
         .toLocaleLowerCase()
@@ -121,7 +121,7 @@ export function VersionsPage() {
           className="w-full sm:w-72"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索构建 ID…"
+          placeholder="搜索游戏标题或构建 ID…"
           aria-label="搜索构建记录"
         />
       </div>
@@ -144,7 +144,7 @@ export function VersionsPage() {
               <thead className="bg-muted/40 text-muted-foreground border-b text-xs font-medium">
                 <tr>
                   <th scope="col" className="px-5 py-3 font-medium">
-                    构建 ID
+                    游戏标题
                   </th>
                   <th scope="col" className="px-5 py-3 font-medium">
                     构建方案
@@ -169,7 +169,8 @@ export function VersionsPage() {
                   return (
                     <tr key={item.id} aria-label={`构建 ${item.id}`} className="transition-colors hover:bg-muted/20">
                       <td className="px-5 py-4 align-middle">
-                        <p className="text-sm font-medium">{item.id}</p>
+                        <p className="font-medium">{item.confirmation.copy.title.trim() || '未命名游戏'}</p>
+                        <p className="text-muted-foreground mt-1 font-mono text-xs">{item.id}</p>
                         {/* {item.current && (
                             <span className="mt-1 inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
                               当前产物

@@ -70,10 +70,9 @@ import type {
   ResolvedReferenceSelection,
   SearchBrief,
 } from './research/schemas'
-import { referenceSelectionInputSchema } from './research/schemas'
+import { marketResearchReportSchema, referenceSelectionInputSchema } from './research/schemas'
 import type { MarketResearchAgent, MarketResearchProgressStage } from './research/market-research-agent'
 import {
-  allowedResearchDomains,
   createResearchCacheKey,
   MARKET_RESEARCH_CACHE_TTL_MS,
   MARKET_RESEARCH_STRATEGY_VERSION,
@@ -582,6 +581,19 @@ async function ownedTask(
 
 function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
+}
+
+function appendMarketResearchSources(message: string, report: MarketResearchReport): string {
+  const sources = new Map<string, string>()
+  for (const candidate of report.candidates) {
+    sources.set(candidate.sourceUrl, candidate.sourceTitle)
+    for (const evidence of candidate.evidence) {
+      if (!sources.has(evidence.sourceUrl)) sources.set(evidence.sourceUrl, evidence.sourceTitle)
+    }
+  }
+  const missingSources = [...sources].filter(([url]) => !message.includes(url))
+  if (missingSources.length === 0) return message
+  return [message.trimEnd(), '', '来源：', ...missingSources.map(([url, title]) => `- ${title}：${url}`)].join('\n')
 }
 
 function requirementFailureMessage(cause: unknown): string {
@@ -1384,7 +1396,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         brief: input.call.searchBrief,
         cacheKey,
         strategyVersion: MARKET_RESEARCH_STRATEGY_VERSION,
-        sourceIds: allowedResearchDomains(),
+        sourceIds: [],
       })
       await repository.appendEvent({
         taskId: input.task.id,
@@ -1711,6 +1723,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               // costs nothing, so capping the video tool would only stop the
               // agent from re-checking an analysis that finished mid-turn.
               const referenceToolBudget = { imagesExecuted: false }
+              let completedMarketResearch: MarketResearchReport | undefined
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -1751,8 +1764,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     reasoningHistory = mergeReasoning(reasoningHistory, reasoning)
                     enqueue({ type: 'assistant_progress', message, reasoning: reasoningHistory })
                   },
-                  executeTool: (call, toolOptions) =>
-                    executeRequirementAnalysisTool({
+                  executeTool: async (call, toolOptions) => {
+                    const result = await executeRequirementAnalysisTool({
                       call,
                       task: access.task,
                       userId: access.userId,
@@ -1764,7 +1777,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                       onResearchProgress(stage) {
                         enqueue({ type: 'research_progress', stage, message: RESEARCH_PROGRESS_COPY[stage] })
                       },
-                    }),
+                    })
+                    if (call.name === 'search_market_references') {
+                      const parsedResearch = marketResearchReportSchema.safeParse(result)
+                      if (parsedResearch.success) completedMarketResearch = parsedResearch.data
+                    }
+                    return result
+                  },
                 },
               )
               if (cancelled) return
@@ -1777,6 +1796,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               validatedReply.reasoning =
                 mergeReasoning(reasoningHistory, validatedReply.reasoning) ?? validatedReply.reasoning
               if (validatedReply.kind === 'research') {
+                validatedReply.message = appendMarketResearchSources(validatedReply.message, validatedReply.research)
                 stage = 'agent_message_store'
                 await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
                 await dependencies.repository.appendEvent({
@@ -1792,10 +1812,23 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              const fallbackBrief =
-                validatedReply.kind === 'informational'
-                  ? (access.task.requirementBrief ?? createRequirementBrief())
-                  : (access.task.requirementBrief ?? createRequirementBrief(access.task.prompt))
+              if (validatedReply.kind === 'informational' && completedMarketResearch) {
+                validatedReply.message = appendMarketResearchSources(validatedReply.message, completedMarketResearch)
+                for (const tool of validatedReply.tools ?? []) {
+                  if (!enqueue({ type: 'tool_completed', tool })) return
+                }
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', JSON.stringify(validatedReply))
+                enqueue({
+                  type: 'informational',
+                  message: validatedReply.message,
+                  reasoning: validatedReply.reasoning,
+                  brief: access.task.requirementBrief ?? undefined,
+                  tools: validatedReply.tools ?? [],
+                })
+                return
+              }
+              const fallbackBrief = access.task.requirementBrief ?? createRequirementBrief(access.task.prompt)
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId

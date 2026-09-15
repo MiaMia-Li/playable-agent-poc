@@ -37,6 +37,16 @@ describe('PlayableStudioShell recent conversations', () => {
     expect(screen.getByRole('link', { name: /试玩对话 13/ })).toBeInTheDocument()
   })
 
+  it('prevents vertical overscroll in the recent conversation list', () => {
+    render(
+      <PlayableStudioShell accountLabel="测试用户" tasks={[]}>
+        <div>首页</div>
+      </PlayableStudioShell>,
+    )
+
+    expect(screen.getByText('最近对话').parentElement).toHaveClass('overscroll-y-none')
+  })
+
   it('pins task workspaces to the viewport and locks root scrolling', () => {
     mockPathname = '/tasks/task-1'
 
