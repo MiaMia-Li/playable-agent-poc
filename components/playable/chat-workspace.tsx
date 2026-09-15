@@ -373,8 +373,6 @@ export function ChatWorkspace({
     initialConversation.findLast((turn) => turn.role === 'user')?.referenceImages ?? [],
   )
   const [referencesChanged, setReferencesChanged] = useState(false)
-  const [screenshotBuildId, setScreenshotBuildId] = useState('latest')
-  const [screenshotPurpose, setScreenshotPurpose] = useState<'problem' | 'target'>(hasArtifact ? 'problem' : 'target')
   const [baseVersions, setBaseVersions] = useState<
     { id: string; version: number; current: boolean; status?: string }[]
   >([])
@@ -597,14 +595,6 @@ export function ChatWorkspace({
           body: JSON.stringify({
             message: content,
             ...(referenceImageIds.length || referencesChanged ? { referenceImageIds } : {}),
-            ...(newImageIds.length
-              ? {
-                  screenshotPurpose,
-                  ...(screenshotBuildId !== 'latest'
-                    ? { screenshotBuildId: screenshotBuildId === 'unknown' ? null : screenshotBuildId }
-                    : {}),
-                }
-              : {}),
             ...(baseBuildId !== 'auto' ? { baseBuildId } : {}),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
             ...(referenceSelection ? { referenceSelection } : {}),
@@ -776,8 +766,6 @@ export function ChatWorkspace({
       baseBuildId,
       activeReferences,
       referencesChanged,
-      screenshotBuildId,
-      screenshotPurpose,
       composerAttachments,
       hasArtifact,
       message,
@@ -1498,38 +1486,6 @@ export function ChatWorkspace({
                   {ref.purpose === 'problem' ? '问题' : '目标'} <X aria-label="移除本轮引用" />
                 </Button>
               ))}
-            </div>
-          )}
-          {composerAttachments.some((asset) => asset.mimeType.startsWith('image/')) && (
-            <div className="mb-2 space-y-1 px-1">
-              <p className="text-muted-foreground text-xs">新截图将替换沿用的截图。</p>
-              <Select
-                value={screenshotPurpose}
-                onValueChange={(value) => setScreenshotPurpose(value as 'problem' | 'target')}
-                disabled={sending}
-              >
-                <SelectTrigger aria-label="截图用途" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="problem">问题截图：需要修复的现象</SelectItem>
-                  <SelectItem value="target">目标效果：希望保留或实现</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={screenshotBuildId} onValueChange={setScreenshotBuildId} disabled={sending}>
-                <SelectTrigger aria-label="截图对应版本" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="latest">当前最新版本</SelectItem>
-                  <SelectItem value="unknown">其他来源 / 版本未知</SelectItem>
-                  {baseVersions.map((build) => (
-                    <SelectItem key={build.id} value={build.id}>
-                      v{build.version}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           )}
           {composerAttachments.length > 0 && (

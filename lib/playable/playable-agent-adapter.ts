@@ -155,7 +155,7 @@ export class PlayableAgentError extends Error {
 }
 
 export interface ConfirmedBuildInput {
-  /** 基础交互检查通过后交给宿主展示；不改变正式版本和验收状态。 */
+  /** 基础安全检查通过后交给宿主保存为待验收版本；浏览器检查失败也保留产物。 */
   onPreview?: (html: string) => Promise<void>
   baseConfirmation?: ConfirmationProposal
   reusableScenarios?: { preview: string; full: string }

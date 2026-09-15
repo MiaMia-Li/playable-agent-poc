@@ -47,6 +47,13 @@ it.each([...playableModeIds, ...sourceTemplateIds])(
     expect(names).toContain('SKILL.md')
     expect(names).toContain('assets/starter/work/browser-acceptance.mjs')
     expect(names).toContain('assets/starter/work/test-freeform-playable.mjs')
+    for (const helper of [
+      'inspect-cocos-bundle.mjs',
+      'patch-cocos-bundle.mjs',
+      'vendor/acorn.mjs',
+      'vendor/acorn.LICENSE',
+    ])
+      expect(names.includes(`assets/starter/work/${helper}`)).toBe(Boolean(sourceTemplateId))
     const templates = names.filter((name) => /^assets\/templates\/[^/]+\//.test(name))
     expect(templates.length).toBeGreaterThan(0)
     expect(templates.every((name) => name.startsWith(`assets/templates/${id}/`))).toBe(true)

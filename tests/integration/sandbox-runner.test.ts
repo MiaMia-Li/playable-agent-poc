@@ -998,9 +998,76 @@ it.each(['passed', 'failed', 'stale', 'smoke-failed'])('two-phase acceptance: %s
   if (outcome === 'passed') {
     expect((await promise).reusableScenarios).toBeDefined()
   } else await expect(promise).rejects.toThrow()
-  expect(preview).toHaveBeenCalledTimes(outcome === 'smoke-failed' ? 0 : 1)
+  expect(preview).toHaveBeenCalledOnce()
   expect(phases).toEqual(outcome === 'smoke-failed' ? ['preview'] : ['preview', 'acceptance'])
 })
+
+it.each(['report', 'missing', 'malformed', 'read-error', 'transport-error'])(
+  'persists safe preview failure diagnostics before destroying the sandbox: %s',
+  async (outcome) => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-preview-test')
+    input.onPreview = vi.fn(async () => undefined)
+    const activity = vi.fn((event: string) => {
+      if (event === 'preview_check_failed') expect(sandbox.destroyed).toBe(false)
+    })
+    input.onActivity = activity
+    const run = sandbox.run.bind(sandbox)
+    sandbox.run = async (options) => {
+      if (!options.command.includes('browser-acceptance.mjs')) return run(options)
+      expect(input.onPreview).toHaveBeenCalledOnce()
+      const reportPath = path.join(options.workingDirectory!, 'work/browser-acceptance/report.json')
+      // Earlier debug evidence must have been removed before the host check.
+      await expect(readFile(reportPath, 'utf8')).rejects.toThrow()
+      if (outcome === 'transport-error') throw new Error('private transport failure')
+      if (outcome === 'report' || outcome === 'malformed') {
+        await mkdir(path.dirname(reportPath), { recursive: true })
+        await writeFile(
+          reportPath,
+          outcome === 'malformed'
+            ? '{'
+            : JSON.stringify({
+                passed: false,
+                smoke: true,
+                checks: [{ name: 'No browser errors or popups', passed: false }],
+                errors: ['Browser console error', 'private payload'],
+                requests: ['https://private.example'],
+                failure: { stage: 'browser_errors', code: 'assertion_failed' },
+              }),
+        )
+      }
+      return { exitCode: 1, stdout: 'private stdout', stderr: 'private stderr' }
+    }
+    const read = sandbox.readTextFile.bind(sandbox)
+    sandbox.readTextFile = async (options) => {
+      if (outcome === 'read-error' && options.path.endsWith('browser-acceptance/report.json'))
+        throw new Error('private read error')
+      return read(options)
+    }
+    await expect(
+      runPlayableBuild(input, {
+        createSandbox: async () => sandbox,
+        executeAgent: async ({ workspace }) => {
+          const reportPath = path.join(workspace, 'work/browser-acceptance/report.json')
+          await mkdir(path.dirname(reportPath), { recursive: true })
+          await writeFile(reportPath, JSON.stringify({ passed: true, smoke: true, checks: [] }))
+        },
+      }),
+    ).rejects.toMatchObject({ stage: 'preview_check' })
+    const call = activity.mock.calls.find((call) => call[0] === 'preview_check_failed') as unknown as [
+      string,
+      { output: string },
+    ]
+    const diagnostic = JSON.parse(call[1].output)
+    expect(diagnostic.reportStatus).toBe(
+      outcome === 'report' ? 'available' : outcome === 'malformed' ? 'invalid' : 'unavailable',
+    )
+    expect(diagnostic.exitCode).toBe(outcome === 'transport-error' ? null : 1)
+    expect(call[1].output).not.toContain('private')
+    expect(input.onPreview).toHaveBeenCalledOnce()
+    expect(sandbox.destroyed).toBe(true)
+  },
+)
 
 it('reuses accepted scenarios without model calls for a parameter-only revision', async () => {
   const sandbox = await createLocalSandbox()
@@ -1047,3 +1114,107 @@ it('reuses accepted scenarios without model calls for a parameter-only revision'
   expect(input.onPreview).toHaveBeenCalledOnce()
   expect(result.html).toContain('New title')
 })
+
+it.each(['missing', 'credential', 'external-resource'])(
+  'does not retain an unsafe preview before browser acceptance: %s',
+  async (kind) => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-preview-test')
+    input.onPreview = vi.fn(async () => undefined)
+    const base = '<html><meta name="viewport" content="width=device-width"><canvas></canvas>'
+    const html =
+      kind === 'missing'
+        ? ''
+        : base +
+          (kind === 'credential' ? input.apiKey : '<script src="https://example.com/remote.js"></script>') +
+          '</html>'
+    await expect(
+      runPlayableBuild(input, {
+        createSandbox: async () => sandbox,
+        executeAgent: async ({ workspace }) => {
+          await writeFile(path.join(workspace, 'output.html'), html)
+        },
+      }),
+    ).rejects.toMatchObject({ stage: 'artifact_check' })
+    expect(input.onPreview).not.toHaveBeenCalled()
+    expect(sandbox.commands.some((options) => options.command.includes('browser-acceptance.mjs'))).toBe(false)
+    expect(sandbox.destroyed).toBe(true)
+  },
+)
+
+it.each(['passed', 'failed', 'unchanged', 'stale', 'launch', 'cancelled', 'unsafe'])(
+  'bounds preview repair and preserves a saved version: %s',
+  async (outcome) => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-repair-test')
+    input.onPreview = vi.fn(async () => undefined)
+    const phases: string[] = [],
+      controller = new AbortController()
+    let checks = 0
+    const run = sandbox.run.bind(sandbox)
+    sandbox.run = async (options) => {
+      if (!options.command.includes('browser-acceptance.mjs')) return run(options)
+      checks++
+      const html = await readFile(path.join(options.workingDirectory!, 'output.html'))
+      const report = {
+        passed: checks === 2 && outcome === 'passed',
+        smoke: true,
+        sha256: outcome === 'stale' ? 'stale' : createHash('sha256').update(html).digest('hex'),
+        checks: [{ name: 'native transition', passed: false }],
+        failure: { stage: outcome === 'launch' ? 'launch' : 'scenario', code: 'assertion_failed' },
+      }
+      const target = path.join(options.workingDirectory!, 'work/browser-acceptance/report.json')
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, JSON.stringify(report))
+      if (outcome === 'cancelled') controller.abort()
+      return { exitCode: report.passed ? 0 : 1, stdout: '', stderr: '' }
+    }
+    const promise = runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      abortSignal: controller.signal,
+      executeAgent: async ({ phase, workspace, abortSignal }) => {
+        phases.push(phase!)
+        if (phase === 'preview') {
+          await mkdir(path.join(workspace, 'work'), { recursive: true })
+          await writeFile(path.join(workspace, 'work/preview-scenario.mjs'), 'export default async () => {}')
+        }
+        if (phase === 'preview_repair') {
+          await writeFile(
+            path.join(workspace, 'work/preview-handoff.md'),
+            `Changed the gameplay handler. ${input.apiKey}`,
+          )
+          expect(abortSignal).toBe(controller.signal)
+          expect(JSON.parse(await readFile(path.join(workspace, 'work/preview-repair.json'), 'utf8')).attempt).toBe(1)
+          expect(input.onPreview).toHaveBeenCalledOnce()
+          if (outcome !== 'unchanged')
+            await writeFile(
+              path.join(workspace, 'output.html'),
+              (await readFile(path.join(workspace, 'output.html'), 'utf8')) +
+                (outcome === 'unsafe' ? input.apiKey : '<!-- repair -->'),
+            )
+        }
+        if (phase === 'acceptance') {
+          const html = await readFile(path.join(workspace, 'output.html'))
+          const handoff = JSON.parse(await readFile(path.join(workspace, 'work/acceptance-handoff.json'), 'utf8'))
+          expect(handoff.artifactSha256).toBe(createHash('sha256').update(html).digest('hex'))
+          expect(handoff.confirmation.mode).toBe('center_collision')
+          expect(handoff.implementationNotes).toBe('Changed the gameplay handler. [REDACTED]')
+          expect(handoff.toolInventory).toContain('builtins')
+          await writeFile(path.join(workspace, 'work/scenario.mjs'), 'export default async () => {}')
+          await writeFile(
+            path.join(workspace, 'work/browser-acceptance/report.json'),
+            JSON.stringify({ passed: true, smoke: false, sha256: createHash('sha256').update(html).digest('hex') }),
+          )
+        }
+      },
+    })
+    if (outcome === 'passed') await expect(promise).resolves.toBeDefined()
+    else await expect(promise).rejects.toThrow()
+    expect(checks).toBe(['passed', 'failed'].includes(outcome) ? 2 : 1)
+    expect(phases.filter((phase) => phase === 'preview_repair')).toHaveLength(
+      ['stale', 'launch', 'cancelled'].includes(outcome) ? 0 : 1,
+    )
+    expect(input.onPreview).toHaveBeenCalledTimes(['passed', 'failed'].includes(outcome) ? 2 : 1)
+    expect(sandbox.destroyed).toBe(true)
+  },
+)
