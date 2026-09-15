@@ -38,6 +38,8 @@ import {
   type RevisionProposal,
   type VideoAnalysisStatus,
 } from './schemas'
+import { readPlayableUserTurn } from './reference-images'
+import type { ReferenceImageEvidence } from './schemas'
 import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
 import { generatePlayableMediaAssets } from './media-generation'
@@ -61,7 +63,7 @@ import {
   type ReferenceImageAnalyst,
   type ReferenceImageAnalysis,
 } from './reference-image-analyst'
-import type { RequirementAnalysisToolCall } from './playable-agent-adapter'
+import type { AgentInput, RequirementAnalysisToolCall } from './playable-agent-adapter'
 import type {
   MarketResearchIndustrySummary,
   MarketResearchReport,
@@ -241,6 +243,13 @@ export interface PlayableTaskRepository {
     buildId: string,
     expected: PlayableTaskPhase,
     next: PlayableTaskPhase,
+  ): Promise<boolean>
+  savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus?: 'building' | 'failed',
   ): Promise<boolean>
   publishArtifact(
     taskId: string,
@@ -459,6 +468,18 @@ export function safeValidationSummary(
   }
 }
 
+// 基础检查后的预览可以保存，但必须保留未完整验收的状态，不能据此宣称交付通过。
+function previewValidation(html: string, confirmation: ConfirmationProposal): PlayableValidationSummary {
+  const bytes = new TextEncoder().encode(html).byteLength
+  const profile = getDeliveryProfile(deliveryProfileIdFor(confirmation.delivery))
+  return {
+    buildPassed: false,
+    deliveryCompliant: profile.maxBytes === null || bytes <= profile.maxBytes,
+    bytes,
+    delivery: { profileId: profile.id, label: profile.label, maxBytes: profile.maxBytes },
+  }
+}
+
 function safeTaskState(task: PlayableTaskRecord) {
   return {
     phase: task.phase,
@@ -517,6 +538,12 @@ function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
 }
 
 const TOOL_PROGRESS_COPY = {
+  read_playable_version: {
+    tool_started: '正在读取历史版本',
+    tool_completed: '历史版本读取完成',
+    tool_pending: '历史版本尚未读取完成',
+    tool_failed: '历史版本暂不可用',
+  },
   inspect_reference_images: {
     tool_started: '正在分析参考图片',
     tool_completed: '参考图片分析完成',
@@ -581,6 +608,15 @@ async function ownedTask(
 
 function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
+}
+
+// 需求 Agent 只需理解历史代码；裁剪内嵌媒体以限制上下文，构建时仍读取完整的原始产物。
+function versionSourceForAgent(bytes: Uint8Array, apiKey: string) {
+  const source = safeString(new TextDecoder().decode(bytes), [apiKey]).replace(
+    /data:[^\s"'<>]*;base64,[A-Za-z0-9+/=]+/g,
+    'data:omitted',
+  )
+  return { html: source.slice(0, 160000), truncated: source.length > 160000 }
 }
 
 function appendMarketResearchSources(message: string, report: MarketResearchReport): string {
@@ -701,12 +737,14 @@ function resolveRevisionProposal(input: {
   latestArtifactKey: string
   id: string
 }): RevisionProposal {
-  const successfulBuilds = input.builds.filter(
-    (build): build is PlayableBuildRecord & { artifactKey: string } =>
-      build.status === 'succeeded' && Boolean(build.artifactKey),
+  const successfulBuilds = input.builds.filter((build): build is PlayableBuildRecord & { artifactKey: string } =>
+    Boolean(build.artifactKey),
   )
-  const baseIndex = successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
-  if (baseIndex < 0) throw new Error('Current playable build is missing')
+  const baseIndex =
+    input.plan.requestedBaseVersion != null
+      ? input.plan.requestedBaseVersion - 1
+      : successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
+  if (baseIndex < 0 || !successfulBuilds[baseIndex]) throw new Error('Revision base version is unavailable')
   return revisionProposalSchema.parse({
     id: input.id,
     baseBuildId: successfulBuilds[baseIndex].id,
@@ -718,7 +756,7 @@ function resolveRevisionProposal(input: {
 
 function conversationContent(message: PlayableTaskMessageRecord, secrets: readonly string[]): string {
   const safeContent = safeString(message.content, secrets)
-  if (message.role === 'user') return safeContent
+  if (message.role === 'user') return readPlayableUserTurn(safeContent).text
   try {
     const parsed = playableAgentReplySchema.safeParse(JSON.parse(safeContent))
     return parsed.success ? parsed.data.message : safeContent
@@ -1040,7 +1078,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     if (revision?.strategy === 'patch') {
       stage = 'base_artifact'
       const baseBuild = await repository.findBuild(task.id, revision.baseBuildId)
-      if (!baseBuild || baseBuild.status !== 'succeeded' || !baseBuild.artifactKey) {
+      if (!baseBuild || !baseBuild.artifactKey) {
         throw new Error('Revision base artifact is missing')
       }
       const baseStream = await artifactStore.get(baseBuild.artifactKey)
@@ -1048,9 +1086,11 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       baseHtml = new TextDecoder().decode(await readAll(baseStream))
       const parsedBase = confirmationProposalSchema.safeParse(baseBuild.confirmation)
       if (parsedBase.success) baseConfirmation = parsedBase.data
-      const scenarioStream = await artifactStore.get(
-        baseBuild.artifactKey.replace(/\/playable\.html$/, '/scenarios.json'),
-      )
+      // 未验收版本可作为修改基线，但不能复用其场景作为已通过的验收依据。
+      const scenarioStream =
+        baseBuild.status === 'succeeded'
+          ? await artifactStore.get(baseBuild.artifactKey.replace(/\/(?:playable|preview)\.html$/, '/scenarios.json'))
+          : undefined
       if (scenarioStream) {
         try {
           const saved = JSON.parse(new TextDecoder().decode(await readAll(scenarioStream)))
@@ -1106,6 +1146,16 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           confirmation: sanitizedConfirmation,
         })
       : []
+    // 只传递确认方案选中的截图，不把任务累计上传的历史图片全部送入构建。
+    const referenceImages = await Promise.all(
+      (sanitizedConfirmation.referenceImages ?? []).map(async (reference) => {
+        const asset = storedAssets.find((asset) => asset.id === reference.assetId && asset.slot === 'referenceImage')
+        if (!asset) throw new Error('Selected screenshot unavailable')
+        const stream = await artifactStore.get(asset.storageKey)
+        if (!stream) throw new Error('Selected screenshot unavailable')
+        return { ...reference, mimeType: asset.mimeType, bytes: await readAll(stream) }
+      }),
+    )
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
@@ -1114,7 +1164,28 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           throw new Error('Preview contains a credential')
         const current = await repository.findBuild(task.id, buildId)
         if (!current || current.status !== 'building') throw new Error('Preview build is no longer active')
-        await artifactStore.put(`${artifactPrefix(task, buildId)}/preview.html`, html, 'text/html; charset=utf-8')
+        const prefix = artifactPrefix(task, buildId)
+        const previewKey = `${prefix}/preview.html`
+        const validation = previewValidation(html, sanitizedConfirmation)
+        // 先落盘并登记可试玩版本，再写辅助文件；后续验收或辅助文件失败也不丢失已有产物。
+        await artifactStore.put(previewKey, html, 'text/html; charset=utf-8')
+        if (!(await repository.savePreviewArtifact(task.id, buildId, previewKey, validation)))
+          throw new Error('Preview build is no longer active')
+        await artifactStore.put(
+          `${prefix}/preview-production-config.json`,
+          JSON.stringify(createProductionConfig(sanitizedConfirmation)),
+          'application/json',
+        )
+        await artifactStore.put(
+          `${prefix}/preview-asset-manifest.json`,
+          JSON.stringify(createAssetSourceManifest(sanitizedConfirmation, assets)),
+          'application/json',
+        )
+        await artifactStore.put(
+          `${prefix}/preview-validation-report.json`,
+          JSON.stringify(validation),
+          'application/json',
+        )
         await activityQueue
         await repository.appendEvent({
           taskId: task.id,
@@ -1129,6 +1200,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
+      ...(referenceImages.length ? { referenceImages } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
@@ -1205,6 +1277,50 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 }
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
+  // 仅补登记最新一次失败构建中已宣布可试玩的旧预览，避免旧产物覆盖后续构建。
+  const recoverLegacyPreview = async (task: PlayableTaskRecord) => {
+    if (task.phase !== 'failed') return
+    const latest = (await dependencies.repository.listBuilds(task.id)).at(-1)
+    if (!latest || latest.status !== 'failed' || latest.artifactKey) return
+    const events = await dependencies.repository.listEvents(task.id)
+    const announced = events.some((event) => {
+      if (event.type !== 'build_preview_ready') return false
+      try {
+        return JSON.parse(event.message ?? 'null')?.buildId === latest.id
+      } catch {
+        return false
+      }
+    })
+    if (!announced) return
+    const prefix = artifactPrefix(task, latest.id)
+    const key = `${prefix}/preview.html`
+    const stream = await dependencies.artifactStore.get(key)
+    if (!stream) return
+    const html = new TextDecoder().decode(await readAll(stream))
+    if (!html || redactSecrets(html) !== html) return
+    const validation = previewValidation(html, latest.confirmation)
+    await dependencies.artifactStore.put(
+      `${prefix}/preview-production-config.json`,
+      JSON.stringify(createProductionConfig(latest.confirmation)),
+      'application/json',
+    )
+    await dependencies.artifactStore.put(
+      `${prefix}/preview-validation-report.json`,
+      JSON.stringify(validation),
+      'application/json',
+    )
+    if (!(await dependencies.artifactStore.get(`${prefix}/preview-asset-manifest.json`)))
+      await dependencies.artifactStore.put(
+        `${prefix}/preview-asset-manifest.json`,
+        JSON.stringify(createAssetSourceManifest(latest.confirmation, [])),
+        'application/json',
+      )
+    if (await dependencies.repository.savePreviewArtifact(task.id, latest.id, key, validation, 'failed')) {
+      task.latestArtifactKey = key
+      task.latestValidation = validation
+    }
+  }
+
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
   const claimVideoAnalysis = async (taskId: string, assetId: string, model: string, rerun: boolean) => {
@@ -1365,6 +1481,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
 
   const executeRequirementAnalysisTool = async (input: {
     call: RequirementAnalysisToolCall
+    prompt?: string
+    referenceImages?: ReferenceImageEvidence[]
     task: PlayableTaskRecord
     userId: string
     apiKey: string
@@ -1374,8 +1492,36 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     abortSignal?: AbortSignal
     onResearchProgress?: (stage: MarketResearchProgressStage) => void
   }): Promise<
-    ReferenceImageAnalysis | MarketResearchReport | { status: string; blueprint?: GameplayBlueprint; reason?: string }
+    | ReferenceImageAnalysis
+    | MarketResearchReport
+    | {
+        status: string
+        blueprint?: GameplayBlueprint
+        reason?: string
+        version?: number
+        confirmation?: ConfirmationProposal
+        html?: string
+        truncated?: boolean
+        acceptance?: 'passed' | 'pending' | 'failed'
+      }
   > => {
+    if (input.call.name === 'read_playable_version') {
+      const builds = (await dependencies.repository.listBuilds(input.task.id)).filter((build) =>
+        Boolean(build.artifactKey),
+      )
+      const build = builds[input.call.version - 1]
+      if (!build?.artifactKey) return { status: 'unavailable', reason: 'version_unavailable' }
+      const stream = await dependencies.artifactStore.get(build.artifactKey)
+      if (!stream) return { status: 'unavailable', reason: 'version_unavailable' }
+      input.cache.set(`read_version:${input.call.version}`, build.id)
+      return {
+        status: 'completed',
+        version: input.call.version,
+        acceptance: build.status === 'succeeded' ? 'passed' : build.status === 'building' ? 'pending' : 'failed',
+        confirmation: sanitizeConfirmation(build.confirmation, [input.apiKey]),
+        ...versionSourceForAgent(await readAll(stream), input.apiKey),
+      }
+    }
     if (input.call.name === 'search_market_references') {
       const repository = dependencies.repository
       if (
@@ -1480,7 +1626,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const analysis = await dependencies.imageAnalyst.analyze({
         taskId: input.task.id,
         apiKey: input.apiKey,
-        prompt: input.task.prompt,
+        prompt: [input.prompt ?? input.task.prompt, JSON.stringify(input.referenceImages ?? [])].join('\n'),
         images,
         abortSignal: input.abortSignal,
       })
@@ -1549,7 +1695,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const versions = artifactTasks.flatMap((task) => {
         let successfulVersion = 0
         return (buildsByTask.get(task.id) ?? []).flatMap((build) => {
-          if (build.status !== 'succeeded') return []
+          if (!build.artifactKey) return []
           const version = ++successfulVersion
           const delivery = build.confirmation.delivery
           const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(delivery))
@@ -1626,7 +1772,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const body = (await request.json().catch(() => undefined)) as
-        | { message?: unknown; attachmentIds?: unknown; referenceSelection?: unknown }
+        | {
+            message?: unknown
+            attachmentIds?: unknown
+            referenceSelection?: unknown
+            baseBuildId?: unknown
+            referenceImageIds?: unknown
+            screenshotBuildId?: unknown
+            screenshotPurpose?: unknown
+          }
         | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
       if (
@@ -1637,6 +1791,21 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       ) {
         return jsonError(400, 'Invalid request')
       }
+      if (
+        body.referenceImageIds !== undefined &&
+        (!Array.isArray(body.referenceImageIds) ||
+          body.referenceImageIds.length > 10 ||
+          body.referenceImageIds.some((id) => typeof id !== 'string'))
+      )
+        return jsonError(400, 'Invalid screenshot selection')
+      if (
+        body.screenshotBuildId !== undefined &&
+        body.screenshotBuildId !== null &&
+        typeof body.screenshotBuildId !== 'string'
+      )
+        return jsonError(400, 'Invalid screenshot version')
+      if (body.screenshotPurpose !== undefined && !['problem', 'target'].includes(body.screenshotPurpose as string))
+        return jsonError(400, 'Invalid screenshot purpose')
       const attachedAssetIds = [...new Set((body.attachmentIds ?? []) as string[])]
       const attachedAssets = await Promise.all(
         attachedAssetIds.map((assetId) =>
@@ -1653,6 +1822,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(503, 'AI service unavailable')
+      let lockedRevisionBase: AgentInput['lockedRevisionBase']
+      let lockedBaseConfirmation: ConfirmationProposal | undefined
+      // 手动基线先在服务端验证并锁定；模型的文字承诺不能代替真实产物选择。
+      if (body.baseBuildId !== undefined) {
+        if (typeof body.baseBuildId !== 'string' || !body.baseBuildId.trim())
+          return jsonError(400, 'Invalid base version')
+        const successfulBuilds = (await dependencies.repository.listBuilds(access.task.id)).filter((build) =>
+          Boolean(build.artifactKey),
+        )
+        const baseIndex = successfulBuilds.findIndex((build) => build.id === body.baseBuildId)
+        const baseBuild = successfulBuilds[baseIndex]
+        if (!baseBuild?.artifactKey) return jsonError(409, 'Selected base version unavailable')
+        const stream = await dependencies.artifactStore.get(baseBuild.artifactKey)
+        if (!stream) return jsonError(409, 'Selected base version unavailable')
+        lockedBaseConfirmation = sanitizeConfirmation(baseBuild.confirmation, [apiKey])
+        lockedRevisionBase = {
+          buildId: baseBuild.id,
+          version: baseIndex + 1,
+          ...versionSourceForAgent(await readAll(stream), apiKey),
+        }
+      }
       const message = body.message.trim()
       let referenceSelection: ResolvedReferenceSelection | undefined
       if (body.referenceSelection !== undefined) {
@@ -1716,13 +1906,96 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 dependencies.repository.listBuilds(access.task.id),
               ])
               stage = 'user_message_store'
-              await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
+              const previousTurns = history
+                .filter((turn) => turn.role === 'user')
+                .map((turn) => readPlayableUserTurn(turn.content))
+              const previousEvidence = new Map(
+                previousTurns.flatMap((turn) => turn.referenceImages).map((ref) => [ref.assetId, ref]),
+              )
+              const newImages = attachedAssets.filter((asset) => asset?.slot === 'referenceImage')
+              const lastReferences = previousTurns.at(-1)?.referenceImages ?? []
+              // 切换基线时仅沿用来源匹配的截图，避免把其他版本的问题带入本轮。
+              const inherited = lockedRevisionBase
+                ? lastReferences.filter((ref) => ref.sourceBuildId === lockedRevisionBase.buildId)
+                : lastReferences
+              // 显式选择（含空数组）优先；否则新图替换旧图，没有新图才沿用上一轮。
+              const selectedImageIds = [
+                ...new Set(
+                  body.referenceImageIds !== undefined
+                    ? (body.referenceImageIds as string[])
+                    : newImages.length
+                      ? newImages.map((asset) => asset!.id)
+                      : inherited.map((ref) => ref.assetId),
+                ),
+              ]
+              const successfulBuilds = builds.filter((build) => Boolean(build.artifactKey))
+              const screenshotIndex =
+                body.screenshotBuildId === null
+                  ? -1
+                  : successfulBuilds.findIndex((build) =>
+                      body.screenshotBuildId !== undefined
+                        ? build.id === body.screenshotBuildId
+                        : build.artifactKey === access.task.latestArtifactKey,
+                    )
+              if (typeof body.screenshotBuildId === 'string' && screenshotIndex < 0)
+                throw new Error('Screenshot source version unavailable')
+              const referenceImages: ReferenceImageEvidence[] = selectedImageIds.map((id) => {
+                const asset = assets.find((asset) => asset.id === id && asset.slot === 'referenceImage')
+                if (!asset) throw new Error('Selected screenshot unavailable')
+                const previous = previousEvidence.get(id)
+                if (previous && !newImages.some((image) => image?.id === id)) return previous
+                return {
+                  assetId: id,
+                  filename: safeString(asset.filename, [apiKey]),
+                  sourceBuildId:
+                    screenshotIndex < 0 || !newImages.some((image) => image?.id === id)
+                      ? null
+                      : successfulBuilds[screenshotIndex].id,
+                  sourceVersion:
+                    screenshotIndex < 0 || !newImages.some((image) => image?.id === id) ? null : screenshotIndex + 1,
+                  purpose:
+                    body.screenshotPurpose === 'target' ||
+                    (body.screenshotPurpose === undefined && !access.task.latestArtifactKey)
+                      ? 'target'
+                      : 'problem',
+                  description: prompt.slice(0, 4000),
+                }
+              })
+              const effectiveAttachedAssetIds = [
+                ...new Set([
+                  ...attachedAssetIds.filter(
+                    (id) => assets.find((asset) => asset.id === id)?.slot !== 'referenceImage',
+                  ),
+                  ...selectedImageIds,
+                ]),
+              ]
+              await dependencies.repository.appendMessage(
+                access.task.id,
+                'user',
+                attachedAssets.length ||
+                  referenceImages.length ||
+                  previousTurns.some((turn) => turn.referenceImages.length)
+                  ? JSON.stringify({
+                      kind: 'playable-user-turn',
+                      text: prompt,
+                      attachments: attachedAssets.flatMap((asset) =>
+                        asset
+                          ? [{ id: asset.id, filename: safeString(asset.filename, [apiKey]), mimeType: asset.mimeType }]
+                          : [],
+                      ),
+                      referenceImages,
+                    })
+                  : prompt,
+              )
+              enqueue({ type: 'reference_images', referenceImages })
               stage = 'agent_reply'
               const referenceToolCache = new Map<string, unknown>()
               // Only the image tool is budgeted. Reading a stored blueprint
               // costs nothing, so capping the video tool would only stop the
               // agent from re-checking an analysis that finished mid-turn.
               const referenceToolBudget = { imagesExecuted: false }
+              if (lockedRevisionBase)
+                referenceToolCache.set(`read_version:${lockedRevisionBase.version}`, lockedRevisionBase.buildId)
               let completedMarketResearch: MarketResearchReport | undefined
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
@@ -1733,15 +2006,26 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     role: turn.role === 'agent' ? 'assistant' : 'user',
                     content: conversationContent(turn, [apiKey]),
                   })),
-                  confirmation: access.task.confirmation
-                    ? sanitizeConfirmation(access.task.confirmation, [apiKey])
-                    : null,
+                  lockedRevisionBase,
+                  confirmation:
+                    lockedBaseConfirmation ??
+                    (access.task.confirmation ? sanitizeConfirmation(access.task.confirmation, [apiKey]) : null),
                   brief: access.task.requirementBrief
                     ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
                     : null,
                   assets: assets.map(safeAsset),
-                  attachedAssetIds,
+                  attachedAssetIds: effectiveAttachedAssetIds,
+                  referenceImages,
                   hasArtifact: Boolean(access.task.latestArtifactKey),
+                  versions: builds
+                    .filter((build) => Boolean(build.artifactKey))
+                    .map((build, index) => ({
+                      version: index + 1,
+                      buildId: build.id,
+                      isLatest: build.artifactKey === access.task.latestArtifactKey,
+                      acceptance:
+                        build.status === 'succeeded' ? 'passed' : build.status === 'building' ? 'pending' : 'failed',
+                    })),
                   pendingRevision: access.task.pendingRevision
                     ? sanitizeRevisionProposal(access.task.pendingRevision, [apiKey])
                     : null,
@@ -1767,10 +2051,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   executeTool: async (call, toolOptions) => {
                     const result = await executeRequirementAnalysisTool({
                       call,
+                      prompt,
+                      referenceImages,
                       task: access.task,
                       userId: access.userId,
                       apiKey,
-                      allowedAssetIds: new Set(attachedAssetIds),
+                      allowedAssetIds: new Set(effectiveAttachedAssetIds),
                       cache: referenceToolCache,
                       budget: referenceToolBudget,
                       abortSignal: toolOptions?.abortSignal,
@@ -1859,7 +2145,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
               if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
-                validatedReply.confirmation = bindSourceTemplate(validatedReply.confirmation, templateId)
+                validatedReply.confirmation = {
+                  ...bindSourceTemplate(validatedReply.confirmation, templateId),
+                  referenceImages: referenceImages.length ? referenceImages : undefined,
+                }
               }
               const serialized = JSON.stringify(validatedReply)
               stage = 'agent_message_store'
@@ -1909,11 +2198,29 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
                 const revision = resolveRevisionProposal({
-                  plan: validatedReply.revision,
+                  plan: lockedRevisionBase
+                    ? {
+                        ...validatedReply.revision,
+                        requestedBaseVersion: lockedRevisionBase.version,
+                        strategy: 'patch',
+                      }
+                    : validatedReply.revision,
                   builds,
                   latestArtifactKey: access.task.latestArtifactKey,
                   id: dependencies.generateId(),
                 })
+                // 服务端再次校验模型输出，禁止把用户锁定的历史版本悄悄替换成最新版本。
+                if (lockedRevisionBase) {
+                  if (revision.baseBuildId !== lockedRevisionBase.buildId)
+                    throw new Error('Revision base version conflict')
+                  revision.baseSelection = 'manual'
+                }
+                if (
+                  revision.requestedBaseVersion != null &&
+                  referenceToolCache.get(`read_version:${revision.requestedBaseVersion}`) !== revision.baseBuildId
+                ) {
+                  throw new Error('Revision base version must be read before confirmation')
+                }
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
                   access.userId,
@@ -2128,7 +2435,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       try {
         sanitized = sanitizeConfirmation(
           bindSourceTemplate(
-            parsed.data,
+            { ...parsed.data, referenceImages: access.task.confirmation?.referenceImages },
             parsed.data.sourceTemplateId !== undefined
               ? parsed.data.sourceTemplateId
               : selectedSourceTemplate(access.task),
@@ -2165,10 +2472,19 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
         const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
         if (baseBuild && previousTemplate !== nextTemplate) {
+          if (revision.baseSelection === 'manual')
+            return jsonError(409, 'Selected base version requires the same implementation route')
           revision = { ...revision, strategy: 'regenerate' }
         }
       }
 
+      if (revision)
+        revision = {
+          ...revision,
+          targetVersion:
+            (await dependencies.repository.listBuilds(access.task.id)).filter((build) => Boolean(build.artifactKey))
+              .length + 1,
+        }
       const buildId = dependencies.generateId()
       const claimed = await dependencies.repository.claimBuild(
         access.task.id,
@@ -2218,6 +2534,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.staleBuildTimeoutMs ?? DEFAULT_STALE_BUILD_TIMEOUT_MS,
       )
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
+      await recoverLegacyPreview(latestTask)
       const events = await dependencies.repository.listEvents(access.task.id)
       // 预览与正式产物分开存储；新一轮开始后不再把旧预览当成本轮结果。
       const latestStart = events.findLastIndex((event) => event.type === 'build_started')
@@ -2231,7 +2548,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       } catch {
         /* 历史或不完整事件不展示为预览。 */
       }
-      if (latestTask.phase === 'ready') previewVersion = null
+      if (latestTask.phase === 'ready' || latestTask.latestArtifactKey?.split('/').at(-2) === previewVersion)
+        previewVersion = null
       return Response.json(
         { task: { ...safeTaskState(latestTask), previewVersion }, events: events.map(eventJson) },
         { headers: { 'Cache-Control': 'private, no-store' } },
@@ -2241,12 +2559,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async versions(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
+      await recoverLegacyPreview(access.task)
       const builds = await dependencies.repository.listBuilds(access.task.id)
       let successfulVersion = 0
       return Response.json(
         {
           builds: builds.map((build) => {
-            const version = build.status === 'succeeded' ? ++successfulVersion : null
+            // 版本号按已保存产物递增，验收失败的预览同样占一个版本；验收通过后不另增版本。
+            const version = build.artifactKey ? ++successfulVersion : null
             return {
               id: build.id,
               status: build.status,
@@ -2320,13 +2640,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       let artifactKey = access.task.latestArtifactKey
       if (versionId) {
         const build = await dependencies.repository.findBuild(access.task.id, versionId)
-        if (!build || build.status !== 'succeeded' || !build.artifactKey) return jsonError(404, 'Not found')
+        if (!build || !build.artifactKey) return jsonError(404, 'Not found')
         artifactKey = build.artifactKey
       }
       if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
       const download = url.searchParams.get('download') === '1'
-      const prefix = artifactKey.slice(0, -'/playable.html'.length)
+      const prefix = artifactKey.slice(0, artifactKey.lastIndexOf('/'))
+      // 预览和正式产物各自读取对应的配置与报告，防止展示尚未通过的正式验收结果。
+      const sidecarPrefix = artifactKey.endsWith('/preview.html') ? 'preview-' : ''
       const artifacts = {
         playable: {
           key: artifactKey,
@@ -2334,17 +2656,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           filename: 'playable.html',
         },
         config: {
-          key: `${prefix}/production-config.json`,
+          key: `${prefix}/${sidecarPrefix}production-config.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'production-config.json',
         },
         manifest: {
-          key: `${prefix}/asset-manifest.json`,
+          key: `${prefix}/${sidecarPrefix}asset-manifest.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'asset-manifest.json',
         },
         validation: {
-          key: `${prefix}/validation-report.json`,
+          key: `${prefix}/${sidecarPrefix}validation-report.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'validation-report.json',
         },

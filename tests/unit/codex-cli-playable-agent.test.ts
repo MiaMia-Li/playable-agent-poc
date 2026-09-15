@@ -283,6 +283,18 @@ describe('CodexCliPlayableAgent', () => {
   it('runs Codex with workspace writes before delegating the isolated build', async () => {
     const onActivity = vi.fn()
     const invokeCodex = vi.fn(async (invocation) => {
+      const references = JSON.parse(await readFile(path.join(invocation.workspace, 'reference-images.json'), 'utf8'))
+      expect(references[0]).toMatchObject({
+        sourceVersion: 2,
+        purpose: 'problem',
+        workspacePath: 'reference-images/1.png',
+      })
+      expect(new Uint8Array(await readFile(path.join(invocation.workspace, 'reference-images/1.png')))).toEqual(
+        new Uint8Array([1, 2]),
+      )
+      const resources = await readFile(path.join(invocation.workspace, 'asset-manifest.json'), 'utf8')
+      expect(resources).not.toContain('reference-images')
+      expect(invocation.prompt).toContain('not game assets')
       invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
       invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
       return { completed: true }
@@ -297,6 +309,18 @@ describe('CodexCliPlayableAgent', () => {
       onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
+      referenceImages: [
+        {
+          assetId: 'ref',
+          filename: 'ref.png',
+          mimeType: 'image/png',
+          sourceBuildId: 'v2',
+          sourceVersion: 2,
+          purpose: 'problem',
+          description: 'Extra row',
+          bytes: new Uint8Array([1, 2]),
+        },
+      ],
     }
 
     await expect(new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build(input)).resolves.toBe(result)

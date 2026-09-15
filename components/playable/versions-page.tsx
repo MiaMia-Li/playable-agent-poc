@@ -54,7 +54,7 @@ function formatBytes(bytes: number) {
 
 function validationLabel(validation: PlayableValidationSummary | null) {
   if (!validation) return { label: '未校验', className: 'text-muted-foreground' }
-  if (!validation.buildPassed) return { label: '校验异常', className: 'text-destructive' }
+  if (!validation.buildPassed) return { label: '已保存 · 未完整验收', className: 'text-destructive' }
   if (!validation.deliveryCompliant) return { label: '体积超限', className: 'text-amber-700' }
   return { label: '校验通过', className: 'text-emerald-700' }
 }
@@ -114,7 +114,7 @@ export function VersionsPage() {
         <div>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight">构建记录</h1>
           <p className="text-muted-foreground mt-3 max-w-2xl text-sm sm:text-base">
-            查看每次成功构建的构建方案、校验结果和历史版本。
+            查看已保存的试玩版本，包括尚未通过完整验收的产物、构建方案和校验结果。
           </p>
         </div>
         <Input

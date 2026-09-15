@@ -1,5 +1,6 @@
 'use client'
 
+import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { BuildTimeline } from './build-timeline'
 import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
 import { AgentText, ReasoningText } from './reasoning-text'
@@ -28,6 +29,7 @@ import type {
   RequirementBrief,
   RequirementInputRequest,
   RevisionPlan,
+  ReferenceImageEvidence,
   RevisionProposal,
   VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
@@ -50,6 +52,7 @@ import {
   uploadPlayableAsset,
 } from '@/lib/playable/reference-video-client'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -76,6 +79,7 @@ const phaseNames: Record<PlayableTaskPhase, string> = {
   cancelled: '已取消',
 }
 const requirementToolLabels: Record<string, string> = {
+  read_playable_version: '读取历史版本',
   update_requirement_brief: '更新 Brief',
   inspect_uploaded_assets: '检查素材',
   list_playable_capabilities: '读取能力',
@@ -189,6 +193,7 @@ export interface ConversationMessage {
   options?: ClarificationOption[]
   request?: RequirementInputRequest
   attachments?: ConversationAttachment[]
+  referenceImages?: ReferenceImageEvidence[]
   confirmation?: ConfirmationProposal
   revision?: RevisionPlan | RevisionProposal
   research?: MarketResearchReport
@@ -352,6 +357,36 @@ export function ChatWorkspace({
   deletingAnnotationId,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
+  const [baseBuildId, setBaseBuildId] = useState('auto')
+  const [activeReferences, setActiveReferences] = useState<ReferenceImageEvidence[]>(
+    initialConversation.findLast((turn) => turn.role === 'user')?.referenceImages ?? [],
+  )
+  const [referencesChanged, setReferencesChanged] = useState(false)
+  const [screenshotBuildId, setScreenshotBuildId] = useState('latest')
+  const [screenshotPurpose, setScreenshotPurpose] = useState<'problem' | 'target'>(hasArtifact ? 'problem' : 'target')
+  const [baseVersions, setBaseVersions] = useState<
+    { id: string; version: number; current: boolean; status?: string }[]
+  >([])
+  const [versionsError, setVersionsError] = useState(false)
+  useEffect(() => {
+    if (!hasArtifact) return
+    const controller = new AbortController()
+    void fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/versions`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Versions unavailable')
+        const body = await response.json()
+        if (!Array.isArray(body.builds)) throw new Error('Versions unavailable')
+        if (controller.signal.aborted) return
+        setBaseVersions(
+          body.builds.filter((build: { status: string; version: number | null }) => build.version !== null),
+        )
+        setVersionsError(false)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setVersionsError(true)
+      })
+    return () => controller.abort()
+  }, [taskId, hasArtifact, phase])
   const [conversation, setConversation] = useState<ConversationMessage[]>(
     initialConversation.length
       ? initialConversation
@@ -365,6 +400,7 @@ export function ChatWorkspace({
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
+  const composerHasNewImages = composerAttachments.some((asset) => asset.mimeType.startsWith('image/'))
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
@@ -538,18 +574,38 @@ export function ChatWorkspace({
           })
           if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
         }
+        const newImageIds = attachments.filter((asset) => asset.mimeType.startsWith('image/')).map((asset) => asset.id)
+        // 新上传图片替换沿用图片；显式清空仍发送空数组，阻止服务端自动继承旧截图。
+        const referenceImageIds = [
+          ...new Set([...(newImageIds.length ? newImageIds : activeReferences.map((ref) => ref.assetId))]),
+        ]
         requestSent = true
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: content,
+            ...(referenceImageIds.length || referencesChanged ? { referenceImageIds } : {}),
+            ...(newImageIds.length
+              ? {
+                  screenshotPurpose,
+                  ...(screenshotBuildId !== 'latest'
+                    ? { screenshotBuildId: screenshotBuildId === 'unknown' ? null : screenshotBuildId }
+                    : {}),
+                }
+              : {}),
+            ...(baseBuildId !== 'auto' ? { baseBuildId } : {}),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
             ...(referenceSelection ? { referenceSelection } : {}),
           }),
           signal: controller.signal,
         })
-        if (response.status === 409) throw new Error('当前阶段不接受新需求，请新建试玩后继续')
+        if (response.status === 409)
+          throw new Error(
+            baseBuildId !== 'auto'
+              ? '所选基准版本不可用，或当前阶段不接受修改，请刷新后重试。'
+              : '当前阶段不接受新需求，请新建试玩后继续',
+          )
         if (!response.ok || !response.body) throw new Error('无法生成确认方案')
         if (appendToConversation) {
           setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'sent' } : item)))
@@ -563,6 +619,7 @@ export function ChatWorkspace({
           let event: {
             type: string
             confirmation?: ConfirmationProposal
+            referenceImages?: ReferenceImageEvidence[]
             revision?: RevisionProposal
             message?: string
             reasoning?: string
@@ -580,7 +637,13 @@ export function ChatWorkspace({
           } catch {
             throw new Error('响应数据格式错误，请重试')
           }
-          if (event.type === 'assistant_progress') {
+          if (event.type === 'reference_images' && event.referenceImages) {
+            setActiveReferences(event.referenceImages)
+            setReferencesChanged(true)
+            setConversation((items) =>
+              items.map((item) => (item.id === id ? { ...item, referenceImages: event.referenceImages } : item)),
+            )
+          } else if (event.type === 'assistant_progress') {
             updateAssistant({
               ...(event.message !== undefined ? { content: event.message } : {}),
               ...(event.reasoning !== undefined ? { reasoning: event.reasoning } : {}),
@@ -699,6 +762,11 @@ export function ChatWorkspace({
     },
     [
       canCompose,
+      baseBuildId,
+      activeReferences,
+      referencesChanged,
+      screenshotBuildId,
+      screenshotPurpose,
       composerAttachments,
       hasArtifact,
       message,
@@ -884,7 +952,13 @@ export function ChatWorkspace({
             [asset.slot]:
               slotAssets.length > 0
                 ? { status: '用户上传', treatment: slotAssets.map((candidate) => candidate.filename).join('、') }
-                : { status: '内置默认', treatment: defaultResourceTreatments[asset.slot] },
+                : {
+                    status: '内置默认',
+                    treatment:
+                      asset.slot === 'endCard' && nativeTemplateUiPolicy(proposal.sourceTemplateId)
+                        ? NATIVE_END_CARD_TREATMENT
+                        : defaultResourceTreatments[asset.slot],
+                  },
           },
         })
       }
@@ -1113,6 +1187,17 @@ export function ChatWorkspace({
                   ))}
                 </div>
               )}
+              {Boolean(item.referenceImages?.length) && (
+                <p className="mt-1 text-xs opacity-80">
+                  本轮参考：
+                  {item.referenceImages
+                    ?.map(
+                      (ref) =>
+                        `${ref.filename}（${ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} / ${ref.purpose === 'problem' ? '问题' : '目标'}）`,
+                    )
+                    .join('、')}
+                </p>
+              )}
               {item.status !== 'sent' && (
                 <span className="mt-1 block text-xs opacity-75">
                   {item.status === 'sending' ? '发送中…' : '发送失败'}
@@ -1307,7 +1392,9 @@ export function ChatWorkspace({
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {showsRevisionConfirmation ? `v${revision?.targetVersion} 修改计划待确认` : '最新方案待确认'}
+                {showsRevisionConfirmation
+                  ? `基于 v${revision?.baseVersion} → v${revision?.targetVersion} 修改计划待确认`
+                  : '最新方案待确认'}
               </p>
               <p className="text-muted-foreground truncate text-xs">
                 {sending
@@ -1333,8 +1420,90 @@ export function ChatWorkspace({
         </section>
       )}
 
-      <div className="bg-background shrink-0 border-t p-4">
+      {/* 构建和验收期间隐藏输入区，保留组件与草稿状态，结束或失败后自动恢复。 */}
+      <div hidden={buildInProgress} className="bg-background shrink-0 border-t p-4">
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
+          {hasArtifact && (
+            <div className="mb-2 space-y-1 px-1">
+              <Select
+                value={baseBuildId}
+                onValueChange={(value) => {
+                  setBaseBuildId(value)
+                  setActiveReferences([])
+                  setReferencesChanged(true)
+                }}
+                disabled={!canCompose || sending || confirming}
+              >
+                <SelectTrigger aria-label="修改基准版本" className="w-full">
+                  <SelectValue placeholder="选择修改基准" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">自动：根据对话选择版本</SelectItem>
+                  {baseVersions.map((build) => (
+                    <SelectItem key={build.id} value={build.id}>
+                      基于 v{build.version}
+                      {build.current ? '（最新）' : ''}
+                      {build.status === 'failed' || build.status === 'building' ? ' · 未完整验收' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">用于下一条修改需求；手动选择后将锁定该版本。</p>
+              {versionsError && <p className="text-destructive text-xs">版本列表加载失败，请刷新后重试。</p>}
+            </div>
+          )}
+          {!composerHasNewImages && activeReferences.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1 px-1" aria-label="本轮参考截图">
+              {(composerHasNewImages ? [] : activeReferences).map((ref) => (
+                <Button
+                  key={ref.assetId}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={sending}
+                  onClick={() => {
+                    setActiveReferences((items) => items.filter((item) => item.assetId !== ref.assetId))
+                    setReferencesChanged(true)
+                  }}
+                >
+                  {ref.filename} · {ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} ·{' '}
+                  {ref.purpose === 'problem' ? '问题' : '目标'} <X aria-label="移除本轮引用" />
+                </Button>
+              ))}
+            </div>
+          )}
+          {composerAttachments.some((asset) => asset.mimeType.startsWith('image/')) && (
+            <div className="mb-2 space-y-1 px-1">
+              <p className="text-muted-foreground text-xs">新截图将替换沿用的截图。</p>
+              <Select
+                value={screenshotPurpose}
+                onValueChange={(value) => setScreenshotPurpose(value as 'problem' | 'target')}
+                disabled={sending}
+              >
+                <SelectTrigger aria-label="截图用途" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="problem">问题截图：需要修复的现象</SelectItem>
+                  <SelectItem value="target">目标效果：希望保留或实现</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={screenshotBuildId} onValueChange={setScreenshotBuildId} disabled={sending}>
+                <SelectTrigger aria-label="截图对应版本" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="latest">当前最新版本</SelectItem>
+                  <SelectItem value="unknown">其他来源 / 版本未知</SelectItem>
+                  {baseVersions.map((build) => (
+                    <SelectItem key={build.id} value={build.id}>
+                      v{build.version}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           {composerAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-2 pt-1" aria-live="polite">
               {composerAttachments.map((attachment) => (

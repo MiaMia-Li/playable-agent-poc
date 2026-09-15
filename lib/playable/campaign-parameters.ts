@@ -1,3 +1,4 @@
+import { nativeTemplateUiPolicy, NATIVE_UI_MARKER } from './native-template-ui'
 import type { ConfirmationProposal } from './schemas'
 import { fastPreviewTemplateIds } from './preview-build'
 
@@ -15,6 +16,8 @@ export function applyCampaignParameters(
   before: ConfirmationProposal,
   after: ConfirmationProposal,
 ): string | null {
+  // 旧产物可能带有重复 CTA／结束页，先交给 Agent 清理；确认原生界面后才允许文案快速替换。
+  if (nativeTemplateUiPolicy(after.sourceTemplateId) && !html.includes(NATIVE_UI_MARKER)) return null
   const oldConfig = campaignParameters(before)
   const nextConfig = campaignParameters(after)
   if (!fastPreviewTemplateIds.includes(nextConfig.templateId) || oldConfig.templateId !== nextConfig.templateId)
