@@ -26,7 +26,7 @@ visualDirection custom, take no appearance from visualSpec.
 
 Deliver one offline responsive Canvas HTML, initially muted. The first tap must stay
 inside gameplay. Support parent playable:set-muted messages, expose read-only real
-engine state through window.**PLAYABLE**, and keep the CTA destination without opening
+engine state through `window.__PLAYABLE__`, and keep the CTA destination without opening
 it during tests. Soft size limits are warnings; functional failures block completion.
 
 Run node assets/starter/work/test-freeform-playable.mjs output.html, then run browser
