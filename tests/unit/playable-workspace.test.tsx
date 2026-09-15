@@ -1249,7 +1249,6 @@ describe('PlayableWorkspace', () => {
         body: JSON.stringify({
           message: '参考这些素材制作',
           referenceImageIds: ['image-1'],
-          screenshotPurpose: 'target',
           attachmentIds: ['image-1', 'video-1'],
         }),
       }),
@@ -1327,7 +1326,6 @@ describe('PlayableWorkspace', () => {
         body: JSON.stringify({
           message: '带附件重试',
           referenceImageIds: ['image-success'],
-          screenshotPurpose: 'target',
           attachmentIds: ['image-success', 'video-retry'],
         }),
       }),
