@@ -3994,3 +3994,53 @@ it('upgrades a saved preview to accepted output without creating a second versio
   expect(JSON.parse(new TextDecoder().decode(previewReport)).buildPassed).toBe(false)
   expect(JSON.parse(new TextDecoder().decode(fullReport)).buildPassed).toBe(true)
 })
+
+it.each(['updated', 'storage-failed'])('handles a second preview save within one build: %s', async (outcome) => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'awaiting_confirmation'
+  task.confirmation = confirmation
+  await h.repository.claimBuild(task.id, task.userId, confirmation, 'repair-preview-build')
+  const log = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  const save = h.artifactStore.put
+  let reachedSecondPreview = false
+  h.artifactStore.put = vi.fn(async (key, value, contentType, options) => {
+    if (h.artifacts.has(key)) {
+      if (!options?.allowOverwrite) throw new Error('Blob already exists')
+      if (outcome === 'storage-failed') throw new Error('Storage unavailable')
+    }
+    await save(key, value, contentType, options)
+  })
+  vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
+    await input.onPreview!('<html>initial</html>')
+    await input.onPreview!('<html>repaired</html>')
+    reachedSecondPreview = true
+    throw new PlayableBuildExecutionError('preview_check', new Error('Acceptance failed'))
+  })
+  try {
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'repair-preview-build',
+      repository: h.repository,
+      agent: h.agent,
+      artifactStore: h.artifactStore,
+    })
+    expect(reachedSecondPreview).toBe(outcome === 'updated')
+    expect(task.phase).toBe('failed')
+    expect(task.latestArtifactKey).toContain('/repair-preview-build/preview.html')
+    expect(new TextDecoder().decode(h.artifacts.get(task.latestArtifactKey!))).toBe(
+      outcome === 'updated' ? '<html>repaired</html>' : '<html>initial</html>',
+    )
+    expect(h.repository.events.filter((event) => event.type === 'build_preview_ready')).toHaveLength(
+      outcome === 'updated' ? 2 : 1,
+    )
+    expect(log).toHaveBeenCalledWith(
+      outcome === 'updated'
+        ? 'Playable build failed during preview interaction checking'
+        : 'Playable build failed while storing artifacts',
+    )
+  } finally {
+    log.mockRestore()
+  }
+})

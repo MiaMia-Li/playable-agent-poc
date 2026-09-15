@@ -1167,27 +1167,31 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           throw new Error('Preview contains a credential')
         const current = await repository.findBuild(task.id, buildId)
         if (!current || current.status !== 'building') throw new Error('Preview build is no longer active')
+        stage = 'artifact_store'
         const prefix = artifactPrefix(task, buildId)
         const previewKey = `${prefix}/preview.html`
         const validation = previewValidation(html, sanitizedConfirmation)
         // 先落盘并登记可试玩版本，再写辅助文件；后续验收或辅助文件失败也不丢失已有产物。
-        await artifactStore.put(previewKey, html, 'text/html; charset=utf-8')
+        await artifactStore.put(previewKey, html, 'text/html; charset=utf-8', { allowOverwrite: true })
         if (!(await repository.savePreviewArtifact(task.id, buildId, previewKey, validation)))
           throw new Error('Preview build is no longer active')
         await artifactStore.put(
           `${prefix}/preview-production-config.json`,
           JSON.stringify(createProductionConfig(sanitizedConfirmation)),
           'application/json',
+          { allowOverwrite: true },
         )
         await artifactStore.put(
           `${prefix}/preview-asset-manifest.json`,
           JSON.stringify(createAssetSourceManifest(sanitizedConfirmation, assets)),
           'application/json',
+          { allowOverwrite: true },
         )
         await artifactStore.put(
           `${prefix}/preview-validation-report.json`,
           JSON.stringify(validation),
           'application/json',
+          { allowOverwrite: true },
         )
         await activityQueue
         await repository.appendEvent({
@@ -1195,6 +1199,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           type: 'build_preview_ready',
           message: JSON.stringify({ version: 1, buildId }),
         })
+        stage = 'agent'
       },
       onActivity,
       baseConfirmation,
