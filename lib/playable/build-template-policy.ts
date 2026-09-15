@@ -8,9 +8,7 @@ export function usesPerspectiveTemplate(selection: TemplateSelection): boolean {
   return !selection.sourceTemplateId && selection.routing.match !== 'freeform' && selection.mode === 'perspective_3d'
 }
 
-/** 提示词与应用验收共用同一规则，避免 Agent 的 PASS 来自另一套校验。 */
-export function buildValidationCommand(selection: Pick<TemplateSelection, 'sourceTemplateId' | 'routing'>): string {
-  return !selection.sourceTemplateId && selection.routing.match === 'exact'
-    ? MAHJONG_PLAYABLE_PLUGIN.commands.validate
-    : MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform
+/** 所有玩法共用宽泛的产物契约；具体玩法行为由浏览器验收按确认需求判断。 */
+export function buildValidationCommand(_selection: Pick<TemplateSelection, 'sourceTemplateId' | 'routing'>): string {
+  return MAHJONG_PLAYABLE_PLUGIN.commands.validateFreeform
 }
