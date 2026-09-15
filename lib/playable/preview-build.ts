@@ -49,3 +49,10 @@ If playable-campaign-binding-v1 is present, additionally verify that the config 
 Allow at most one focused repair after a failed check. Do not repeatedly replay unchanged passing checks or start a new implementation.
 If any required check still fails, stop and report failure accurately. Do not claim completion.
 Return the completion protocol only after the full browser report passes for the final output.html.`
+
+export const PREVIEW_REPAIR_PROMPT = `This is the single PREVIEW REPAIR attempt, not a new implementation.
+Read work/preview-repair.json and work/preview-failure-report.json, then inspect the saved output.html and work/preview-scenario.mjs in this workspace.
+Diagnose only the failed assertion or browser error and its affected transition. Reuse the existing game, extracted files and analysis. Preserve confirmed requirements and already working native UI.
+Fix output.html, or correct a demonstrably wrong scenario selector/observation. Never delete assertions, weaken expected outcomes, suppress browser errors, bypass native input, or modify the immutable acceptance runner to obtain a pass.
+Use the supplied template probe and Node tools. Do not install dependencies or replay full acceptance. The host will rerun the smoke check once and stop if it still fails.
+Leave the corrected output.html and work/preview-scenario.mjs in place, then return the completion protocol. If no justified repair is possible, leave the files unchanged.`

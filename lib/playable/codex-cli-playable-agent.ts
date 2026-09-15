@@ -2,7 +2,12 @@ import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { referenceImageWorkspaceFiles, REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { readBuildSkillFiles } from './build-skill'
-import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT, supportsFastPreview } from './preview-build'
+import {
+  PREVIEW_BUILD_PROMPT,
+  PREVIEW_REPAIR_PROMPT,
+  FULL_ACCEPTANCE_PROMPT,
+  supportsFastPreview,
+} from './preview-build'
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
 import { reportCliBuildActivity } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
@@ -366,11 +371,13 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           executeAgent: async ({ phase, sandbox, workspace: remoteWorkspace, abortSignal }) => {
             const current = await sandbox.readTextFile({ path: path.join(remoteWorkspace, 'output.html'), abortSignal })
             if (current) await writeFile(path.join(localWorkspace, 'output.html'), current)
-            const inventory = await sandbox.readTextFile({
-              path: path.join(remoteWorkspace, 'sandbox-tools.json'),
-              abortSignal,
-            })
-            if (inventory) await writeFile(path.join(localWorkspace, 'sandbox-tools.json'), inventory)
+            for (const file of ['sandbox-tools.json', 'work/preview-repair.json', 'work/preview-failure-report.json']) {
+              const content = await sandbox.readTextFile({ path: path.join(remoteWorkspace, file), abortSignal })
+              if (content) {
+                await mkdir(path.dirname(path.join(localWorkspace, file)), { recursive: true })
+                await writeFile(path.join(localWorkspace, file), content)
+              }
+            }
             input.onActivity?.('agent_started')
             const completion = await this.invokeCodex({
               workspace: localWorkspace,
@@ -383,7 +390,11 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                 PLAYABLE_TOOLS_PROMPT,
                 REFERENCE_IMAGES_BUILD_PROMPT,
                 NATIVE_TEMPLATE_UI_PROMPT,
-                phase === 'preview' ? PREVIEW_BUILD_PROMPT : FULL_ACCEPTANCE_PROMPT,
+                phase === 'preview'
+                  ? PREVIEW_BUILD_PROMPT
+                  : phase === 'preview_repair'
+                    ? PREVIEW_REPAIR_PROMPT
+                    : FULL_ACCEPTANCE_PROMPT,
                 'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
                 'CLI transport override: the host runs the real browser in its prepared cloud sandbox immediately after this call. Write the scenario for that runner; do not install or run a local browser. Return the completion protocol when the files are ready for host checking.',
               ].join('\n'),
@@ -392,7 +403,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               throw new Error('Codex CLI phase completion is invalid')
             for (const file of [
               'output.html',
-              phase === 'preview' ? 'work/preview-scenario.mjs' : 'work/scenario.mjs',
+              phase === 'acceptance' ? 'work/scenario.mjs' : 'work/preview-scenario.mjs',
             ]) {
               await sandbox.writeBinaryFile({
                 path: path.join(remoteWorkspace, file),

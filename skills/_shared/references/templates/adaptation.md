@@ -101,6 +101,8 @@ The browser runner passes a `probe` to every scenario. `await probe.snapshot()` 
 
 Use `await probe.waitFor(s => s.state.ended === true, { timeout: 12000 })` only when that field is actually exposed. Otherwise use the observed native node/component field. Waiting is bounded; do not replace state waits with long fixed sleeps. `await probe.click('start')` targets the wheel's native start button; dragon slots and Zeus expose `spin`, Zeus exposes `collect`. Actual node names or unique scene paths from `snapshot().targets` are also accepted. Missing or ambiguous bounds fail instead of guessing coordinates. For Balloon Master, select an observed gameplay target from the scene; its `download` target is for inspection, not a gameplay start. Never click a store target during acceptance. Still assert the observed gameplay outcome with `check`; probe availability alone proves nothing.
 
-## Tool availability
+## Tool availability and one repair
 
 Read the host-generated `sandbox-tools.json`. Use `node assets/starter/work/node-tools.mjs header INPUT OUTPUT`, `json INPUT OUTPUT`, or `hash INPUT OUTPUT` instead of assuming `xxd`, `jq` or Python exist. Results are saved to files, not dumped into conversation. The inventory records actual command availability, not support for every possible flag. Do not install missing optional utilities during a build.
+
+The host can request one preview repair after a current-artifact browser failure. Read `work/preview-repair.json` and the preserved `work/preview-failure-report.json`. Reuse the current artifact, unpacked files and analysis. Repair the failed transition or a demonstrably wrong observation; do not remove assertions, silence errors or alter the acceptance runner. The host rechecks the saved artifact once. Unchanged output/scenario, cancellation, missing/stale reports or a second failure stop the attempt and preserve the available version.
