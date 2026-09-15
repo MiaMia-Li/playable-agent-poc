@@ -11,6 +11,8 @@ let browser
 let timer
 const smoke = process.argv.includes('--smoke')
 const report = { passed: false, smoke, checks: [], errors: [], requests: [], screenshots: [] }
+let stage = 'setup'
+const startedAt = Date.now()
 const evidenceDir = path.resolve('work/browser-acceptance')
 try {
   const [html, scenario] = process.argv.slice(2)
@@ -28,7 +30,7 @@ try {
   const run = (await import(pathToFileURL(path.resolve(scenario)).href)).default
   if (typeof run !== 'function') throw new Error('Scenario must export an acceptance function')
   await mkdir(evidenceDir, { recursive: true })
-  const startedAt = Date.now()
+  stage = 'launch'
   browser = await playwright.chromium.launch({ headless: true, timeout: 30000 })
   const context = await browser.newContext({ viewport: { width: 360, height: 640 } })
   context.setDefaultTimeout(10000)
@@ -37,7 +39,12 @@ try {
   await context.route(/https?:\/\//, route => { report.requests.push(route.request().url()); return route.abort() })
   context.on('page', popup => { if (popup !== page) { report.errors.push('Unexpected popup'); void popup.close() } })
   page.on('pageerror', () => report.errors.push('Uncaught page error'))
-  page.on('console', message => { if (message.type() === 'error') report.errors.push('Browser console error') })
+  page.on('console', message => {
+    if (message.type() !== 'error') return
+    report.errors.push('Browser console error')
+    // Classify the known template SDK error without retaining console payloads.
+    if (message.text().includes('[super-html] Unable to run, please run on')) report.errors.push('Ad platform unavailable')
+  })
   const check = (name, condition) => {
     report.checks.push({ name, passed: Boolean(condition) })
     if (!condition) throw new Error('Gameplay assertion failed')
@@ -49,8 +56,11 @@ try {
   }
   await Promise.race([
     (async () => {
+      stage = 'navigation'
       await page.goto(pathToFileURL(artifact).href, { waitUntil: 'load', timeout: 30000 })
+      stage = 'contract'
       await page.waitForFunction(() => Boolean(window.__PLAYABLE__), undefined, { timeout: 15000 })
+      stage = 'scenario'
       await run({ page, context, check, capture, probe: createTemplateProbe(page, config.sourceTemplateId ?? config.mode),
         // 坐标基于当前画布边界，避免模板逻辑尺寸与浏览器缩放不同导致误点。
         clickCanvas: async (x, y) => {
@@ -60,26 +70,37 @@ try {
         },
       })
       if (report.checks.length === 0) throw new Error('Scenario did not assert gameplay')
+      stage = 'capture'
       await capture('portrait')
       if (!smoke) {
       await page.setViewportSize({ width: 640, height: 360 })
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       await capture('landscape')
       }
+      stage = 'network'
       check('No external requests', report.requests.length === 0)
+      stage = 'browser_errors'
       check('No browser errors or popups', report.errors.length === 0)
       report.passed = true
     })(),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Acceptance timed out')), smoke ? 30000 : 120000) }),
   ])
-  report.durationMs = Date.now() - startedAt
-} catch {
+} catch (error) {
+  const codes = {
+    'Acceptance timed out': 'timeout',
+    'Gameplay assertion failed': 'assertion_failed',
+    'Scenario must export an acceptance function': 'invalid_scenario',
+    'Invalid canvas click': 'invalid_click',
+    'Scenario did not assert gameplay': 'missing_assertions',
+  }
+  report.failure = { stage, code: error?.name === 'TimeoutError' ? 'timeout' : Object.hasOwn(codes, error?.message) ? codes[error.message] : 'execution_failed' }
   report.passed = false
   process.exitCode = 1
   console.error('Browser acceptance failed; inspect collected evidence')
 } finally {
   clearTimeout(timer)
-  await browser?.close()
+  try { await browser?.close() } catch { /* Preserve the original failure report. */ }
+  report.durationMs = Date.now() - startedAt
   await mkdir(evidenceDir, { recursive: true })
   await writeFile(path.join(evidenceDir, 'report.json'), JSON.stringify(report, null, 2))
 }

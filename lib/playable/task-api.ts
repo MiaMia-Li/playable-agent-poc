@@ -876,6 +876,7 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
       if (message.includes('agent stream failed')) return 'Agent 响应流中断，未完成构建，请重试。'
       return CODEX_BUILD_FAILURE_MESSAGE
     }
+    if (cause.stage === 'preview_check') return '预览交互检查失败，请查看构建步骤中的验收诊断。'
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
     if (cause.stage === 'artifact_build') return '试玩产物构建失败，请调整修改要求后重试。'
     if (cause.stage === 'validation') return '试玩行为校验失败，请调整修改要求后重试。'
@@ -986,6 +987,8 @@ function logConfirmedBuildFailure(stage: ConfirmedBuildStage, cause: unknown): v
     externalResponseStatus(cause) === 402
   ) {
     console.error('Playable build failed while creating Vercel Sandbox: payment required')
+  } else if (stage === 'agent' && cause instanceof PlayableBuildExecutionError && cause.stage === 'preview_check') {
+    console.error('Playable build failed during preview interaction checking')
   } else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
   else if (stage === 'validation') console.error('Playable build failed during validation')
   else if (stage === 'artifact_store') console.error('Playable build failed while storing artifacts')
