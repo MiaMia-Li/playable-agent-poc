@@ -81,6 +81,7 @@ import { POST as confirm } from '@/app/api/playable-tasks/[taskId]/confirm/route
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
+  visualDirection: 'custom',
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {

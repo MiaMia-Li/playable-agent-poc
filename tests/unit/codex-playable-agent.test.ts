@@ -14,6 +14,7 @@ import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const validProposal = {
+  visualDirection: 'custom' as const,
   routing: { match: 'exact', confidence: 1, differences: [] as string[] },
   presentation: defaultConfirmationPresentation,
   mode: 'center_collision',
@@ -830,4 +831,29 @@ it('preserves the execution timeout when session cleanup also fails', async () =
       undefined,
     ),
   ).rejects.toBe(original)
+})
+
+// Sent in every phase: the self-comparison runs after acceptance.
+it('passes the reference visuals prompt to the build agent', async () => {
+  const stopped = new Error('stopped after prompt')
+  harnessMocks.stream.mockRejectedValueOnce(stopped)
+  await expect(
+    executeBuildAgent(
+      {
+        phase: 'acceptance',
+        taskId: 'visual-prompt-test',
+        sandbox: {} as PlayableSandbox,
+        authEnvironment: { CODEX_API_KEY: 'sk-unit-test', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' },
+      },
+      `${process.cwd()}/skills/mahjong-pair-match-playable`,
+      'approximate',
+      undefined,
+      undefined,
+      'center_collision',
+      undefined,
+      'VISUAL TARGET PROMPT',
+    ),
+  ).rejects.toBe(stopped)
+  const lastCall = harnessMocks.stream.mock.lastCall as unknown as [{ prompt: string }] | undefined
+  expect(lastCall?.[0].prompt).toContain('VISUAL TARGET PROMPT')
 })

@@ -16,6 +16,7 @@ import type {
   PlayableTaskPhase,
   RequirementBrief,
   RevisionProposal,
+  TimelineCorrection,
   VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
 import { Button } from '@/components/ui/button'
@@ -80,6 +81,15 @@ interface VideoAnalysisSnapshot {
   blueprint: GameplayBlueprint | null
   mediaResolution?: AppliedMediaResolution | null
   intentPending?: boolean
+  keyframeStatus?: import('@/lib/playable/schemas').ReferenceKeyframeStatus | null
+  keyframes?: import('./gameplay-timeline').ReferenceKeyframeView[]
+}
+
+/** Keyframes are cut after the analysis settles, so polling has to outlast it. */
+function isKeyframeExtractionInFlight(
+  status: import('@/lib/playable/schemas').ReferenceKeyframeStatus | null | undefined,
+): boolean {
+  return status === 'pending' || status === 'extracting'
 }
 
 /**
@@ -168,6 +178,14 @@ export function PlayableWorkspace({
     })
   }, [])
   const [gameplayBlueprint, setGameplayBlueprint] = useState<GameplayBlueprint | undefined>(initialGameplayBlueprint)
+  const [referenceKeyframes, setReferenceKeyframes] = useState<import('./gameplay-timeline').ReferenceKeyframeView[]>(
+    [],
+  )
+  // Undefined until the analysis route has been read: the page renders with
+  // the blueprint only, so on a reload the keyframes still have to be fetched.
+  const [keyframeStatus, setKeyframeStatus] = useState<
+    import('@/lib/playable/schemas').ReferenceKeyframeStatus | null | undefined
+  >(undefined)
   const [videoAnalysisMediaResolution, setVideoAnalysisMediaResolution] = useState<AppliedMediaResolution | null>(
     initialVideoAnalysisMediaResolution,
   )
@@ -217,9 +235,33 @@ export function PlayableWorkspace({
     [taskId],
   )
 
+  // Written straight to the annotation list, not through the agent: the user
+  // is stating what the video shows, and the route keeps it out of reach of
+  // the agent's whole-list rewrite.
+  const handleCorrectTimeline = useCallback(
+    async (correction: TimelineCorrection) => {
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(correction),
+        })
+        if (!response.ok) return false
+        const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+        if (body.annotations) setGameplayAnnotations(body.annotations)
+        return true
+      } catch {
+        return false
+      }
+    },
+    [taskId],
+  )
+
   const applyVideoAnalysis = useCallback(
     (analysis: VideoAnalysisSnapshot) => {
       setGameplayBlueprint(analysis.blueprint ?? undefined)
+      setReferenceKeyframes(analysis.keyframes ?? [])
+      setKeyframeStatus(analysis.keyframeStatus ?? null)
       setVideoAnalysisMediaResolution(analysis.mediaResolution ?? null)
       setVideoAnalysisIntentPending(Boolean(analysis.intentPending))
       updateVideoAnalysisStatus(analysis.status)
@@ -229,6 +271,8 @@ export function PlayableWorkspace({
 
   const clearVideoAnalysis = useCallback(() => {
     setGameplayBlueprint(undefined)
+    setReferenceKeyframes([])
+    setKeyframeStatus(null)
     setVideoAnalysisMediaResolution(null)
     setVideoAnalysisIntentPending(false)
     updateVideoAnalysisStatus(undefined)
@@ -275,8 +319,26 @@ export function PlayableWorkspace({
     [applyVideoAnalysis, clearVideoAnalysis, taskId, updateVideoAnalysisStatus],
   )
 
+  // A reload renders with the blueprint alone; read the keyframes once so the
+  // timeline can show them without waiting for another analysis.
+  const blueprintHasKeyframes = Boolean(gameplayBlueprint?.keyframes.length)
   useEffect(() => {
-    if (!isVideoAnalysisInFlight(videoAnalysisStatus)) return
+    if (!blueprintHasKeyframes || keyframeStatus !== undefined) return
+    let active = true
+    void fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/analysis`, { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) return
+        const body = (await response.json()) as { analysis?: VideoAnalysisSnapshot | null }
+        if (active && body.analysis) applyVideoAnalysis(body.analysis)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [applyVideoAnalysis, blueprintHasKeyframes, keyframeStatus, taskId])
+
+  useEffect(() => {
+    if (!isVideoAnalysisInFlight(videoAnalysisStatus) && !isKeyframeExtractionInFlight(keyframeStatus)) return
     let active = true
     let timeout: number | undefined
     const poll = async () => {
@@ -299,7 +361,7 @@ export function PlayableWorkspace({
       active = false
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
-  }, [applyVideoAnalysis, taskId, videoAnalysisStatus])
+  }, [applyVideoAnalysis, keyframeStatus, taskId, videoAnalysisStatus])
 
   useEffect(() => {
     if (intentCheckRequestedAt === undefined) return
@@ -486,6 +548,8 @@ export function PlayableWorkspace({
           initialAssets={assets}
           videoAnalysisStatus={videoAnalysisStatus}
           gameplayBlueprint={gameplayBlueprint}
+          referenceKeyframes={referenceKeyframes}
+          referenceKeyframeStatus={keyframeStatus}
           onAssetsChange={handleAssetsChange}
           onVideoAnalysisToolStatus={(status) => void handleVideoAnalysisToolStatus(status)}
           waitForVideoAnalysis={waitForVideoAnalysis}
@@ -499,6 +563,12 @@ export function PlayableWorkspace({
           onAnnotations={setGameplayAnnotations}
           onDeleteAnnotation={(annotation) => void handleDeleteAnnotation(annotation)}
           deletingAnnotationId={deletingAnnotationId}
+          referenceVideoUrl={
+            activeReferenceVideoId
+              ? `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(activeReferenceVideoId)}`
+              : undefined
+          }
+          onCorrectTimeline={handleCorrectTimeline}
         />
         <PlayablePreview
           taskId={taskId}

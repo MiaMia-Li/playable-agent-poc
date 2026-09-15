@@ -14,6 +14,7 @@ it.each(fastPreviewTemplateIds)('safely patches campaign data for %s', (template
     mode: playableModeIds.find((id) => id === templateId) ?? 'gravity_fill',
     ...(source ? { sourceTemplateId: source } : {}),
     routing: { match: 'exact', confidence: 1, differences: [] },
+    visualDirection: 'custom',
     copy: { title: 'Old', cta: 'Play', disclaimer: '', locale: 'en' },
     storeUrl: 'https://example.com',
     gameplay: 'same',

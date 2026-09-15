@@ -17,12 +17,14 @@ import {
   type PlayableValidationSummary,
 } from './playable-agent-adapter'
 import {
+  applyVisualDirection,
   confirmationProposalSchema,
   gameplayAnnotationsSchema,
   gameplayBlueprintSchema,
   playableAgentReplySchema,
   requirementBriefSchema,
   revisionProposalSchema,
+  timelineCorrectionSchema,
   toGameplayBlueprintDocument,
   videoAnalysisStatusSchema,
   MAX_GAMEPLAY_ANNOTATIONS,
@@ -33,6 +35,9 @@ import {
   type GameplayBlueprintDocument,
   type PlayableAgentReply,
   type PlayableTaskPhase,
+  type ReferenceKeyframe,
+  type ReferenceKeyframeImage,
+  type ReferenceKeyframeStatus,
   type RequirementBrief,
   type RevisionPlan,
   type RevisionProposal,
@@ -50,6 +55,14 @@ import { createRequirementBrief } from './requirement-tools'
 import type { AppliedMediaResolution, VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { VIDEO_ANALYSIS_PIPELINE_VERSION } from './video-gameplay-analyst'
 import { runIntentComparison, runVideoAnalysis, VIDEO_ANALYSIS_BUDGET_MS } from './video-analysis-service'
+import {
+  effectiveKeyframeStatus,
+  loadReferenceKeyframesForBuild,
+  REFERENCE_KEYFRAME_BUDGET_MS,
+  runReferenceKeyframeExtraction,
+  type ReferenceKeyframeExtractor,
+  type ReferenceKeyframeSnapshot,
+} from './reference-keyframes'
 import { deriveGameplayIntent } from './gameplay-intent'
 import { PlayableBuildExecutionError } from './sandbox-runner'
 import {
@@ -161,6 +174,9 @@ export interface PlayableVideoAnalysisRecord {
    */
   intentText: string | null
   blueprint: GameplayBlueprint | null
+  /** Null until the analysis succeeds; see the visual fidelity spec §3.3. */
+  keyframeStatus: ReferenceKeyframeStatus | null
+  keyframeImages: ReferenceKeyframeImage[] | null
   errorCode: string | null
   createdAt: Date
   completedAt: Date | null
@@ -316,7 +332,29 @@ export interface PlayableTaskRepository {
     blueprint: GameplayBlueprint
     mediaResolution: AppliedMediaResolution | null
     intentText: string
+    /**
+     * Carried over from the analysis the comparison was derived from: same
+     * video, same keyframes. Dropping them would make the Reference Keyframes
+     * vanish every time the intent moved on.
+     */
+    keyframeStatus: ReferenceKeyframeStatus | null
+    keyframeImages: ReferenceKeyframeImage[] | null
   }): Promise<PlayableVideoAnalysisRecord | undefined>
+  /**
+   * Writes the keyframe outcome to every succeeded attempt of this video whose
+   * blueprint picked exactly these keyframes. That covers the rows an intent
+   * comparison copied while extraction was still running, and never touches a
+   * re-run that picked different moments.
+   */
+  saveReferenceKeyframes(input: {
+    assetId: string
+    pipelineVersion: string
+    model: string
+    fromAttempt: number
+    keyframes: ReferenceKeyframe[]
+    status: ReferenceKeyframeStatus
+    images: ReferenceKeyframeImage[]
+  }): Promise<void>
   updateVideoAnalysisStatus(id: string, status: VideoAnalysisStatus): Promise<void>
   completeVideoAnalysis(
     id: string,
@@ -375,6 +413,8 @@ interface HandlerDependencies {
   mediaGenerator?: MediaGenerator
   imageAnalyst?: ReferenceImageAnalyst
   videoAnalyst?: VideoGameplayAnalyst
+  /** Undefined where frames cannot be cut at all; keyframes then read as unavailable. */
+  keyframeExtractor?: ReferenceKeyframeExtractor
   marketResearchAgent?: MarketResearchAgent
   generateId(): string
 }
@@ -395,6 +435,8 @@ interface ConfirmedBuildDependencies {
   artifactStore: ArtifactStore
   mediaGenerator?: MediaGenerator
   gameplayBlueprint?: GameplayBlueprintDocument
+  /** Read from the same analysis as the blueprint; re-read while extraction is still running. */
+  readReferenceKeyframes?: () => Promise<ReferenceKeyframeSnapshot | undefined>
   buildHeartbeatIntervalMs?: number
 }
 
@@ -517,6 +559,14 @@ function activeGameplayAnnotations(task: PlayableTaskRecord): GameplayAnnotation
   return assetId ? task.gameplayAnnotations.filter((annotation) => annotation.assetId === assetId) : []
 }
 
+/** Identity of a statement regardless of id, which is minted per write. */
+function annotationKey(annotation: GameplayAnnotationDraft): string {
+  return JSON.stringify([
+    annotation.value,
+    annotation.evidence.map((evidence) => [evidence.startSeconds, evidence.endSeconds]),
+  ])
+}
+
 function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
   if (!current) return null
   const { latest, source } = current
@@ -530,6 +580,15 @@ function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
     // Taken from the blueprint's own attempt, since that is what it describes.
     mediaResolution: source?.mediaResolution ?? null,
     blueprint: source?.blueprint ? gameplayBlueprintSchema.parse(source.blueprint) : null,
+    // Read off the blueprint's own attempt, like the blueprint: a re-run in
+    // progress keeps showing the keyframes of the result it will replace.
+    keyframeStatus: source ? effectiveKeyframeStatus(source) : null,
+    keyframes: (source?.blueprint?.keyframes ?? []).map((keyframe, index) => ({
+      index,
+      seconds: keyframe.seconds,
+      focus: keyframe.focus,
+      available: Boolean(source?.keyframeImages?.some((image) => image.keyframeIndex === index)),
+    })),
     intentPending: current.intentPending,
     errorCode: latest.errorCode,
     createdAt: latest.createdAt.toISOString(),
@@ -1160,6 +1219,25 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       }),
     )
     const assets = [...uploadedAssets, ...generatedAssets]
+    // Only a confirmation that matches the reference's look gets its keyframes;
+    // missing ones cost the keyframes, never the build (spec §5.2).
+    const matchesReference = sanitizedConfirmation.visualDirection === 'match_reference'
+    const referenceKeyframes =
+      matchesReference && dependencies.readReferenceKeyframes
+        ? await loadReferenceKeyframesForBuild({
+            read: dependencies.readReferenceKeyframes,
+            artifactStore,
+          }).catch(() => [])
+        : []
+    if (matchesReference && referenceKeyframes.length === 0) {
+      await repository
+        .appendEvent({
+          taskId: task.id,
+          type: 'build_without_reference_keyframes',
+          message: 'Building without reference keyframes',
+        })
+        .catch(() => undefined)
+    }
     stage = 'agent'
     const result = await agent.build({
       onPreview: async (html) => {
@@ -1209,6 +1287,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       confirmation: sanitizedConfirmation,
       assets,
       ...(referenceImages.length ? { referenceImages } : {}),
+      ...(referenceKeyframes.length ? { referenceKeyframes } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
@@ -1246,6 +1325,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       await artifactStore.put(
         `${prefix}/gameplay-blueprint.json`,
         JSON.stringify(dependencies.gameplayBlueprint),
+        'application/json',
+      )
+    }
+    if (result.visualComparison) {
+      await artifactStore.put(
+        `${prefix}/visual-comparison.json`,
+        redactSecrets(JSON.stringify(result.visualComparison), [apiKey]),
         'application/json',
       )
     }
@@ -1407,6 +1493,60 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     )
   }
 
+  /**
+   * Read through the same analysis as `gameplayBlueprintDocumentFor`, so the
+   * keyframes a build gets always belong to the blueprint it gets.
+   */
+  const referenceKeyframeSnapshotFor = async (
+    task: PlayableTaskRecord,
+  ): Promise<ReferenceKeyframeSnapshot | undefined> => {
+    const source = (await readCurrentAnalysis(task, task.activeReferenceVideoAssetId))?.source
+    if (!source?.blueprint) return undefined
+    return {
+      status: effectiveKeyframeStatus(source),
+      keyframes: source.blueprint.keyframes,
+      images: source.keyframeImages ?? [],
+    }
+  }
+
+  /**
+   * A separate piece of background work with its own budget, not a tail on the
+   * analysis: that run's time is already spent (spec §3.1). A scheduling
+   * failure costs the keyframes only.
+   */
+  const scheduleKeyframeExtraction = (
+    task: PlayableTaskRecord,
+    asset: PlayableAsset,
+    analysis: PlayableVideoAnalysisRecord,
+  ) => {
+    const run = () =>
+      runReferenceKeyframeExtraction({
+        task,
+        asset,
+        analysis,
+        repository: dependencies.repository,
+        artifactStore: dependencies.artifactStore,
+        extractor: dependencies.keyframeExtractor,
+        abortSignal: AbortSignal.timeout(REFERENCE_KEYFRAME_BUDGET_MS),
+      }).then(() => undefined)
+    try {
+      dependencies.schedule(run)
+    } catch {
+      console.error('Reference keyframe extraction could not be scheduled')
+      void dependencies.repository
+        .saveReferenceKeyframes({
+          assetId: analysis.assetId,
+          pipelineVersion: analysis.pipelineVersion,
+          model: analysis.model,
+          fromAttempt: analysis.attempt,
+          keyframes: analysis.blueprint?.keyframes ?? [],
+          status: 'failed',
+          images: [],
+        })
+        .catch(() => undefined)
+    }
+  }
+
   const intentComparisonsInFlight = new Set<string>()
 
   /**
@@ -1458,10 +1598,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   }
 
   /**
-   * The agent resends the whole list every turn, so this replaces rather than
-   * appends; an annotation the agent dropped is a deletion. Ids are minted per
-   * write because the drafts carry none, and the list is bound to the active
-   * reference video so it stays attributable after the user swaps videos.
+   * The agent resends its whole list every turn, so this replaces rather than
+   * appends; a chat annotation the agent dropped is a deletion. Ids are minted
+   * per write because the drafts carry none, and the list is bound to the
+   * active reference video so it stays attributable after the user swaps
+   * videos.
+   *
+   * Only the active video's chat annotations are the agent's to replace, and
+   * the list is re-read here rather than taken from the start of the turn: a
+   * correction the user made in the timeline while the agent was thinking
+   * exists only in the fresh copy, and writing the stale one back would erase
+   * it without a trace (spec section 7.6.5).
    */
   const storeGameplayAnnotations = async (
     task: PlayableTaskRecord,
@@ -1470,19 +1617,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   ) => {
     const assetId = task.activeReferenceVideoAssetId
     if (!assetId) return
-    const current: GameplayAnnotation[] = drafts.map((draft) => ({
-      ...draft,
-      id: dependencies.generateId(),
-      assetId,
-      source: 'user',
-      confidence: 1,
-    }))
-    // Only the active video's list is replaced. The agent is shown just that
-    // list, so another video's annotations were never its to resend; dropping
-    // them here would delete the user's statements about a video they merely
-    // switched away from.
-    const others = task.gameplayAnnotations.filter((annotation) => annotation.assetId !== assetId)
-    const annotations = [...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
+    const latest =
+      (await dependencies.repository.findOwnedTask(task.id, userId))?.gameplayAnnotations ?? task.gameplayAnnotations
+    // Another video's annotations were never shown to the agent, so they were
+    // never its to resend; dropping them would delete the user's statements
+    // about a video they merely switched away from.
+    const others = latest.filter((annotation) => annotation.assetId !== assetId)
+    const timeline = latest.filter((annotation) => annotation.assetId === assetId && annotation.origin === 'timeline')
+    // The agent is told not to resend timeline annotations. An echo anyway
+    // would turn one statement into two, one of which a later turn could drop.
+    const timelineKeys = new Set(timeline.map(annotationKey))
+    const current: GameplayAnnotation[] = drafts
+      .filter((draft) => !timelineKeys.has(annotationKey(draft)))
+      .map((draft) => ({
+        ...draft,
+        id: dependencies.generateId(),
+        assetId,
+        source: 'user',
+        confidence: 1,
+        origin: 'chat',
+      }))
+    const annotations = [...timeline, ...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
     await dependencies.repository.updateGameplayAnnotations(task.id, userId, annotations)
     task.gameplayAnnotations = annotations
   }
@@ -2153,10 +2308,16 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
               if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
-                validatedReply.confirmation = {
-                  ...bindSourceTemplate(validatedReply.confirmation, templateId),
-                  referenceImages: referenceImages.length ? referenceImages : undefined,
-                }
+                // Applied after the agent's route was checked against its brief:
+                // the agent routes by gameplay, and matching the reference's look
+                // is what lifts an exact route to approximate (spec §4.2).
+                validatedReply.confirmation = applyVisualDirection(
+                  {
+                    ...bindSourceTemplate(validatedReply.confirmation, templateId),
+                    referenceImages: referenceImages.length ? referenceImages : undefined,
+                  },
+                  { hasReferenceVisuals: Boolean(gameplayBlueprint) },
+                )
               }
               const serialized = JSON.stringify(validatedReply)
               stage = 'agent_message_store'
@@ -2366,7 +2527,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       })
       try {
         dependencies.schedule(async () => {
-          await runVideoAnalysis({
+          const blueprint = await runVideoAnalysis({
             task: access.task,
             asset: video,
             analysis,
@@ -2375,6 +2536,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             analyst: dependencies.videoAnalyst!,
             abortSignal: AbortSignal.timeout(VIDEO_ANALYSIS_BUDGET_MS),
           })
+          if (blueprint) {
+            scheduleKeyframeExtraction(access.task, video, {
+              ...analysis,
+              status: 'succeeded',
+              blueprint,
+              keyframeStatus: 'pending',
+              keyframeImages: [],
+            })
+          }
           // Covers describing while the video was still being analysed: the
           // run used the intent current when it started, and the brief may
           // have moved on since.
@@ -2390,15 +2560,67 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     },
 
     /**
+     * Serves one Reference Keyframe of the active video's current analysis, and
+     * nothing else: an index is resolved against that analysis only, so a
+     * keyframe of a replaced video or an older attempt is simply not found.
+     */
+    async analysisKeyframe(
+      request: NextRequest,
+      context: { params: Promise<{ taskId: string; index: string }> },
+    ): Promise<Response> {
+      const access = await ownedTask(request, context, dependencies)
+      if (access instanceof Response) return access
+      if (request.method !== 'GET') return jsonError(405, 'Method not allowed')
+      const { index } = await context.params
+      const keyframeIndex = /^\d{1,2}$/.test(index) ? Number(index) : Number.NaN
+      const source = (await readCurrentAnalysis(access.task, access.task.activeReferenceVideoAssetId))?.source
+      const image = source?.keyframeImages?.find((candidate) => candidate.keyframeIndex === keyframeIndex)
+      if (!image) return jsonError(404, 'Not found')
+      const stream = await dependencies.artifactStore.get(image.storageKey)
+      if (!stream) return jsonError(404, 'Not found')
+      return new Response(stream, {
+        headers: {
+          'Content-Type': image.mimeType,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    },
+
+    /**
      * The always-visible annotation list reads and deletes through here. It is
      * the only defence against the agent silently dropping an annotation when
      * it resends the list, so the user must be able to see and prune it
-     * without going through the agent.
+     * without going through the agent. Timeline corrections are written here
+     * too, directly, for the same reason: they are the user's own statements
+     * and need no agent to record them.
      */
     async annotations(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      if (request.method === 'DELETE') {
+      if (request.method === 'POST') {
+        const assetId = access.task.activeReferenceVideoAssetId
+        if (!assetId) return jsonError(409, 'No active reference video')
+        const parsed = timelineCorrectionSchema.safeParse(await request.json().catch(() => undefined))
+        if (!parsed.success) return jsonError(400, 'Invalid request')
+        if (access.task.gameplayAnnotations.length >= MAX_GAMEPLAY_ANNOTATIONS) {
+          return jsonError(409, 'Annotation limit reached')
+        }
+        const { value, startSeconds, endSeconds } = parsed.data
+        const annotation: GameplayAnnotation = {
+          id: dependencies.generateId(),
+          assetId,
+          source: 'user',
+          value,
+          evidence: [{ startSeconds, endSeconds, observation: value.slice(0, 500).trim() }],
+          confidence: 1,
+          origin: 'timeline',
+        }
+        const next = [...access.task.gameplayAnnotations, annotation]
+        const updated = await dependencies.repository.updateGameplayAnnotations(access.task.id, access.userId, next)
+        if (!updated) return jsonError(404, 'Not found')
+        access.task.gameplayAnnotations = next
+      } else if (request.method === 'DELETE') {
         const id = request.nextUrl.searchParams.get('id')
         if (!id) return jsonError(400, 'Invalid request')
         if (!access.task.gameplayAnnotations.some((annotation) => annotation.id === id)) {
@@ -2474,6 +2696,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+      // The table may have switched the visual direction; the server applies
+      // the same rule so an exact route can never claim to match the reference.
+      sanitized = applyVisualDirection(sanitized, { hasReferenceVisuals: Boolean(gameplayBlueprint) })
 
       if (revision?.strategy === 'patch') {
         const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
@@ -2524,6 +2749,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             mediaGenerator: dependencies.mediaGenerator,
             buildHeartbeatIntervalMs: dependencies.buildHeartbeatIntervalMs,
             gameplayBlueprint,
+            readReferenceKeyframes: () => referenceKeyframeSnapshotFor(claimed),
           })
         })
       } catch {

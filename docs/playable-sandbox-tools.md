@@ -17,7 +17,10 @@ pnpm sandbox:prepare-playable
 
 This creates cloud resources: a temporary Ubuntu sandbox and a reusable snapshot.
 It installs pinned Playwright 1.63.0 (supports Ubuntu 26.04), its Chromium binaries and OS dependencies,
-Noto CJK fonts, jq, zip and unzip. It checks browser launch, clicking and screenshots
+Noto CJK fonts, jq, zip, unzip and ffmpeg. ffmpeg cuts Reference Keyframes out of
+reference videos; the keyframe extractor checks for it on its own, so it is not part of
+the build's tools version and an older snapshot only makes keyframes unavailable
+(ADR 0003). It checks browser launch, clicking and screenshots
 in both orientations, then repeats that check in a fresh sandbox restored from the
 snapshot. Only a verified snapshot ID is saved to `.env.playable-sandbox.local`.
 The snapshot has no automatic expiry; delete unused versions in Vercel when retired.

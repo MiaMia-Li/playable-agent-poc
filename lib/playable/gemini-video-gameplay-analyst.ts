@@ -4,9 +4,10 @@ import { logExternalRequestError } from './external-request-logging'
 import { readGeminiApiKey, readGeminiBaseUrl, readGeminiVideoAnalysisModel } from './shared-ai-key'
 import {
   INTENT_INSTRUCTIONS,
-  QDAI_INSTRUCTIONS,
+  ANALYST_INSTRUCTIONS,
   analysisPrompt,
   blueprintResponseSchema,
+  describeBlueprintFailure,
   intentComparisonPrompt,
   intentResponseSchema,
   parseBlueprint,
@@ -88,7 +89,7 @@ export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
           model,
           contents,
           config: {
-            systemInstruction: QDAI_INSTRUCTIONS,
+            systemInstruction: ANALYST_INSTRUCTIONS,
             mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
             responseMimeType: 'application/json',
             responseJsonSchema,
@@ -105,10 +106,10 @@ export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
       let blueprint: GameplayBlueprint
       try {
         blueprint = validateEvidenceTimes(parseBlueprint(response.text ?? ''), input.video.durationSeconds)
-      } catch {
+      } catch (error) {
         // Almost always the unconstrained channel answering off-shape. Treat it
         // as a spent attempt so the loop can try for the honouring one.
-        console.error('Gemini video analysis returned an unusable blueprint')
+        console.error('Gemini video analysis returned an unusable blueprint:', describeBlueprintFailure(error))
         continue
       }
 

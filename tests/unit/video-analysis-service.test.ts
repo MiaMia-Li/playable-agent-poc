@@ -6,7 +6,8 @@ import { runIntentComparison, runVideoAnalysis } from '@/lib/playable/video-anal
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
-  version: 2,
+  version: 4,
+  timeline: [],
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
   controls: [{ value: '点击', confidence: 0.9, evidence: [] }],
@@ -21,7 +22,16 @@ const blueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通',
+  visualSpec: {
+    artStyle: '卡通',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
 }
@@ -56,12 +66,14 @@ const analysis: PlayableVideoAnalysisRecord = {
   taskId: task.id,
   assetId: asset.id,
   status: 'pending',
-  pipelineVersion: 'qdai-video-v2',
+  pipelineVersion: 'video-analysis-v4',
   model: 'model',
   attempt: 1,
   mediaResolution: null,
   intentText: null,
   blueprint: null,
+  keyframeStatus: null,
+  keyframeImages: null,
   errorCode: null,
   createdAt: new Date(),
   completedAt: null,
@@ -96,7 +108,7 @@ function harness(mediaResolution: AppliedMediaResolution = 'high') {
   return { repository, artifactStore, analyst }
 }
 
-describe('QDAI video analysis service', () => {
+describe('Video analysis service', () => {
   it('hands the raw video bytes to the analyst and persists the structured blueprint', async () => {
     const dependencies = harness()
 
@@ -204,6 +216,8 @@ describe('intent divergence comparison', () => {
     blueprint,
     mediaResolution: 'default',
     intentText: '',
+    keyframeStatus: 'succeeded',
+    keyframeImages: [{ keyframeIndex: 0, seconds: 1, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     completedAt: new Date(),
   }
   const divergence = [{ value: '视频是连连看，不是三消', confidence: 0.9, evidence: [] }]
@@ -233,12 +247,16 @@ describe('intent divergence comparison', () => {
       id: 'analysis-2',
       taskId: task.id,
       assetId: asset.id,
-      pipelineVersion: 'qdai-video-v2',
+      pipelineVersion: 'video-analysis-v4',
       model: 'model',
       attempt: 2,
       blueprint: { ...blueprint, intentDivergence: divergence },
       mediaResolution: 'default',
       intentText: '玩法概念：三消',
+      // Same video, same keyframes: without these the Reference Keyframes would
+      // vanish every time the intent moved on.
+      keyframeStatus: 'succeeded',
+      keyframeImages: [{ keyframeIndex: 0, seconds: 1, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     })
   })
 

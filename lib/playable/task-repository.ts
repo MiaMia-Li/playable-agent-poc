@@ -1,5 +1,5 @@
 import type { SourceTemplateId } from './types'
-import { and, asc, desc, eq, exists, gte, inArray, isNull, lt } from 'drizzle-orm'
+import { and, asc, desc, eq, exists, gte, inArray, isNull, lt, sql } from 'drizzle-orm'
 import { db } from '@/lib/db/client'
 import {
   playableTaskAssets,
@@ -18,12 +18,14 @@ import {
   gameplayAnnotationsSchema,
   gameplayBlueprintSchema,
   playableTaskPhaseSchema,
+  referenceKeyframeImagesSchema,
   requirementBriefSchema,
   revisionProposalSchema,
   videoAnalysisStatusSchema,
   type ConfirmationProposal,
   type GameplayAnnotation,
   type PlayableTaskPhase,
+  type ReferenceKeyframe,
   type RequirementBrief,
   type RevisionProposal,
 } from './schemas'
@@ -105,6 +107,8 @@ function toVideoAnalysis(row: typeof playableVideoAnalyses.$inferSelect): Playab
     mediaResolution: row.mediaResolution,
     intentText: row.intentText,
     blueprint: row.blueprint ? gameplayBlueprintSchema.parse(row.blueprint) : null,
+    keyframeStatus: row.keyframeStatus,
+    keyframeImages: row.keyframeImages ? referenceKeyframeImagesSchema.parse(row.keyframeImages) : null,
     errorCode: row.errorCode,
     createdAt: row.createdAt,
     completedAt: row.completedAt,
@@ -799,6 +803,8 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     blueprint: NonNullable<PlayableVideoAnalysisRecord['blueprint']>
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
     intentText: string
+    keyframeStatus: PlayableVideoAnalysisRecord['keyframeStatus']
+    keyframeImages: PlayableVideoAnalysisRecord['keyframeImages']
   }): Promise<PlayableVideoAnalysisRecord | undefined> {
     const now = new Date()
     const [inserted] = await db
@@ -806,6 +812,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
       .values({
         ...input,
         blueprint: gameplayBlueprintSchema.parse(input.blueprint),
+        keyframeImages: input.keyframeImages ? referenceKeyframeImagesSchema.parse(input.keyframeImages) : null,
         status: 'succeeded',
         createdAt: now,
         completedAt: now,
@@ -840,9 +847,37 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         blueprint: gameplayBlueprintSchema.parse(blueprint),
         mediaResolution,
         intentText,
+        keyframeStatus: 'pending',
+        keyframeImages: [],
         completedAt: new Date(),
       })
       .where(eq(playableVideoAnalyses.id, id))
+  }
+
+  async saveReferenceKeyframes(input: {
+    assetId: string
+    pipelineVersion: string
+    model: string
+    fromAttempt: number
+    keyframes: ReferenceKeyframe[]
+    status: NonNullable<PlayableVideoAnalysisRecord['keyframeStatus']>
+    images: NonNullable<PlayableVideoAnalysisRecord['keyframeImages']>
+  }): Promise<void> {
+    // jsonb equality is by value, so a copy an intent comparison wrote matches
+    // regardless of key order, while a re-run that picked other moments does not.
+    await db
+      .update(playableVideoAnalyses)
+      .set({ keyframeStatus: input.status, keyframeImages: referenceKeyframeImagesSchema.parse(input.images) })
+      .where(
+        and(
+          eq(playableVideoAnalyses.assetId, input.assetId),
+          eq(playableVideoAnalyses.pipelineVersion, input.pipelineVersion),
+          eq(playableVideoAnalyses.model, input.model),
+          eq(playableVideoAnalyses.status, 'succeeded'),
+          gte(playableVideoAnalyses.attempt, input.fromAttempt),
+          sql`${playableVideoAnalyses.blueprint} -> 'keyframes' = ${JSON.stringify(input.keyframes)}::jsonb`,
+        ),
+      )
   }
 
   async failVideoAnalysis(id: string, errorCode: string): Promise<void> {

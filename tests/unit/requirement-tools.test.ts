@@ -43,6 +43,7 @@ function routedBrief(match: 'exact' | 'approximate' | 'freeform'): RequirementBr
 
 function confirmation(brief: RequirementBrief): ConfirmationProposal {
   return {
+    visualDirection: 'custom',
     routing: {
       match: brief.routing.match === 'undecided' ? 'freeform' : brief.routing.match,
       confidence: brief.routing.confidence,

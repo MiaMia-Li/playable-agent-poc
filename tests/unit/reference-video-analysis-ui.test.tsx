@@ -9,7 +9,8 @@ import { PlayableWorkspace } from '@/components/playable/playable-workspace'
 Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
 
 const blueprint: GameplayBlueprint = {
-  version: 2,
+  version: 4,
+  timeline: [],
   summary: '点击两个相同图案连线消除',
   orientation: 'portrait',
   controls: [],
@@ -24,7 +25,16 @@ const blueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [{ value: '视频是连连看，不是三消', confidence: 0.9, evidence: [] }],
-  visualStyle: '卡通',
+  visualSpec: {
+    artStyle: '卡通',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.9,
 }
@@ -45,6 +55,7 @@ const annotation: GameplayAnnotation = {
   value: '第 12 秒是长按，不是点击',
   evidence: [{ startSeconds: 12, endSeconds: 12.5, observation: '长按' }],
   confidence: 1,
+  origin: 'chat',
 }
 
 type FetchCall = [RequestInfo | URL, RequestInit | undefined]

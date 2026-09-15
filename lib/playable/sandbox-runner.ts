@@ -1,4 +1,9 @@
 import { referenceImageWorkspaceFiles } from './reference-images'
+import {
+  parseVisualComparison,
+  referenceKeyframeWorkspaceFiles,
+  VISUAL_COMPARISON_WORKSPACE_PATH,
+} from './reference-keyframes-build'
 import { browserAcceptanceDiagnostics } from './browser-acceptance-diagnostics'
 import { applyTemplateBrowserCompatibility } from './template-browser-compatibility'
 import { readBuildSkillFiles } from './build-skill'
@@ -270,6 +275,13 @@ export async function runPlayableBuild(
     }
     // 使用与本地 CLI 相同的清单格式，让构建 Agent 能读取图片本身而非仅看到文件名。
     for (const file of referenceImageWorkspaceFiles(input.referenceImages)) {
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, file.path),
+        content: file.bytes,
+        abortSignal: dependencies.abortSignal,
+      })
+    }
+    for (const file of referenceKeyframeWorkspaceFiles(input.referenceKeyframes)) {
       await sandbox.writeBinaryFile({
         path: path.join(workspace, file.path),
         content: file.bytes,
@@ -617,7 +629,16 @@ export async function runPlayableBuild(
       path: path.join(workspace, 'work/scenario.mjs'),
       abortSignal: dependencies.abortSignal,
     })
+    const visualComparison = input.referenceKeyframes?.length
+      ? parseVisualComparison(
+          await sandbox.readTextFile({
+            path: path.join(workspace, VISUAL_COMPARISON_WORKSPACE_PATH),
+            abortSignal: dependencies.abortSignal,
+          }),
+        )
+      : undefined
     return {
+      ...(visualComparison ? { visualComparison } : {}),
       ...(previewScenario && fullScenario && previewScenario.length <= 128000 && fullScenario.length <= 128000
         ? { reusableScenarios: { preview: previewScenario, full: fullScenario } }
         : {}),

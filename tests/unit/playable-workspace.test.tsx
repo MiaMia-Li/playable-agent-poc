@@ -19,6 +19,7 @@ Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true,
 
 const proposal: ConfirmationProposal = {
   routing: { match: 'approximate', confidence: 0.8, differences: ['奖励表现使用模板默认效果'] },
+  visualDirection: 'custom',
   mode: 'top_rack',
   gameplay: '相同牌进入牌架后消除',
   resources: {
@@ -51,7 +52,8 @@ const revision: RevisionProposal = {
 }
 
 const blueprint = {
-  version: 2 as const,
+  version: 4 as const,
+  timeline: [],
   summary: '点击配对',
   orientation: 'portrait' as const,
   controls: [],
@@ -66,7 +68,16 @@ const blueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通',
+  visualSpec: {
+    artStyle: '卡通',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 1,
 }
@@ -354,7 +365,7 @@ describe('PlayableWorkspace', () => {
     expect(await screen.findByText('已采用参考方向，请选择核心玩法。')).toBeInTheDocument()
   })
 
-  it('refreshes QDAI analysis immediately when the video tool completes', async () => {
+  it('refreshes video analysis immediately when the video tool completes', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/messages')) {
         return new Response(

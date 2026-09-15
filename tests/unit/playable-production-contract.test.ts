@@ -10,6 +10,7 @@ import { MAHJONG_PLAYABLE_PLUGIN } from '@/lib/playable/template-registry'
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'approximate', confidence: 0.82, differences: ['镜头运镜使用模板默认方案'] },
+  visualDirection: 'custom',
   mode: 'perspective_3d',
   gameplay: '逐层移除可见顶面并揭示下层',
   resources: {

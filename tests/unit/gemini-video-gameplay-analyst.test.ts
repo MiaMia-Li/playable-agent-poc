@@ -16,7 +16,8 @@ vi.mock('@google/genai', async (importOriginal) => {
 const { GeminiVideoGameplayAnalyst } = await import('@/lib/playable/gemini-video-gameplay-analyst')
 
 const blueprint: GameplayBlueprint = {
-  version: 2,
+  version: 4,
+  timeline: [],
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
   controls: [{ value: '点击', confidence: 0.9, evidence: [] }],
@@ -31,7 +32,16 @@ const blueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通',
+  visualSpec: {
+    artStyle: '卡通',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
 }

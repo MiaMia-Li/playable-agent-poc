@@ -528,6 +528,13 @@ export const playableVideoAnalyses = pgTable(
     // succeeds, and on rows from before it was recorded.
     intentText: text('intent_text'),
     blueprint: jsonb('blueprint'),
+    // Reference Keyframes cut out of the video at the moments the blueprint
+    // picked. Null until the analysis succeeds; see the visual fidelity spec §3.3.
+    keyframeStatus: text('keyframe_status', {
+      enum: ['pending', 'extracting', 'succeeded', 'failed', 'unavailable'],
+    }),
+    // Aligned with blueprint.keyframes by index; frames that failed are absent.
+    keyframeImages: jsonb('keyframe_images'),
     errorCode: text('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     completedAt: timestamp('completed_at'),

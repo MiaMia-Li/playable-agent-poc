@@ -20,6 +20,146 @@ export const gameplayInferenceSchema = z.strictObject({
   evidence: z.array(gameplayEvidenceSchema).max(12),
 })
 
+export const MAX_TIMELINE_SEGMENTS = 40
+
+/**
+ * One stretch of the reference video. The timeline is the draft the user
+ * reviews segment by segment (spec section 7.6), so every field is something a
+ * person can check by jumping to `startSeconds` and watching.
+ *
+ * The length bounds are generous on purpose. They are stripped from the
+ * response schema because the gateway rejects them, so the model never sees
+ * them; the prompt asks for shorter text instead, and one long caption should
+ * not throw away a billed run.
+ */
+export const gameplayTimelineSegmentSchema = z.strictObject({
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+  phase: z.enum(['intro', 'tutorial', 'gameplay', 'transition', 'result', 'end_card']),
+  screen: z.string().trim().min(1).max(500),
+  /** Verbatim, empty when there is none. Untrusted evidence, like narration (spec section 5.3). */
+  onScreenText: z.string().trim().max(1000),
+  /**
+   * Null for automatic play and transitions. `seenVia` says how the model knows
+   * about the input: a screen recording rarely shows the finger, and an input
+   * read off the game's response is the kind the model was found to invent
+   * (spec section 7.5.1), so the UI marks those as inferred.
+   */
+  playerInput: z
+    .strictObject({
+      action: z.enum(['tap', 'long_press', 'swipe', 'drag', 'unknown']),
+      target: z.string().trim().min(1).max(300),
+      seenVia: z.enum(['touch_indicator', 'guide_hand', 'ui_response']),
+    })
+    .nullable(),
+  response: z.string().trim().max(500),
+  audioCue: z.string().trim().max(300),
+  confidence: z.number().min(0).max(1),
+})
+
+/**
+ * Every visual list item names what it describes and cites when it is seen, so
+ * the build agent can line it up with a Reference Keyframe. No `confidence`:
+ * appearance is seen directly, and doubt belongs in `uncertainties`.
+ */
+const visualItemShape = {
+  name: z.string().trim().min(1).max(120),
+  evidence: z.array(gameplayEvidenceSchema).min(1).max(6),
+}
+
+/**
+ * What the Reference Video looks like (Visual Spec in CONTEXT.md). Entity
+ * appearance lives here, keyed by the name used in `entities`, which holds only
+ * the entity's role in play.
+ */
+export const visualSpecSchema = z.strictObject({
+  artStyle: z.string().trim().max(600),
+  palette: z
+    .array(
+      z.strictObject({
+        hex: z
+          .string()
+          .trim()
+          .regex(/^#[0-9a-fA-F]{6}$/),
+        usage: z.string().trim().max(120),
+      }),
+    )
+    .max(10),
+  background: z.string().trim().max(600),
+  layout: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        region: z.string().trim().max(120),
+        contents: z.string().trim().max(400),
+      }),
+    )
+    .max(8),
+  uiComponents: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        position: z.string().trim().max(160),
+        shape: z.string().trim().max(300),
+        colors: z.string().trim().max(200),
+        textStyle: z.string().trim().max(200),
+      }),
+    )
+    .max(16),
+  entityLooks: z.array(z.strictObject({ ...visualItemShape, look: z.string().trim().max(500) })).max(20),
+  effects: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        trigger: z.string().trim().max(200),
+        motion: z.string().trim().max(400),
+      }),
+    )
+    .max(12),
+})
+
+export const MAX_REFERENCE_KEYFRAMES = 12
+
+export const referenceKeyframeStatuses = ['pending', 'extracting', 'succeeded', 'failed', 'unavailable'] as const
+export const referenceKeyframeStatusSchema = z.enum(referenceKeyframeStatuses)
+
+/**
+ * Offsets after each second the model gave at which a frame is cut. Measured
+ * on a real run: the events a keyframe described showed up about a second
+ * after the second it was labelled with, so a single cut at the label missed
+ * them (spec §13).
+ */
+export const REFERENCE_KEYFRAME_CUT_OFFSETS = [0, 0.5, 1] as const
+
+/** One frame that was actually cut out, pointing back at `blueprint.keyframes[keyframeIndex]`. */
+export const referenceKeyframeImageSchema = z.strictObject({
+  keyframeIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_REFERENCE_KEYFRAMES - 1),
+  /** Where in the video this frame was cut, which may be after the keyframe's own second. */
+  seconds: z.number().min(0),
+  storageKey: z.string().min(1),
+  mimeType: z.literal('image/jpeg'),
+})
+export const referenceKeyframeImagesSchema = z
+  .array(referenceKeyframeImageSchema)
+  .max(MAX_REFERENCE_KEYFRAMES * REFERENCE_KEYFRAME_CUT_OFFSETS.length)
+
+/** A moment the model picked to be cut out as a Reference Keyframe. */
+export const referenceKeyframeSchema = z.strictObject({
+  seconds: z.number().min(0),
+  focus: z.string().trim().min(1).max(200),
+})
+
+/**
+ * One constant for the schema literal and the prompt that names it. When the
+ * schema moved to 3 and the prompt still asked for "v2", a model that ignored
+ * the schema's `const` wrote 2 and every attempt was rejected.
+ */
+export const GAMEPLAY_BLUEPRINT_VERSION = 4
+
 /**
  * What the model produces and what gets stored. It deliberately has no
  * `annotations` field: this schema is also the source of the response schema
@@ -28,9 +168,13 @@ export const gameplayInferenceSchema = z.strictObject({
  * Annotations are attached on the way out, by `toGameplayBlueprintDocument`.
  */
 export const gameplayBlueprintSchema = z.strictObject({
-  version: z.literal(2),
+  version: z.literal(GAMEPLAY_BLUEPRINT_VERSION),
   summary: z.string().trim().min(1).max(1000),
   orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
+  // Early in the schema because the response schema's property order is the
+  // order the model writes in, and the thematic fields below should be drawn
+  // from a timeline that already exists.
+  timeline: z.array(gameplayTimelineSegmentSchema).max(MAX_TIMELINE_SEGMENTS),
   controls: z.array(gameplayInferenceSchema).max(8),
   sceneStructure: gameplayInferenceSchema,
   entities: z.array(gameplayInferenceSchema).max(20),
@@ -41,7 +185,8 @@ export const gameplayBlueprintSchema = z.strictObject({
   progression: z.array(gameplayInferenceSchema).max(12),
   tutorial: z.array(gameplayInferenceSchema).max(8),
   endCard: gameplayInferenceSchema.nullable(),
-  visualStyle: z.string().trim().max(1000),
+  visualSpec: visualSpecSchema,
+  keyframes: z.array(referenceKeyframeSchema).max(MAX_REFERENCE_KEYFRAMES),
   audio: z.array(gameplayInferenceSchema).max(12),
   intentDivergence: z.array(gameplayInferenceSchema).max(8),
   uncertainties: z.array(z.string().trim().min(1).max(500)).max(12),
@@ -59,17 +204,40 @@ export const gameplayAnnotationDraftSchema = z.strictObject({
   evidence: z.array(gameplayEvidenceSchema).min(1).max(12),
 })
 
+/**
+ * Where the user made the statement. The requirement agent rewrites its whole
+ * list every turn, so it may only replace the ones made in chat: a correction
+ * typed into the timeline while a turn is running would otherwise vanish when
+ * that turn writes its list back (spec section 7.6.5). Rows from before the
+ * timeline were all made in chat, hence the default.
+ */
+export const gameplayAnnotationOrigins = ['chat', 'timeline'] as const
+
 export const gameplayAnnotationSchema = z.strictObject({
   id: z.string().trim().min(1),
   assetId: z.string().trim().min(1),
   source: z.literal('user'),
   ...gameplayAnnotationDraftSchema.shape,
   confidence: z.literal(1),
+  origin: z.enum(gameplayAnnotationOrigins).default('chat'),
 })
 
 export const MAX_GAMEPLAY_ANNOTATIONS = 40
 
 export const gameplayAnnotationsSchema = z.array(gameplayAnnotationSchema).max(MAX_GAMEPLAY_ANNOTATIONS)
+
+/**
+ * A correction typed into the timeline. The form asks what actually happens in
+ * the video, so it skips the agent's observation-versus-intent split; spec
+ * section 11 accepts that a user may still type a requirement into it.
+ */
+export const timelineCorrectionSchema = z
+  .strictObject({
+    value: gameplayAnnotationDraftSchema.shape.value,
+    startSeconds: z.number().min(0),
+    endSeconds: z.number().min(0),
+  })
+  .refine((correction) => correction.endSeconds >= correction.startSeconds)
 
 /**
  * The reply carries drafts rather than stored annotations because it is
@@ -109,10 +277,17 @@ export function toGameplayBlueprintDocument(
 }
 
 export type GameplayInference = z.infer<typeof gameplayInferenceSchema>
+export type VisualSpec = z.infer<typeof visualSpecSchema>
+export type ReferenceKeyframe = z.infer<typeof referenceKeyframeSchema>
+export type ReferenceKeyframeStatus = z.infer<typeof referenceKeyframeStatusSchema>
+export type ReferenceKeyframeImage = z.infer<typeof referenceKeyframeImageSchema>
 export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
 export type GameplayBlueprintDocument = z.infer<typeof gameplayBlueprintDocumentSchema>
 export type GameplayAnnotation = z.infer<typeof gameplayAnnotationSchema>
 export type GameplayAnnotationDraft = z.infer<typeof gameplayAnnotationDraftSchema>
+export type GameplayAnnotationOrigin = (typeof gameplayAnnotationOrigins)[number]
+export type GameplayTimelineSegment = z.infer<typeof gameplayTimelineSegmentSchema>
+export type TimelineCorrection = z.infer<typeof timelineCorrectionSchema>
 export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
 
 export const playableTaskPhases = [
@@ -227,6 +402,47 @@ const generatedDeliverySchema = z
   })
   .superRefine(validateDeliveryProfileSnapshot)
 
+/**
+ * Whether the build reproduces the Reference Video's look (its Visual Spec and
+ * Reference Keyframes) or follows its own. Without this the build had no way to
+ * tell "copy this ad" from "borrow its gameplay only".
+ */
+export const visualDirections = ['match_reference', 'custom'] as const
+export type VisualDirection = (typeof visualDirections)[number]
+
+/** The routing difference added when matching the reference lifts an exact route. */
+export const MATCH_REFERENCE_DIFFERENCE = '还原参考视频的视觉呈现'
+
+/**
+ * The single rule for what `visualDirection` does to a confirmation, applied
+ * wherever one is written: from the agent, from the confirmation table, and on
+ * confirm. Matching the reference cannot be exact, because an exact route
+ * never reads the blueprint, so it becomes approximate; switching back undoes
+ * exactly that and nothing else. Without a blueprint there is nothing to match.
+ */
+export function applyVisualDirection<
+  T extends { visualDirection: VisualDirection; routing: z.infer<typeof routingDecisionSchema> },
+>(confirmation: T, options: { hasReferenceVisuals: boolean }): T {
+  const visualDirection = options.hasReferenceVisuals ? confirmation.visualDirection : 'custom'
+  const { routing } = confirmation
+  if (visualDirection === 'match_reference' && routing.match === 'exact') {
+    return {
+      ...confirmation,
+      visualDirection,
+      routing: { ...routing, match: 'approximate', differences: [MATCH_REFERENCE_DIFFERENCE] },
+    }
+  }
+  if (
+    visualDirection === 'custom' &&
+    routing.match === 'approximate' &&
+    routing.differences.length === 1 &&
+    routing.differences[0] === MATCH_REFERENCE_DIFFERENCE
+  ) {
+    return { ...confirmation, visualDirection, routing: { ...routing, match: 'exact', differences: [] } }
+  }
+  return visualDirection === confirmation.visualDirection ? confirmation : { ...confirmation, visualDirection }
+}
+
 const confirmationProposalShape = {
   mode: z.enum(playableModeIds),
   gameplay: z.string().trim().min(1),
@@ -294,6 +510,8 @@ export const confirmationProposalSchema = z
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),
+    // Confirmations stored before this field existed never matched the reference.
+    visualDirection: z.enum(visualDirections).default('custom'),
     ...confirmationProposalShape,
   })
   .superRefine((proposal, context) => {
@@ -305,6 +523,7 @@ export const generatedConfirmationProposalSchema = z
   .strictObject({
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,
+    visualDirection: z.enum(visualDirections),
     ...confirmationProposalShape,
     delivery: generatedDeliverySchema,
   })

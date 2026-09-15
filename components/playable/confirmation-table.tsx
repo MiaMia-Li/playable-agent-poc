@@ -3,7 +3,13 @@
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { useId, useRef } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
-import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
+import {
+  applyVisualDirection,
+  defaultConfirmationPresentation,
+  visualDirections,
+  type ConfirmationProposal,
+  type VisualDirection,
+} from '@/lib/playable/schemas'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,6 +55,11 @@ const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = 
   freeform: 'Agent 自由生成',
 }
 
+const visualDirectionLabels: Record<VisualDirection, string> = {
+  match_reference: '还原参考视频',
+  custom: '自定义',
+}
+
 const copyFieldConfig: Record<keyof ConfirmationProposal['copy'], { label: string; maxLength: number }> = {
   title: { label: '游戏标题', maxLength: 120 },
   cta: { label: 'CTA 文案', maxLength: 80 },
@@ -73,6 +84,8 @@ interface ConfirmationTableProps {
   removingAssetId?: string
   assetPreviewUrl?: (asset: SafePlayableAsset) => string
   showConfirmAction?: boolean
+  /** The active reference video has a blueprint, so its look can be matched. */
+  hasReferenceVisuals?: boolean
 }
 
 export function isConfirmationReady(proposal: ConfirmationProposal): boolean {
@@ -102,6 +115,7 @@ export function ConfirmationTable({
   removingAssetId,
   assetPreviewUrl,
   showConfirmAction = true,
+  hasReferenceVisuals = false,
 }: ConfirmationTableProps) {
   const uploadInputs = useRef<Partial<Record<PlayableAssetSlot, HTMLInputElement | null>>>({})
   const storeUrlId = useId()
@@ -437,6 +451,39 @@ export function ConfirmationTable({
                       />
                     )
                   })}
+                </td>
+              </tr>
+            )}
+            {hasReferenceVisuals && (
+              <tr>
+                <th className="bg-muted/40 px-3 py-2 font-medium">视觉风格</th>
+                <td className="space-y-2 px-3 py-2">
+                  <Select
+                    value={proposal.visualDirection}
+                    disabled={controlsDisabled}
+                    onValueChange={(value) => {
+                      const next = visualDirections.find((direction) => direction === value)
+                      if (!next) return
+                      // Same rule as the server, so the route shown is the route built.
+                      onChange(applyVisualDirection({ ...proposal, visualDirection: next }, { hasReferenceVisuals }))
+                    }}
+                  >
+                    <SelectTrigger className="w-full" aria-label="视觉风格">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {visualDirections.map((direction) => (
+                        <SelectItem key={direction} value={direction}>
+                          {visualDirectionLabels[direction]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">
+                    {proposal.visualDirection === 'match_reference'
+                      ? '按参考视频的配色、版面、UI 与特效还原；已上传的素材优先。'
+                      : '不以参考视频的外观为目标，只参考其玩法。'}
+                  </p>
                 </td>
               </tr>
             )}

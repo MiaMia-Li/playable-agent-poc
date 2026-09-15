@@ -6,6 +6,7 @@ import { LocalDemoMarketResearchAgent } from '@/lib/playable/research/local-demo
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
+  visualDirection: 'custom',
   mode: 'center_collision',
   gameplay: '点击两张相同麻将牌后消除',
   resources: {

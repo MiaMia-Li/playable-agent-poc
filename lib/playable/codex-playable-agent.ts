@@ -1,5 +1,6 @@
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
+import { referenceVisualsBuildPrompt } from './reference-keyframes-build'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, PREVIEW_REPAIR_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
@@ -49,7 +50,8 @@ const CODEX_INSTRUCTIONS = [
   'Do not return confirmation until the conversation has established: a visual theme, a registered gameplay mode or explicit freeform route, an image and audio asset source strategy, copy and CTA readiness, and an HTTPS store URL or explicit approval to use test defaults.',
   'When asking about assets, offer bundled defaults and local upload choices. AI media generation is currently disabled. Never return status 待生成.',
   'Raw uploaded referenceImage and referenceVideo entries provide metadata only. You may acknowledge their filenames, but never claim to have inspected their visual or audio content directly.',
-  'When a QDAI gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
+  'When a gameplayBlueprint is supplied, treat it as timestamped observational evidence from the reference video. Use it to establish gameplay requirements, surface its uncertainties, and route independently against registered capabilities.',
+  'Set confirmation.visualDirection to match_reference when a gameplayBlueprint is supplied, and custom otherwise or when the user wants a reskin, their own brand, or a different theme. Never ask a separate question about it.',
   'For clarification output, set confirmation to null and provide one to six options. For confirmation output, set options to an empty array and provide the complete confirmation object.',
   'Classify every route as exact, approximate, or freeform. Exact means operation, state machine, and ending are fully represented by an included template. Approximate means the core state machine matches but camera, 3D depth, animation, Boss wrapper, or reward presentation differs; list every known difference.',
   'If the core input model, state machine, or win/loss rules cannot be represented by an included template, return a confirmation with routing.match freeform. Choose the closest registered mode only as a workspace scaffold; the build model will create the requested gameplay directly. Never return plugin_request.',
@@ -300,6 +302,8 @@ export async function executeBuildAgent(
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
   onActivity?: BuildActivityCallback,
+  /** From `referenceVisualsBuildPrompt`; sent in every phase, since the self-comparison follows acceptance. */
+  visualPrompt = '',
 ) {
   const validationEnabled = isPlayableSandboxValidationEnabled()
   const skill = await loadSkill(skillRoot, {
@@ -330,6 +334,7 @@ export async function executeBuildAgent(
           PLAYABLE_TOOLS_PROMPT,
           NATIVE_TEMPLATE_UI_PROMPT,
           REFERENCE_IMAGES_BUILD_PROMPT,
+          visualPrompt,
           input.phase === 'preview'
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'preview_repair'
@@ -337,7 +342,9 @@ export async function executeBuildAgent(
               : input.phase === 'acceptance'
                 ? FULL_ACCEPTANCE_PROMPT
                 : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, { validationEnabled }),
-        ].join('\n'),
+        ]
+          .filter(Boolean)
+          .join('\n'),
         abortSignal: input.abortSignal,
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
@@ -483,6 +490,11 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
               input.confirmation.sourceTemplateId,
               input.confirmation.mode,
               input.onActivity,
+              referenceVisualsBuildPrompt({
+                visualDirection: input.confirmation.visualDirection,
+                hasKeyframes: Boolean(input.referenceKeyframes?.length),
+                patch: input.revision?.strategy === 'patch',
+              }),
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,

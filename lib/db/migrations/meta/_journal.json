@@ -239,6 +239,13 @@
       "when": 1789366852363,
       "tag": "0033_video_analysis_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789453673696,
+      "tag": "0034_reference_keyframes",
+      "breakpoints": true
     }
   ]
 }

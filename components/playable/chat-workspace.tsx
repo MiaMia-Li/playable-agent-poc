@@ -59,6 +59,7 @@ import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable, isConfirmationReady } from './confirmation-table'
 import { ResearchResultCard } from './research-result-card'
 import { GameplayAnnotationList } from './gameplay-annotation-list'
+import { GameplayTimeline, type TimelineCorrection } from './gameplay-timeline'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 
 const stages = [
@@ -135,6 +136,8 @@ interface ChatWorkspaceProps {
   initialAssets?: SafePlayableAsset[]
   videoAnalysisStatus?: VideoAnalysisStatus
   gameplayBlueprint?: GameplayBlueprint
+  referenceKeyframes?: import('./gameplay-timeline').ReferenceKeyframeView[]
+  referenceKeyframeStatus?: import('@/lib/playable/schemas').ReferenceKeyframeStatus | null
   onAssetsChange?: (assets: SafePlayableAsset[]) => void
   onVideoAnalysisToolStatus?: (status: ToolStatus) => void
   /**
@@ -166,6 +169,10 @@ interface ChatWorkspaceProps {
   onAnnotations?: (annotations: GameplayAnnotation[]) => void
   onDeleteAnnotation?: (annotation: GameplayAnnotation) => void
   deletingAnnotationId?: string
+  /** The active reference video's content URL, which the timeline plays and seeks in. */
+  referenceVideoUrl?: string
+  /** Stores a timeline correction as an annotation. Resolves false when it was not stored. */
+  onCorrectTimeline?: (correction: TimelineCorrection) => Promise<boolean>
 }
 
 interface ConversationAttachment {
@@ -342,6 +349,8 @@ export function ChatWorkspace({
   initialAssets = [],
   videoAnalysisStatus,
   gameplayBlueprint,
+  referenceKeyframes = [],
+  referenceKeyframeStatus,
   onAssetsChange,
   onVideoAnalysisToolStatus,
   waitForVideoAnalysis,
@@ -355,6 +364,8 @@ export function ChatWorkspace({
   onAnnotations,
   onDeleteAnnotation,
   deletingAnnotationId,
+  referenceVideoUrl,
+  onCorrectTimeline,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [baseBuildId, setBaseBuildId] = useState('auto')
@@ -1043,7 +1054,7 @@ export function ChatWorkspace({
         {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
           <section aria-label="参考视频分析" className="space-y-2 rounded-xl border p-3">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold">QDAI 视频玩法分析</h2>
+              <h2 className="text-sm font-semibold">视频玩法分析</h2>
               <Badge
                 variant={videoAnalysisUnavailable || videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}
               >
@@ -1107,6 +1118,20 @@ export function ChatWorkspace({
                 </Button>
               )}
           </section>
+        )}
+
+        {!videoAnalysisUnavailable && gameplayBlueprint && gameplayBlueprint.timeline.length > 0 && (
+          <GameplayTimeline
+            segments={gameplayBlueprint.timeline}
+            annotations={gameplayAnnotations}
+            videoUrl={referenceVideoUrl}
+            onCorrect={onCorrectTimeline}
+            keyframes={referenceKeyframes}
+            keyframeStatus={referenceKeyframeStatus}
+            keyframeUrl={(index) =>
+              `/api/playable-tasks/${encodeURIComponent(taskId)}/analysis/keyframes/${encodeURIComponent(String(index))}`
+            }
+          />
         )}
 
         {(gameplayAnnotations.length > 0 || videoAnalysisStatus || referenceVideoAwaitingAnalysis) && (
@@ -1256,6 +1281,7 @@ export function ChatWorkspace({
                           proposal={proposal ?? item.confirmation}
                           onChange={updateCurrentProposal}
                           onConfirm={confirm}
+                          hasReferenceVisuals={Boolean(gameplayBlueprint)}
                           title={
                             item.revision && 'targetVersion' in item.revision
                               ? `候选构建方案 v${item.revision.targetVersion}`
@@ -1282,6 +1308,7 @@ export function ChatWorkspace({
                         <div className="mt-4">
                           <ConfirmationTable
                             proposal={item.confirmation}
+                            hasReferenceVisuals={item.confirmation.visualDirection === 'match_reference'}
                             onChange={() => undefined}
                             onConfirm={() => undefined}
                             showHeader={false}
@@ -1335,6 +1362,7 @@ export function ChatWorkspace({
           <div>
             <ConfirmationTable
               proposal={proposal}
+              hasReferenceVisuals={Boolean(gameplayBlueprint)}
               onChange={updateCurrentProposal}
               onConfirm={confirm}
               confirming={confirming}

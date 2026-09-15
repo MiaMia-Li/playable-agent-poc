@@ -25,6 +25,7 @@ import type {
 import { PlayableAgentError, type PlayableAgentAdapter } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableAsset } from '@/lib/playable/task-assets'
 import type { GameplayAnnotation } from '@/lib/playable/schemas'
+import { MATCH_REFERENCE_DIFFERENCE } from '@/lib/playable/schemas'
 import {
   createAssetSourceManifest,
   createProductionConfig,
@@ -37,6 +38,7 @@ import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-a
 
 const confirmation: ConfirmationProposal = {
   routing: { match: 'exact', confidence: 1, differences: [] },
+  visualDirection: 'custom',
   mode: 'center_collision',
   gameplay: 'Match identical tiles.',
   resources: {
@@ -72,7 +74,8 @@ const patchRevision: RevisionPlan = {
 }
 
 const gameplayBlueprint: GameplayBlueprint = {
-  version: 2,
+  version: 4,
+  timeline: [],
   summary: '点击相同目标后消除。',
   orientation: 'portrait',
   controls: [
@@ -89,7 +92,16 @@ const gameplayBlueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通风格',
+  visualSpec: {
+    artStyle: '卡通风格',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
 }
@@ -479,6 +491,8 @@ class MemoryRepository implements PlayableTaskRepository {
       attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
+      keyframeStatus: null,
+      keyframeImages: null,
       mediaResolution: null,
       intentText: null,
       errorCode: null,
@@ -524,6 +538,8 @@ class MemoryRepository implements PlayableTaskRepository {
     blueprint: GameplayBlueprint
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
     intentText: string
+    keyframeStatus: PlayableVideoAnalysisRecord['keyframeStatus']
+    keyframeImages: PlayableVideoAnalysisRecord['keyframeImages']
   }): Promise<PlayableVideoAnalysisRecord | undefined> {
     const taken = this.videoAnalyses.some(
       (analysis) =>
@@ -560,9 +576,36 @@ class MemoryRepository implements PlayableTaskRepository {
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = blueprint
+    analysis.keyframeStatus = 'pending'
+    analysis.keyframeImages = []
     analysis.mediaResolution = mediaResolution
     analysis.intentText = intentText
     analysis.completedAt = new Date()
+  }
+
+  async saveReferenceKeyframes(input: {
+    assetId: string
+    pipelineVersion: string
+    model: string
+    fromAttempt: number
+    keyframes: GameplayBlueprint['keyframes']
+    status: NonNullable<PlayableVideoAnalysisRecord['keyframeStatus']>
+    images: NonNullable<PlayableVideoAnalysisRecord['keyframeImages']>
+  }): Promise<void> {
+    const keyframes = JSON.stringify(input.keyframes)
+    for (const analysis of this.videoAnalyses) {
+      if (
+        analysis.assetId === input.assetId &&
+        analysis.pipelineVersion === input.pipelineVersion &&
+        analysis.model === input.model &&
+        analysis.status === 'succeeded' &&
+        analysis.attempt >= input.fromAttempt &&
+        JSON.stringify(analysis.blueprint?.keyframes) === keyframes
+      ) {
+        analysis.keyframeStatus = input.status
+        analysis.keyframeImages = input.images
+      }
+    }
   }
 
   async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
@@ -630,6 +673,12 @@ function createHarness() {
     compareIntent: vi.fn(async (): Promise<GameplayBlueprint['intentDivergence']> => []),
   }
   const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
+  const keyframeExtractor = {
+    extract: vi.fn(
+      async (input: { seconds: number[] }): Promise<(Uint8Array | null)[] | 'unavailable'> =>
+        input.seconds.map(() => new Uint8Array([255, 216, 255])),
+    ),
+  }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
   let mediaApiKey: string | undefined = 'sk-test-media-secret'
@@ -642,6 +691,7 @@ function createHarness() {
     artifactStore,
     videoAnalyst,
     imageAnalyst,
+    keyframeExtractor,
     schedule: scheduler,
     buildStartedEventTimeoutMs: 10,
     generateId: (() => {
@@ -657,6 +707,7 @@ function createHarness() {
     artifactStore,
     videoAnalyst,
     imageAnalyst,
+    keyframeExtractor,
     artifacts,
     handlers,
     setAuthenticatedUser(value: string | undefined) {
@@ -701,6 +752,7 @@ function storedAnnotation(id: string, assetId: string, value: string): GameplayA
     value,
     evidence: [{ startSeconds: 3, endSeconds: 4, observation: value }],
     confidence: 1,
+    origin: 'chat',
   }
 }
 
@@ -778,6 +830,165 @@ describe('playable task API', () => {
     )
   })
 
+  // Keyframes are cut in their own background work after the analysis, and
+  // served only for the active video's current analysis (spec §3).
+  it('cuts reference keyframes after the analysis and serves them for the active video only', async () => {
+    const video = referenceVideo('video-keyframes')
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    harness.videoAnalyst.analyze.mockResolvedValueOnce({
+      blueprint: {
+        ...gameplayBlueprint,
+        keyframes: [
+          { seconds: 2, focus: '主界面布局' },
+          { seconds: 20, focus: '结算页' },
+        ],
+      },
+      mediaResolution: 'high',
+    })
+    // Only the first cut of the first keyframe comes out; the second keyframe gets none.
+    harness.keyframeExtractor.extract.mockResolvedValueOnce([
+      new Uint8Array([255, 216, 255]),
+      null,
+      null,
+      null,
+      null,
+      null,
+    ])
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    await harness.handlers.analysis(
+      request('/api/playable-tasks/owned/analysis', 'POST', { assetId: video.id }),
+      context,
+    )
+    await harness.scheduled[0]()
+    // The analysis queues the extraction rather than running it on its own clock.
+    expect(harness.scheduled).toHaveLength(2)
+    const pending = await (
+      await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context)
+    ).json()
+    expect(pending.analysis.keyframeStatus).toBe('pending')
+
+    await harness.scheduled[1]()
+    expect(harness.keyframeExtractor.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ seconds: [2, 2.5, 3, 20, 20.5, 21] }),
+    )
+    const ready = await (await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context)).json()
+    expect(ready.analysis.keyframeStatus).toBe('succeeded')
+    expect(ready.analysis.keyframes).toEqual([
+      { index: 0, seconds: 2, focus: '主界面布局', available: true },
+      { index: 1, seconds: 20, focus: '结算页', available: false },
+    ])
+
+    const keyframe = (index: string) =>
+      harness.handlers.analysisKeyframe(request(`/api/playable-tasks/owned/analysis/keyframes/${index}`), {
+        params: Promise.resolve({ taskId: 'owned', index }),
+      })
+    const served = await keyframe('0')
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('image/jpeg')
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(new Uint8Array([255, 216, 255]))
+    expect((await keyframe('1')).status).toBe(404)
+    expect((await keyframe('../x')).status).toBe(404)
+  })
+
+  // An exact route never reads the blueprint, so the server lifts it rather
+  // than trusting the table to have done so (spec §4.2).
+  it('builds a reference-matching confirmation on an approximate route, and only with a blueprint', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    const confirmAs = async (visualDirection: 'match_reference' | 'custom') => {
+      task.phase = 'awaiting_confirmation'
+      task.confirmation = confirmation
+      const response = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: { ...confirmation, visualDirection } }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(response.status).toBe(202)
+      await harness.scheduled.at(-1)!()
+      return vi.mocked(harness.agent.build).mock.lastCall![0].confirmation
+    }
+
+    // No blueprint yet: there is nothing to match, so the route stays exact.
+    expect(await confirmAs('match_reference')).toMatchObject({
+      visualDirection: 'custom',
+      routing: { match: 'exact', differences: [] },
+    })
+
+    const video = referenceVideo('video-visuals')
+    harness.repository.assets.push(video)
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-visuals',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: 'model',
+      attempt: 1,
+      mediaResolution: 'high',
+      intentText: null,
+      blueprint: gameplayBlueprint,
+      keyframeStatus: 'succeeded',
+      keyframeImages: [],
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+
+    expect(await confirmAs('match_reference')).toMatchObject({
+      visualDirection: 'match_reference',
+      routing: { match: 'approximate', differences: [MATCH_REFERENCE_DIFFERENCE] },
+    })
+  })
+
+  it('hands a reference-matching build the keyframes of the active video', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    const video = referenceVideo('video-keyframe-build')
+    harness.repository.assets.push(video)
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', video.id)
+    harness.artifacts.set('keyframe-1', new Uint8Array([255, 216, 255]))
+    harness.repository.videoAnalyses.push({
+      id: 'analysis-keyframe-build',
+      taskId: 'owned',
+      assetId: video.id,
+      status: 'succeeded',
+      pipelineVersion: VIDEO_ANALYSIS_PIPELINE_VERSION,
+      model: 'model',
+      attempt: 1,
+      mediaResolution: 'high',
+      intentText: null,
+      blueprint: { ...gameplayBlueprint, keyframes: [{ seconds: 3, focus: '主界面布局' }] },
+      keyframeStatus: 'succeeded',
+      keyframeImages: [{ keyframeIndex: 0, seconds: 3.5, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
+      errorCode: null,
+      createdAt: new Date(),
+      completedAt: new Date(),
+    })
+    const confirmAs = async (visualDirection: 'match_reference' | 'custom') => {
+      task.phase = 'awaiting_confirmation'
+      task.confirmation = confirmation
+      await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: { ...confirmation, visualDirection } }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      await harness.scheduled.at(-1)!()
+      return vi.mocked(harness.agent.build).mock.lastCall![0]
+    }
+
+    expect((await confirmAs('match_reference')).referenceKeyframes).toEqual([
+      {
+        keyframeIndex: 0,
+        labelledSeconds: 3,
+        seconds: 3.5,
+        focus: '主界面布局',
+        mimeType: 'image/jpeg',
+        bytes: new Uint8Array([255, 216, 255]),
+      },
+    ])
+    // Borrowing the gameplay only: the build gets no visual target to copy.
+    expect((await confirmAs('custom')).referenceKeyframes).toBeUndefined()
+  })
+
   it('does not pass an older video blueprint after a new reference video is uploaded', async () => {
     harness.repository.assets.push(
       {
@@ -816,6 +1027,8 @@ describe('playable task API', () => {
       mediaResolution: null,
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       completedAt: new Date('2026-01-01T00:01:00Z'),
@@ -1238,6 +1451,8 @@ describe('playable task API', () => {
       mediaResolution: 'high',
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1367,6 +1582,8 @@ describe('playable task API', () => {
       mediaResolution: 'default',
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1416,6 +1633,8 @@ describe('playable task API', () => {
       mediaResolution: 'high',
       intentText: '',
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1512,6 +1731,89 @@ describe('playable task API', () => {
     expect(task.gameplayAnnotations.map((annotation) => annotation.id)).toEqual(['a-1'])
 
     expect((await call('/api/playable-tasks/owned/annotations?id=b-1', 'DELETE')).status).toBe(404)
+  })
+
+  // A timeline correction is the user's own statement about the video, so it
+  // is written straight to the list, bound to the active video.
+  it('records a timeline correction for the active video', async () => {
+    harness.repository.assets.push(referenceVideo('video-a'), referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const task = harness.repository.tasks.get('owned')!
+    task.gameplayAnnotations = [storedAnnotation('a-1', 'video-a', '旧视频')]
+
+    const response = await harness.handlers.annotations(
+      request('/api/playable-tasks/owned/annotations', 'POST', {
+        value: '第 12 秒是点击，不是长按',
+        startSeconds: 12,
+        endSeconds: 13,
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      annotations: [
+        expect.objectContaining({
+          assetId: 'video-b',
+          origin: 'timeline',
+          value: '第 12 秒是点击，不是长按',
+          evidence: [{ startSeconds: 12, endSeconds: 13, observation: '第 12 秒是点击，不是长按' }],
+        }),
+      ],
+    })
+    expect(task.gameplayAnnotations.map((annotation) => annotation.assetId)).toEqual(['video-a', 'video-b'])
+  })
+
+  it('rejects a timeline correction without an active video or with an invalid range', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const post = (body: unknown) =>
+      harness.handlers.annotations(request('/api/playable-tasks/owned/annotations', 'POST', body), context)
+    expect((await post({ value: '点击', startSeconds: 1, endSeconds: 2 })).status).toBe(409)
+
+    harness.repository.assets.push(referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    expect((await post({ value: '点击', startSeconds: 3, endSeconds: 2 })).status).toBe(400)
+    expect((await post({ value: '', startSeconds: 1, endSeconds: 2 })).status).toBe(400)
+  })
+
+  // The running turn read the list before the correction existed. Writing that
+  // stale list back whole would erase the correction without a trace.
+  it('keeps a timeline correction made while an agent turn was running', async () => {
+    harness.repository.assets.push(referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const correction: GameplayAnnotation = {
+      ...storedAnnotation('t-1', 'video-b', '第 12 秒是点击'),
+      origin: 'timeline',
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async () => {
+      // A separate request stored the correction into a task object the
+      // running turn does not hold.
+      const current = harness.repository.tasks.get('owned')!
+      harness.repository.tasks.set('owned', {
+        ...current,
+        gameplayAnnotations: [...current.gameplayAnnotations, correction],
+      })
+      return {
+        ...confirmationReply,
+        annotations: [
+          { value: '第 3 秒是滑动', evidence: [{ startSeconds: 3, endSeconds: 4, observation: '滑动' }] },
+          // An echo the agent was told not to send; it must not become a copy.
+          { value: correction.value, evidence: correction.evidence },
+        ],
+      }
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '第 3 秒是滑动' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(harness.repository.tasks.get('owned')!.gameplayAnnotations).toEqual([
+      expect.objectContaining({ id: 't-1', origin: 'timeline' }),
+      expect.objectContaining({ assetId: 'video-b', value: '第 3 秒是滑动', origin: 'chat' }),
+    ])
   })
 
   it('rejects video analysis tool calls for cross-user assets and non-referenceVideo slots', async () => {
@@ -1615,6 +1917,8 @@ describe('playable task API', () => {
       mediaResolution: null,
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),

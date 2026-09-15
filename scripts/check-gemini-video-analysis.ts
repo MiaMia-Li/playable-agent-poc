@@ -56,7 +56,7 @@ const VIDEO_MIME_TYPES: Record<string, string> = {
 }
 
 const ANALYST_INSTRUCTIONS = [
-  'You are QDAI Video Gameplay Analyst.',
+  'You are a video gameplay analyst.',
   'Infer the observable gameplay shown by the supplied video.',
   'Describe evidence independently of any registered implementation template.',
   'Do not select a template, write code, or assume hidden rules that are not visible.',

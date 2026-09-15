@@ -118,7 +118,7 @@ POST /api/playable-tasks/:taskId/messages
 需求 Agent 可以主动调用：
 
 - `inspect_reference_images`：理解本轮参考图片。
-- `analyze_reference_video`：运行 QDAI 视频玩法分析。
+- `analyze_reference_video`：运行视频玩法分析。
 - `search_market_references`：按结构化 Search Brief 检索并分析公开市场参考。
 - `inspect_uploaded_assets`：检查素材元数据。
 - `update_requirement_brief`：更新结构化需求。
@@ -182,7 +182,7 @@ POST /api/playable-tasks/:taskId/messages
 - Requirement Brief 表示“Agent 当前如何理解需求”。
 - Confirmation 表示“构建 Agent 应按什么配置执行”。
 
-## 视频分析与 QDAI
+## 视频分析
 
 视频分析实现位于：
 
@@ -196,7 +196,7 @@ POST /api/playable-tasks/:taskId/messages
 2. 服务端验证视频属于当前用户、当前任务和当前消息。
 3. 创建或认领 `playable_video_analyses` 记录。
 4. ffmpeg 对视频进行抽帧。
-5. QDAI 根据按时间排序的帧推断玩法。
+5. 分析模型根据按时间排序的帧推断玩法。
 6. 生成带时间证据和置信度的 Gameplay Blueprint。
 7. Blueprint 写入数据库。
 8. 分析结果回到需求 Agent。
@@ -400,7 +400,7 @@ GET /api/playable-tasks/:taskId/artifact
 → 素材二进制上传到 Private Blob
 → 任务页提交 prompt 和当前附件 ID
 → 需求 Agent 理解需求
-→ Agent 按需调用图片或 QDAI 视频分析
+→ Agent 按需调用图片或视频分析
 → 工具结果回到需求 Agent
 → 更新 Requirement Brief
 → 生成 Confirmation 或 Revision

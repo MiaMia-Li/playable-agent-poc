@@ -3,9 +3,10 @@ import { createExternalErrorLoggingFetch } from './external-request-logging'
 import { OPENROUTER_BASE_URL, readOpenRouterApiKey, readOpenRouterVideoAnalysisModel } from './shared-ai-key'
 import {
   INTENT_INSTRUCTIONS,
-  QDAI_INSTRUCTIONS,
+  ANALYST_INSTRUCTIONS,
   analysisPrompt,
   blueprintResponseSchema,
+  describeBlueprintFailure,
   intentComparisonPrompt,
   intentResponseSchema,
   parseBlueprint,
@@ -67,7 +68,7 @@ export class OpenRouterVideoGameplayAnalyst implements VideoGameplayAnalyst {
     const body = {
       model: this.model,
       messages: [
-        { role: 'system', content: QDAI_INSTRUCTIONS },
+        { role: 'system', content: ANALYST_INSTRUCTIONS },
         {
           role: 'user',
           content: [
@@ -105,8 +106,8 @@ export class OpenRouterVideoGameplayAnalyst implements VideoGameplayAnalyst {
             input.video.durationSeconds,
           ),
         }
-      } catch {
-        console.error('OpenRouter video analysis returned an unusable blueprint')
+      } catch (error) {
+        console.error('OpenRouter video analysis returned an unusable blueprint:', describeBlueprintFailure(error))
       }
     }
     throw new Error('OpenRouter video analysis produced no usable blueprint')
