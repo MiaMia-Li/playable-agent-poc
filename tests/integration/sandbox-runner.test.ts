@@ -185,6 +185,7 @@ function replaceArtifactCommands(sandbox: LocalSandbox, artifact: Uint8Array | s
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     temporaryDirectories.splice(0).map(async (directory) => {
       await execAsync('chmod -R u+w .', { cwd: directory }).catch(() => undefined)
@@ -917,6 +918,38 @@ describe('runPlayableBuild', () => {
     ).rejects.toThrow('Playable validation failed')
     expect(sandbox.destroyed).toBe(true)
   })
+})
+
+it('skips all behavioral validation when disabled and keeps artifact safety checks', async () => {
+  vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
+  const sandbox = await createLocalSandbox()
+  const artifact = await readFile('public/playable-templates/center_collision.html')
+  replaceArtifactCommands(sandbox, artifact)
+  const run = sandbox.run.bind(sandbox)
+  sandbox.run = async (options) => {
+    if (options.command.includes('test-playable.mjs')) {
+      sandbox.commands.push(options)
+      return { exitCode: 1, stdout: '', stderr: 'validation must be skipped' }
+    }
+    return run(options)
+  }
+  const input = buildInput('center_collision', 'sk-validation-disabled-test')
+  input.onPreview = vi.fn(async () => undefined)
+  const phases: unknown[] = []
+
+  await expect(
+    runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ phase }) => {
+        phases.push(phase)
+      },
+    }),
+  ).resolves.toMatchObject({ html: expect.stringContaining('window.__PLAYABLE__') })
+
+  expect(phases).toEqual([undefined])
+  expect(input.onPreview).not.toHaveBeenCalled()
+  expect(sandbox.commands.some(({ command }) => command.includes('browser-acceptance.mjs'))).toBe(false)
+  expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(false)
 })
 
 // 编排测试用模拟浏览器报告，验证发布顺序和报告与最终字节的绑定。
