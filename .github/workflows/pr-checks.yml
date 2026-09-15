@@ -20,7 +20,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 12.3.4
+          version: 10.28.0
 
       - name: Get pnpm store directory
         shell: bash
