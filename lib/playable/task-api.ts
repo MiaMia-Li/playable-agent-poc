@@ -23,6 +23,7 @@ import {
   playableAgentReplySchema,
   requirementBriefSchema,
   revisionProposalSchema,
+  timelineCorrectionSchema,
   toGameplayBlueprintDocument,
   videoAnalysisStatusSchema,
   MAX_GAMEPLAY_ANNOTATIONS,
@@ -495,6 +496,14 @@ function taskListItem(task: PlayableTaskRecord) {
 function activeGameplayAnnotations(task: PlayableTaskRecord): GameplayAnnotation[] {
   const assetId = task.activeReferenceVideoAssetId
   return assetId ? task.gameplayAnnotations.filter((annotation) => annotation.assetId === assetId) : []
+}
+
+/** Identity of a statement regardless of id, which is minted per write. */
+function annotationKey(annotation: GameplayAnnotationDraft): string {
+  return JSON.stringify([
+    annotation.value,
+    annotation.evidence.map((evidence) => [evidence.startSeconds, evidence.endSeconds]),
+  ])
 }
 
 function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
@@ -1322,10 +1331,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   }
 
   /**
-   * The agent resends the whole list every turn, so this replaces rather than
-   * appends; an annotation the agent dropped is a deletion. Ids are minted per
-   * write because the drafts carry none, and the list is bound to the active
-   * reference video so it stays attributable after the user swaps videos.
+   * The agent resends its whole list every turn, so this replaces rather than
+   * appends; a chat annotation the agent dropped is a deletion. Ids are minted
+   * per write because the drafts carry none, and the list is bound to the
+   * active reference video so it stays attributable after the user swaps
+   * videos.
+   *
+   * Only the active video's chat annotations are the agent's to replace, and
+   * the list is re-read here rather than taken from the start of the turn: a
+   * correction the user made in the timeline while the agent was thinking
+   * exists only in the fresh copy, and writing the stale one back would erase
+   * it without a trace (spec section 7.6.5).
    */
   const storeGameplayAnnotations = async (
     task: PlayableTaskRecord,
@@ -1334,19 +1350,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
   ) => {
     const assetId = task.activeReferenceVideoAssetId
     if (!assetId) return
-    const current: GameplayAnnotation[] = drafts.map((draft) => ({
-      ...draft,
-      id: dependencies.generateId(),
-      assetId,
-      source: 'user',
-      confidence: 1,
-    }))
-    // Only the active video's list is replaced. The agent is shown just that
-    // list, so another video's annotations were never its to resend; dropping
-    // them here would delete the user's statements about a video they merely
-    // switched away from.
-    const others = task.gameplayAnnotations.filter((annotation) => annotation.assetId !== assetId)
-    const annotations = [...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
+    const latest =
+      (await dependencies.repository.findOwnedTask(task.id, userId))?.gameplayAnnotations ?? task.gameplayAnnotations
+    // Another video's annotations were never shown to the agent, so they were
+    // never its to resend; dropping them would delete the user's statements
+    // about a video they merely switched away from.
+    const others = latest.filter((annotation) => annotation.assetId !== assetId)
+    const timeline = latest.filter((annotation) => annotation.assetId === assetId && annotation.origin === 'timeline')
+    // The agent is told not to resend timeline annotations. An echo anyway
+    // would turn one statement into two, one of which a later turn could drop.
+    const timelineKeys = new Set(timeline.map(annotationKey))
+    const current: GameplayAnnotation[] = drafts
+      .filter((draft) => !timelineKeys.has(annotationKey(draft)))
+      .map((draft) => ({
+        ...draft,
+        id: dependencies.generateId(),
+        assetId,
+        source: 'user',
+        confidence: 1,
+        origin: 'chat',
+      }))
+    const annotations = [...timeline, ...current, ...others].slice(0, MAX_GAMEPLAY_ANNOTATIONS)
     await dependencies.repository.updateGameplayAnnotations(task.id, userId, annotations)
     task.gameplayAnnotations = annotations
   }
@@ -2045,12 +2069,36 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
      * The always-visible annotation list reads and deletes through here. It is
      * the only defence against the agent silently dropping an annotation when
      * it resends the list, so the user must be able to see and prune it
-     * without going through the agent.
+     * without going through the agent. Timeline corrections are written here
+     * too, directly, for the same reason: they are the user's own statements
+     * and need no agent to record them.
      */
     async annotations(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
-      if (request.method === 'DELETE') {
+      if (request.method === 'POST') {
+        const assetId = access.task.activeReferenceVideoAssetId
+        if (!assetId) return jsonError(409, 'No active reference video')
+        const parsed = timelineCorrectionSchema.safeParse(await request.json().catch(() => undefined))
+        if (!parsed.success) return jsonError(400, 'Invalid request')
+        if (access.task.gameplayAnnotations.length >= MAX_GAMEPLAY_ANNOTATIONS) {
+          return jsonError(409, 'Annotation limit reached')
+        }
+        const { value, startSeconds, endSeconds } = parsed.data
+        const annotation: GameplayAnnotation = {
+          id: dependencies.generateId(),
+          assetId,
+          source: 'user',
+          value,
+          evidence: [{ startSeconds, endSeconds, observation: value.slice(0, 500).trim() }],
+          confidence: 1,
+          origin: 'timeline',
+        }
+        const next = [...access.task.gameplayAnnotations, annotation]
+        const updated = await dependencies.repository.updateGameplayAnnotations(access.task.id, access.userId, next)
+        if (!updated) return jsonError(404, 'Not found')
+        access.task.gameplayAnnotations = next
+      } else if (request.method === 'DELETE') {
         const id = request.nextUrl.searchParams.get('id')
         if (!id) return jsonError(400, 'Invalid request')
         if (!access.task.gameplayAnnotations.some((annotation) => annotation.id === id)) {

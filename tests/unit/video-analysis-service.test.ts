@@ -6,7 +6,8 @@ import { runIntentComparison, runVideoAnalysis } from '@/lib/playable/video-anal
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
-  version: 2,
+  version: 3,
+  timeline: [],
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
   controls: [{ value: '点击', confidence: 0.9, evidence: [] }],
@@ -56,7 +57,7 @@ const analysis: PlayableVideoAnalysisRecord = {
   taskId: task.id,
   assetId: asset.id,
   status: 'pending',
-  pipelineVersion: 'qdai-video-v2',
+  pipelineVersion: 'video-analysis-v3',
   model: 'model',
   attempt: 1,
   mediaResolution: null,
@@ -233,7 +234,7 @@ describe('intent divergence comparison', () => {
       id: 'analysis-2',
       taskId: task.id,
       assetId: asset.id,
-      pipelineVersion: 'qdai-video-v2',
+      pipelineVersion: 'video-analysis-v3',
       model: 'model',
       attempt: 2,
       blueprint: { ...blueprint, intentDivergence: divergence },

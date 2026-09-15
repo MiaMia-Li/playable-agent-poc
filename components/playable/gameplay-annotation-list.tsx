@@ -53,7 +53,12 @@ export function GameplayAnnotationList({
                 <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
                   {formatRanges(annotation)}
                 </span>
-                <span className="min-w-0 flex-1 break-words">{annotation.value}</span>
+                <span className="min-w-0 flex-1 break-words">
+                  {annotation.origin === 'timeline' && (
+                    <span className="text-muted-foreground mr-1 rounded border px-1 py-px text-[10px]">时间轴</span>
+                  )}
+                  {annotation.value}
+                </span>
                 {onDelete && (
                   <button
                     type="button"

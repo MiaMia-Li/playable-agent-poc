@@ -72,7 +72,8 @@ const patchRevision: RevisionPlan = {
 }
 
 const gameplayBlueprint: GameplayBlueprint = {
-  version: 2,
+  version: 3,
+  timeline: [],
   summary: '点击相同目标后消除。',
   orientation: 'portrait',
   controls: [
@@ -679,6 +680,7 @@ function storedAnnotation(id: string, assetId: string, value: string): GameplayA
     value,
     evidence: [{ startSeconds: 3, endSeconds: 4, observation: value }],
     confidence: 1,
+    origin: 'chat',
   }
 }
 
@@ -1375,6 +1377,89 @@ describe('playable task API', () => {
     expect(task.gameplayAnnotations.map((annotation) => annotation.id)).toEqual(['a-1'])
 
     expect((await call('/api/playable-tasks/owned/annotations?id=b-1', 'DELETE')).status).toBe(404)
+  })
+
+  // A timeline correction is the user's own statement about the video, so it
+  // is written straight to the list, bound to the active video.
+  it('records a timeline correction for the active video', async () => {
+    harness.repository.assets.push(referenceVideo('video-a'), referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const task = harness.repository.tasks.get('owned')!
+    task.gameplayAnnotations = [storedAnnotation('a-1', 'video-a', '旧视频')]
+
+    const response = await harness.handlers.annotations(
+      request('/api/playable-tasks/owned/annotations', 'POST', {
+        value: '第 12 秒是点击，不是长按',
+        startSeconds: 12,
+        endSeconds: 13,
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      annotations: [
+        expect.objectContaining({
+          assetId: 'video-b',
+          origin: 'timeline',
+          value: '第 12 秒是点击，不是长按',
+          evidence: [{ startSeconds: 12, endSeconds: 13, observation: '第 12 秒是点击，不是长按' }],
+        }),
+      ],
+    })
+    expect(task.gameplayAnnotations.map((annotation) => annotation.assetId)).toEqual(['video-a', 'video-b'])
+  })
+
+  it('rejects a timeline correction without an active video or with an invalid range', async () => {
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const post = (body: unknown) =>
+      harness.handlers.annotations(request('/api/playable-tasks/owned/annotations', 'POST', body), context)
+    expect((await post({ value: '点击', startSeconds: 1, endSeconds: 2 })).status).toBe(409)
+
+    harness.repository.assets.push(referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    expect((await post({ value: '点击', startSeconds: 3, endSeconds: 2 })).status).toBe(400)
+    expect((await post({ value: '', startSeconds: 1, endSeconds: 2 })).status).toBe(400)
+  })
+
+  // The running turn read the list before the correction existed. Writing that
+  // stale list back whole would erase the correction without a trace.
+  it('keeps a timeline correction made while an agent turn was running', async () => {
+    harness.repository.assets.push(referenceVideo('video-b'))
+    await harness.repository.setActiveReferenceVideo('owned', 'user-1', 'video-b')
+    const correction: GameplayAnnotation = {
+      ...storedAnnotation('t-1', 'video-b', '第 12 秒是点击'),
+      origin: 'timeline',
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async () => {
+      // A separate request stored the correction into a task object the
+      // running turn does not hold.
+      const current = harness.repository.tasks.get('owned')!
+      harness.repository.tasks.set('owned', {
+        ...current,
+        gameplayAnnotations: [...current.gameplayAnnotations, correction],
+      })
+      return {
+        ...confirmationReply,
+        annotations: [
+          { value: '第 3 秒是滑动', evidence: [{ startSeconds: 3, endSeconds: 4, observation: '滑动' }] },
+          // An echo the agent was told not to send; it must not become a copy.
+          { value: correction.value, evidence: correction.evidence },
+        ],
+      }
+    })
+
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '第 3 秒是滑动' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+    ).text()
+
+    expect(harness.repository.tasks.get('owned')!.gameplayAnnotations).toEqual([
+      expect.objectContaining({ id: 't-1', origin: 'timeline' }),
+      expect.objectContaining({ assetId: 'video-b', value: '第 3 秒是滑动', origin: 'chat' }),
+    ])
   })
 
   it('rejects video analysis tool calls for cross-user assets and non-referenceVideo slots', async () => {

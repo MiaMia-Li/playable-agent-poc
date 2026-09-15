@@ -3,7 +3,7 @@
 > 文档基线：2026-09-11，2026-09-14 按网关实测结果修订，并对照代码库复核过一次可行性
 > 2026-09-14 二次修订：Phase 0 执行完毕，结果推翻 §0 对 `generationConfig` 的判断，见 §0.1
 > 状态：Phase 0–5 已实施（2026-09-14），Phase 6 随各阶段一并落地（**Verification Pass 暂缓，本期只做首轮分析**）。与原设计的差异见各阶段下的实施说明与 §6.4 末尾
-> 2026-09-15 三次修订：放慢片段绕行实验（§7.5.1）改写了 Verification Pass 的恢复条件；新增 §7.6 Gameplay Timeline（设计已定，未实施，见 §9 Phase 7）
+> 2026-09-15 三次修订：放慢片段绕行实验（§7.5.1）改写了 Verification Pass 的恢复条件；新增 §7.6 Gameplay Timeline（已实施，见 §9 Phase 7 的实施说明）
 > 相关决策：[ADR 0001](./adr/0001-gemini-direct-for-video-analysis.md)、[ADR 0002](./adr/0002-layered-gameplay-blueprint.md)
 > 前置约束：[AI 网关 Gemini 能力申请](./gateway-gemini-api-requests.md)
 > 术语以根目录 `CONTEXT.md` 为准
@@ -487,9 +487,9 @@ Verification Pass 暂缓**不影响**本节，标注层照做，而且它的分�
 
 实现上使用 `videoMetadata` 的 `startOffset` / `endOffset` 裁出标注所指区间，配合高 fps 与高 `media_resolution`。
 
-### 7.6 Gameplay Timeline：首轮草稿与逐段校正（未实施）
+### 7.6 Gameplay Timeline：首轮草稿与逐段校正
 
-> **状态：设计已定，未实施，排期见 §9 Phase 7。** 起因是 §7.5.1：唯一能以 30 fps 看原片的查证者是用户本人。与其让模型重看，不如让首轮给出一份可以逐段核对的草稿。
+> **状态：已实施（2026-09-15），与本节设计的差异见 §9 Phase 7 的实施说明。** 起因是 §7.5.1：唯一能以 30 fps 看原片的查证者是用户本人。与其让模型重看，不如让首轮给出一份可以逐段核对的草稿。
 
 #### 7.6.1 为什么是它
 
@@ -664,7 +664,15 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 
 常驻标注列表、分析状态文案、时长超限错误提示。
 
-### Phase 7：Gameplay Timeline（未实施）
+### Phase 7：Gameplay Timeline
+
+> **已实施（2026-09-15）。** 实施说明：
+>
+> - **跳转播放不走 Range。** 资产路由整段串流、不支持 Range 请求，浏览器无法在这样的视频里跳转。前端改为把参考视频整支拉成 Blob URL 再播放，跳转因此可靠；代价是先下载完整文件，但没有 Range 时播放本来也要下载完整文件。三份仓储实现都不必改。
+> - **Agent 落库前重读最新列表。** `storeGameplayAnnotations` 不再沿用开轮时读到的 task，而是写入前重新读取，保留 `origin = 'timeline'` 的标注，只替换 chat 那部分。
+> - **回显去重。** Agent 若把时间轴标注当成自己的草稿回传，按「内容 + 时间区间」比对后丢弃，避免一句话变成两条、其中一条日后被 Agent 删掉。
+> - `origin` 的缺省值在 zod 层补上，未做 migration；`timeline` 放在 schema 的 `orientation` 之后，让模型先写时间轴再写各主题字段。
+> - **尚未验证的验收项**：第一条（对 §7.5.1 那支录屏做真实的首轮分析）需要实际跑一次分析，尚未执行；其余各条由单元与集成测试覆盖。
 
 `timeline` schema 与 v3 版本号（§7.6.2）、提示词（§7.6.3）、常驻时间轴与跳转播放、逐段修正与 `POST .../annotations`、标注按 `origin` 分来源（§7.6.4–§7.6.5），以及在 `CONTEXT.md` 新增 Gameplay Timeline 词条。
 

@@ -2,11 +2,35 @@ import { describe, expect, it } from 'vitest'
 import {
   confirmationProposalSchema,
   defaultConfirmationPresentation,
+  gameplayAnnotationSchema,
   parsePlayableAgentOutput,
   playableAgentReplySchema,
   playableTaskPhases,
   revisionProposalSchema,
+  timelineCorrectionSchema,
 } from '@/lib/playable/schemas'
+
+describe('gameplay annotation origin', () => {
+  // Rows from before the timeline carry no origin, and every one of them was
+  // made in chat. Reading them any other way would put them out of reach of
+  // the agent's rewrite, so a chat statement the user retracted would stick.
+  it('reads an annotation stored without an origin as a chat annotation', () => {
+    const parsed = gameplayAnnotationSchema.parse({
+      id: 'a-1',
+      assetId: 'video-1',
+      source: 'user',
+      value: '第 12 秒是长按',
+      evidence: [{ startSeconds: 12, endSeconds: 12.5, observation: '长按' }],
+      confidence: 1,
+    })
+    expect(parsed.origin).toBe('chat')
+  })
+
+  it('rejects a timeline correction whose range runs backwards', () => {
+    expect(timelineCorrectionSchema.safeParse({ value: '点击', startSeconds: 5, endSeconds: 4 }).success).toBe(false)
+    expect(timelineCorrectionSchema.safeParse({ value: '点击', startSeconds: 4, endSeconds: 4 }).success).toBe(true)
+  })
+})
 
 const validProposal = {
   routing: { match: 'approximate', confidence: 0.84, differences: ['奖励表现使用模板默认效果'] },

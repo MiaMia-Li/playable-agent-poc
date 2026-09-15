@@ -56,6 +56,7 @@ import { Badge } from '@/components/ui/badge'
 import { ConfirmationTable, isConfirmationReady } from './confirmation-table'
 import { ResearchResultCard } from './research-result-card'
 import { GameplayAnnotationList } from './gameplay-annotation-list'
+import { GameplayTimeline, type TimelineCorrection } from './gameplay-timeline'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 
 const stages = [
@@ -162,6 +163,10 @@ interface ChatWorkspaceProps {
   onAnnotations?: (annotations: GameplayAnnotation[]) => void
   onDeleteAnnotation?: (annotation: GameplayAnnotation) => void
   deletingAnnotationId?: string
+  /** The active reference video's content URL, which the timeline plays and seeks in. */
+  referenceVideoUrl?: string
+  /** Stores a timeline correction as an annotation. Resolves false when it was not stored. */
+  onCorrectTimeline?: (correction: TimelineCorrection) => Promise<boolean>
 }
 
 interface ConversationAttachment {
@@ -350,6 +355,8 @@ export function ChatWorkspace({
   onAnnotations,
   onDeleteAnnotation,
   deletingAnnotationId,
+  referenceVideoUrl,
+  onCorrectTimeline,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [conversation, setConversation] = useState<ConversationMessage[]>(
@@ -1045,6 +1052,15 @@ export function ChatWorkspace({
                 </Button>
               )}
           </section>
+        )}
+
+        {!videoAnalysisUnavailable && gameplayBlueprint && gameplayBlueprint.timeline.length > 0 && (
+          <GameplayTimeline
+            segments={gameplayBlueprint.timeline}
+            annotations={gameplayAnnotations}
+            videoUrl={referenceVideoUrl}
+            onCorrect={onCorrectTimeline}
+          />
         )}
 
         {(gameplayAnnotations.length > 0 || videoAnalysisStatus || referenceVideoAwaitingAnalysis) && (

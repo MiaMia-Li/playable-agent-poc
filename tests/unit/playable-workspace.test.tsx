@@ -51,7 +51,8 @@ const revision: RevisionProposal = {
 }
 
 const blueprint = {
-  version: 2 as const,
+  version: 3 as const,
+  timeline: [],
   summary: '点击配对',
   orientation: 'portrait' as const,
   controls: [],

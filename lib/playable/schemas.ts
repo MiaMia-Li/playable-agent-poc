@@ -20,6 +20,38 @@ export const gameplayInferenceSchema = z.strictObject({
   evidence: z.array(gameplayEvidenceSchema).max(12),
 })
 
+export const MAX_TIMELINE_SEGMENTS = 40
+
+/**
+ * One stretch of the reference video. The timeline is the draft the user
+ * reviews segment by segment (spec section 7.6), so every field is something a
+ * person can check by jumping to `startSeconds` and watching.
+ */
+export const gameplayTimelineSegmentSchema = z.strictObject({
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+  phase: z.enum(['intro', 'tutorial', 'gameplay', 'transition', 'result', 'end_card']),
+  screen: z.string().trim().min(1).max(300),
+  /** Verbatim, empty when there is none. Untrusted evidence, like narration (spec section 5.3). */
+  onScreenText: z.string().trim().max(300),
+  /**
+   * Null for automatic play and transitions. `seenVia` says how the model knows
+   * about the input: a screen recording rarely shows the finger, and an input
+   * read off the game's response is the kind the model was found to invent
+   * (spec section 7.5.1), so the UI marks those as inferred.
+   */
+  playerInput: z
+    .strictObject({
+      action: z.enum(['tap', 'long_press', 'swipe', 'drag', 'unknown']),
+      target: z.string().trim().min(1).max(200),
+      seenVia: z.enum(['touch_indicator', 'guide_hand', 'ui_response']),
+    })
+    .nullable(),
+  response: z.string().trim().max(300),
+  audioCue: z.string().trim().max(200),
+  confidence: z.number().min(0).max(1),
+})
+
 /**
  * What the model produces and what gets stored. It deliberately has no
  * `annotations` field: this schema is also the source of the response schema
@@ -28,9 +60,13 @@ export const gameplayInferenceSchema = z.strictObject({
  * Annotations are attached on the way out, by `toGameplayBlueprintDocument`.
  */
 export const gameplayBlueprintSchema = z.strictObject({
-  version: z.literal(2),
+  version: z.literal(3),
   summary: z.string().trim().min(1).max(1000),
   orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
+  // Early in the schema because the response schema's property order is the
+  // order the model writes in, and the thematic fields below should be drawn
+  // from a timeline that already exists.
+  timeline: z.array(gameplayTimelineSegmentSchema).max(MAX_TIMELINE_SEGMENTS),
   controls: z.array(gameplayInferenceSchema).max(8),
   sceneStructure: gameplayInferenceSchema,
   entities: z.array(gameplayInferenceSchema).max(20),
@@ -59,17 +95,40 @@ export const gameplayAnnotationDraftSchema = z.strictObject({
   evidence: z.array(gameplayEvidenceSchema).min(1).max(12),
 })
 
+/**
+ * Where the user made the statement. The requirement agent rewrites its whole
+ * list every turn, so it may only replace the ones made in chat: a correction
+ * typed into the timeline while a turn is running would otherwise vanish when
+ * that turn writes its list back (spec section 7.6.5). Rows from before the
+ * timeline were all made in chat, hence the default.
+ */
+export const gameplayAnnotationOrigins = ['chat', 'timeline'] as const
+
 export const gameplayAnnotationSchema = z.strictObject({
   id: z.string().trim().min(1),
   assetId: z.string().trim().min(1),
   source: z.literal('user'),
   ...gameplayAnnotationDraftSchema.shape,
   confidence: z.literal(1),
+  origin: z.enum(gameplayAnnotationOrigins).default('chat'),
 })
 
 export const MAX_GAMEPLAY_ANNOTATIONS = 40
 
 export const gameplayAnnotationsSchema = z.array(gameplayAnnotationSchema).max(MAX_GAMEPLAY_ANNOTATIONS)
+
+/**
+ * A correction typed into the timeline. The form asks what actually happens in
+ * the video, so it skips the agent's observation-versus-intent split; spec
+ * section 11 accepts that a user may still type a requirement into it.
+ */
+export const timelineCorrectionSchema = z
+  .strictObject({
+    value: gameplayAnnotationDraftSchema.shape.value,
+    startSeconds: z.number().min(0),
+    endSeconds: z.number().min(0),
+  })
+  .refine((correction) => correction.endSeconds >= correction.startSeconds)
 
 /**
  * The reply carries drafts rather than stored annotations because it is
@@ -113,6 +172,9 @@ export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
 export type GameplayBlueprintDocument = z.infer<typeof gameplayBlueprintDocumentSchema>
 export type GameplayAnnotation = z.infer<typeof gameplayAnnotationSchema>
 export type GameplayAnnotationDraft = z.infer<typeof gameplayAnnotationDraftSchema>
+export type GameplayAnnotationOrigin = (typeof gameplayAnnotationOrigins)[number]
+export type GameplayTimelineSegment = z.infer<typeof gameplayTimelineSegmentSchema>
+export type TimelineCorrection = z.infer<typeof timelineCorrectionSchema>
 export type VideoAnalysisStatus = z.infer<typeof videoAnalysisStatusSchema>
 
 export const playableTaskPhases = [

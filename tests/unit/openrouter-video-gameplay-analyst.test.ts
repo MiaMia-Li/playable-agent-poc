@@ -6,7 +6,8 @@ import {
 } from '@/lib/playable/openrouter-video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
-  version: 2,
+  version: 3,
+  timeline: [],
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
   controls: [{ value: '点击', confidence: 0.9, evidence: [] }],

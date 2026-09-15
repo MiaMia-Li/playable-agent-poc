@@ -16,6 +16,7 @@ import type {
   PlayableTaskPhase,
   RequirementBrief,
   RevisionProposal,
+  TimelineCorrection,
   VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
 import { Button } from '@/components/ui/button'
@@ -212,6 +213,28 @@ export function PlayableWorkspace({
         // Left in the list, which is the honest outcome of a delete that failed.
       } finally {
         setDeletingAnnotationId(undefined)
+      }
+    },
+    [taskId],
+  )
+
+  // Written straight to the annotation list, not through the agent: the user
+  // is stating what the video shows, and the route keeps it out of reach of
+  // the agent's whole-list rewrite.
+  const handleCorrectTimeline = useCallback(
+    async (correction: TimelineCorrection) => {
+      try {
+        const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(correction),
+        })
+        if (!response.ok) return false
+        const body = (await response.json()) as { annotations?: GameplayAnnotation[] }
+        if (body.annotations) setGameplayAnnotations(body.annotations)
+        return true
+      } catch {
+        return false
       }
     },
     [taskId],
@@ -499,6 +522,12 @@ export function PlayableWorkspace({
           onAnnotations={setGameplayAnnotations}
           onDeleteAnnotation={(annotation) => void handleDeleteAnnotation(annotation)}
           deletingAnnotationId={deletingAnnotationId}
+          referenceVideoUrl={
+            activeReferenceVideoId
+              ? `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(activeReferenceVideoId)}`
+              : undefined
+          }
+          onCorrectTimeline={handleCorrectTimeline}
         />
         <PlayablePreview
           taskId={taskId}
