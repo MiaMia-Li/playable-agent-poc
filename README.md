@@ -60,11 +60,14 @@ SANDBOX_VERCEL_PROJECT_ID=
 MAX_SANDBOX_DURATION=300
 OPENROUTER_API_KEY=
 PLAYABLE_AGENT_MODEL=openai/gpt-5.6-sol
+PLAYABLE_SANDBOX_VALIDATION_ENABLED=1
 LOCAL_HARNESS_MODE=0
 LOCAL_CODEX_MODE=0
 ```
 
 Set `OPENROUTER_API_KEY` in `.env.local` for local server use and in the deployment secret manager for production. Do not commit its value. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
+
+`PLAYABLE_SANDBOX_VALIDATION_ENABLED` defaults to enabled. Set it to `0` to skip the host behavioral validation command, the Codex browser-acceptance phase, and its temporary validation checklist when diagnosing build latency. The platform still checks the artifact contract, offline resources, responsive layout, and credentials before publishing an artifact.
 
 The deployment network must resolve `vercel.com` and allow outbound HTTPS traffic to `vercel.com:443`, which is the API origin used by `@vercel/sandbox` 3.x. Run the connectivity preflight inside the deployed runtime or its release job:
 

@@ -62,6 +62,15 @@ existing configuration file. Keep the previous snapshot available for rollback.
 Actual speedup depends on how much a build previously spent installing browser
 tools. Animation time, gameplay debugging and model execution still remain.
 
+## Optional fast diagnostic mode
+
+Set `PLAYABLE_SANDBOX_VALIDATION_ENABLED=0` in the server environment to skip
+the host behavioral validation command, Codex browser acceptance, its validation
+checklist, and the two-phase preview flow. This is intended for build-latency
+diagnosis. The host still checks the artifact contract, offline resources,
+responsive viewport, and credentials. Remove the setting or set it to `1` to
+restore full validation; full validation is the default.
+
 References: [Vercel snapshots](https://vercel.com/docs/sandbox/concepts/snapshots),
 [system packages](https://vercel.com/kb/guide/how-to-install-system-packages-in-vercel-sandbox),
 [Playwright browser dependencies](https://playwright.dev/docs/browsers).

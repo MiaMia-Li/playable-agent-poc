@@ -20,6 +20,7 @@ import { confirmationProposalSchema } from './schemas'
 import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { PLAYABLE_SANDBOX_TOOLS_VERSION, PLAYABLE_TOOLS_CHECK } from './sandbox-tools'
+import { isPlayableSandboxValidationEnabled } from './validation-policy'
 
 interface SandboxCommandOptions {
   command: string
@@ -197,6 +198,7 @@ export async function runPlayableBuild(
   const confirmation = confirmationProposalSchema.parse(input.confirmation)
   const freeform = confirmation.routing.match === 'freeform'
   const serializedConfirmation = JSON.stringify(confirmation, null, 2)
+  const sandboxValidationEnabled = isPlayableSandboxValidationEnabled()
 
   dependencies.abortSignal?.throwIfAborted()
   const skillFiles = await readBuildSkillFiles(confirmation, dependencies.skillRoot)
@@ -329,7 +331,7 @@ export async function runPlayableBuild(
 
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
-    const earlyPreview = Boolean(input.onPreview && supportsFastPreview(confirmation))
+    const earlyPreview = Boolean(sandboxValidationEnabled && input.onPreview && supportsFastPreview(confirmation))
     let parameterPatched = false
     if (
       earlyPreview &&
@@ -444,22 +446,24 @@ export async function runPlayableBuild(
     }
     stage = 'integrity'
 
-    stage = 'validation'
-    input.onActivity?.('validating')
-    await dependencies.logger?.info('Validating playable behavior')
-    await requireSuccessfulCommand(
-      sandbox,
-      {
-        command: buildValidationCommand(confirmation),
-        workingDirectory: workspace,
-        env: {
-          PLAYABLE_MODE: confirmation.mode,
-          PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
+    if (sandboxValidationEnabled) {
+      stage = 'validation'
+      input.onActivity?.('validating')
+      await dependencies.logger?.info('Validating playable behavior')
+      await requireSuccessfulCommand(
+        sandbox,
+        {
+          command: buildValidationCommand(confirmation),
+          workingDirectory: workspace,
+          env: {
+            PLAYABLE_MODE: confirmation.mode,
+            PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
+          },
+          abortSignal: dependencies.abortSignal,
         },
-        abortSignal: dependencies.abortSignal,
-      },
-      'Playable validation failed',
-    )
+        'Playable validation failed',
+      )
+    }
 
     stage = 'artifact_check'
     const artifact = await sandbox.readBinaryFile({

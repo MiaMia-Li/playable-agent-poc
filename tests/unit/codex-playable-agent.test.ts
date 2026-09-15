@@ -342,6 +342,21 @@ describe('CodexPlayableAgent', () => {
     expect(prompt).toContain('test-freeform-playable.mjs')
   })
 
+  it.each([undefined, 'dragon_slots' as const])(
+    'omits Codex validation and checklists when Sandbox validation is disabled: %s',
+    (sourceTemplateId) => {
+      const prompt = createCodexBuildPrompt('exact', undefined, sourceTemplateId, 'center_collision', {
+        validationEnabled: false,
+      })
+
+      expect(prompt).toContain('full Codex validation is disabled')
+      expect(prompt).toContain('Do not run validation commands or browser acceptance')
+      expect(prompt).not.toContain('test-playable.mjs')
+      expect(prompt).not.toContain('test-freeform-playable.mjs')
+      expect(prompt).not.toContain('work/validation-checklist.md')
+    },
+  )
+
   it('tells 3D builds to adapt the current Three.js template without replacing its gameplay skeleton', () => {
     const prompt = createCodexBuildPrompt('exact', undefined, undefined, 'perspective_3d')
 

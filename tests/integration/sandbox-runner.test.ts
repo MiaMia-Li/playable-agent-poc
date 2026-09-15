@@ -179,7 +179,7 @@ function replaceArtifactCommands(sandbox: LocalSandbox, artifact: Uint8Array | s
       await writeFile(path.join(sandbox.defaultWorkingDirectory, 'work', 'output.html'), content)
       return { exitCode: 0, stdout: '', stderr: '' }
     }
-    if (options.command.includes('test-playable.mjs')) {
+    if (options.command.includes('test-freeform-playable.mjs')) {
       sandbox.commands.push(options)
       return { exitCode: 0, stdout: '', stderr: '' }
     }
@@ -188,6 +188,7 @@ function replaceArtifactCommands(sandbox: LocalSandbox, artifact: Uint8Array | s
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     temporaryDirectories.splice(0).map(async (directory) => {
       await execAsync('chmod -R u+w .', { cwd: directory }).catch(() => undefined)
@@ -335,7 +336,7 @@ describe('runPlayableBuild', () => {
           })
         },
       }),
-    ).rejects.toEqual(expect.objectContaining<Partial<PlayableBuildExecutionError>>({ stage: 'validation' }))
+    ).rejects.toEqual(expect.objectContaining<Partial<PlayableBuildExecutionError>>({ stage: 'artifact_check' }))
   }, 30_000)
 
   it('preserves the current perspective 3D template contract in an adapted build', async () => {
@@ -498,7 +499,7 @@ describe('runPlayableBuild', () => {
 
     expect(result.html).toContain(marker)
     const buildIndex = sandbox.commands.findIndex(({ command }) => command.includes('build-playable.mjs'))
-    const validationIndex = sandbox.commands.findIndex(({ command }) => command.includes('test-playable.mjs'))
+    const validationIndex = sandbox.commands.findIndex(({ command }) => command.includes('test-freeform-playable.mjs'))
     expect(buildIndex).toBeGreaterThanOrEqual(0)
     expect(validationIndex).toBeGreaterThan(buildIndex)
   }, 30_000)
@@ -568,7 +569,8 @@ describe('runPlayableBuild', () => {
 
     expect(Buffer.from(result.html)).toEqual(Buffer.from(preparedArtifact))
     expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
-    expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(true)
+    expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(true)
+    expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(false)
   }, 30_000)
 
   it('uses the agent artifact and generic validation for a freeform route', async () => {
@@ -610,7 +612,7 @@ describe('runPlayableBuild', () => {
     const sandbox = await createLocalSandbox()
     const run = sandbox.run.bind(sandbox)
     sandbox.run = async (options) =>
-      options.command.includes('test-playable.mjs')
+      options.command.includes('test-freeform-playable.mjs')
         ? { exitCode: 1, stdout: '', stderr: 'deterministic failure' }
         : run(options)
 
@@ -726,7 +728,7 @@ describe('runPlayableBuild', () => {
     const sandbox = await createLocalSandbox()
     const run = sandbox.run.bind(sandbox)
     sandbox.run = async (options) => {
-      if (options.command.includes('build-playable.mjs') || options.command.includes('test-playable.mjs')) {
+      if (options.command.includes('build-playable.mjs') || options.command.includes('test-freeform-playable.mjs')) {
         sandbox.commands.push(options)
         return { exitCode: 0, stdout: '', stderr: '' }
       }
@@ -908,7 +910,7 @@ describe('runPlayableBuild', () => {
     sandbox.destroyError = new Error('destroy failed')
     const run = sandbox.run.bind(sandbox)
     sandbox.run = async (options) =>
-      options.command.includes('test-playable.mjs')
+      options.command.includes('test-freeform-playable.mjs')
         ? { exitCode: 1, stdout: '', stderr: 'validation failed' }
         : run(options)
 
@@ -920,6 +922,39 @@ describe('runPlayableBuild', () => {
     ).rejects.toThrow('Playable validation failed')
     expect(sandbox.destroyed).toBe(true)
   })
+})
+
+it('skips all behavioral validation when disabled and keeps artifact safety checks', async () => {
+  vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
+  const sandbox = await createLocalSandbox()
+  const artifact = await readFile('public/playable-templates/center_collision.html')
+  replaceArtifactCommands(sandbox, artifact)
+  const run = sandbox.run.bind(sandbox)
+  sandbox.run = async (options) => {
+    if (options.command.includes('test-freeform-playable.mjs')) {
+      sandbox.commands.push(options)
+      return { exitCode: 1, stdout: '', stderr: 'validation must be skipped' }
+    }
+    return run(options)
+  }
+  const input = buildInput('center_collision', 'sk-validation-disabled-test')
+  input.onPreview = vi.fn(async () => undefined)
+  const phases: unknown[] = []
+
+  await expect(
+    runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ phase }) => {
+        phases.push(phase)
+      },
+    }),
+  ).resolves.toMatchObject({ html: expect.stringContaining('window.__PLAYABLE__') })
+
+  expect(phases).toEqual([undefined])
+  expect(input.onPreview).not.toHaveBeenCalled()
+  expect(sandbox.commands.some(({ command }) => command.includes('browser-acceptance.mjs'))).toBe(false)
+  expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(false)
+  expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(false)
 })
 
 // 编排测试用模拟浏览器报告，验证发布顺序和报告与最终字节的绑定。
