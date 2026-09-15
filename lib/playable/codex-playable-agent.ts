@@ -182,6 +182,8 @@ async function createProposal(
     gameplayAnnotations: input.annotations ?? [],
     currentArtifact: {
       hasArtifact: Boolean(input.hasArtifact),
+      versions: input.versions ?? [],
+      lockedRevisionBase: input.lockedRevisionBase ?? null,
       pendingRevision: input.pendingRevision ?? null,
     },
     capabilities: playableCapabilitiesForAgent(),

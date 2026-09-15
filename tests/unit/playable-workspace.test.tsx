@@ -78,6 +78,45 @@ afterEach(() => {
 })
 
 describe('PlayableWorkspace', () => {
+  it('sends the selected base build separately from the prompt and can return to automatic selection', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).endsWith('/versions'))
+        return Response.json({
+          builds: [
+            { id: 'build-2', version: 2, status: 'succeeded', current: false },
+            { id: 'build-5', version: 5, status: 'succeeded', current: true },
+            { id: 'failed', version: null, status: 'failed', current: false },
+          ],
+        })
+      return new Response(`${JSON.stringify({ type: 'informational', message: '收到修改需求' })}\n`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ChatWorkspace taskId="task-7" phase="ready" hasArtifact onProposal={vi.fn()} onPhase={vi.fn()} />)
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '修改基准版本' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: '基于 v2' }))
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '只删掉多余一行' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({
+          body: JSON.stringify({ message: '只删掉多余一行', baseBuildId: 'build-2' }),
+        }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '修改基准版本' })).toBeEnabled())
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '修改基准版本' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: '自动：根据对话选择版本' }))
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '调整标题' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({ body: JSON.stringify({ message: '调整标题' }) }),
+      ),
+    )
+  })
+
   it('does not expose shared AI credential controls to public users', () => {
     render(<PlayableWorkspace taskId="task-7" publicAccess />)
 
@@ -1071,7 +1110,9 @@ describe('PlayableWorkspace', () => {
     })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(responseStream)),
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/versions') ? Response.json({ builds: [] }) : new Response(responseStream),
+      ),
     )
 
     render(

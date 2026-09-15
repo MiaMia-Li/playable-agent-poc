@@ -51,6 +51,7 @@ import {
   uploadPlayableAsset,
 } from '@/lib/playable/reference-video-client'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -77,6 +78,7 @@ const phaseNames: Record<PlayableTaskPhase, string> = {
   cancelled: '已取消',
 }
 const requirementToolLabels: Record<string, string> = {
+  read_playable_version: '读取历史版本',
   update_requirement_brief: '更新 Brief',
   inspect_uploaded_assets: '检查素材',
   list_playable_capabilities: '读取能力',
@@ -353,6 +355,30 @@ export function ChatWorkspace({
   deletingAnnotationId,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
+  const [baseBuildId, setBaseBuildId] = useState('auto')
+  const [baseVersions, setBaseVersions] = useState<
+    { id: string; version: number; current: boolean; status?: string }[]
+  >([])
+  const [versionsError, setVersionsError] = useState(false)
+  useEffect(() => {
+    if (!hasArtifact) return
+    const controller = new AbortController()
+    void fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/versions`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Versions unavailable')
+        const body = await response.json()
+        if (!Array.isArray(body.builds)) throw new Error('Versions unavailable')
+        if (controller.signal.aborted) return
+        setBaseVersions(
+          body.builds.filter((build: { status: string; version: number | null }) => build.version !== null),
+        )
+        setVersionsError(false)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setVersionsError(true)
+      })
+    return () => controller.abort()
+  }, [taskId, hasArtifact, phase])
   const [conversation, setConversation] = useState<ConversationMessage[]>(
     initialConversation.length
       ? initialConversation
@@ -545,12 +571,18 @@ export function ChatWorkspace({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: content,
+            ...(baseBuildId !== 'auto' ? { baseBuildId } : {}),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
             ...(referenceSelection ? { referenceSelection } : {}),
           }),
           signal: controller.signal,
         })
-        if (response.status === 409) throw new Error('当前阶段不接受新需求，请新建试玩后继续')
+        if (response.status === 409)
+          throw new Error(
+            baseBuildId !== 'auto'
+              ? '所选基准版本不可用，或当前阶段不接受修改，请刷新后重试。'
+              : '当前阶段不接受新需求，请新建试玩后继续',
+          )
         if (!response.ok || !response.body) throw new Error('无法生成确认方案')
         if (appendToConversation) {
           setConversation((items) => items.map((item) => (item.id === id ? { ...item, status: 'sent' } : item)))
@@ -700,6 +732,7 @@ export function ChatWorkspace({
     },
     [
       canCompose,
+      baseBuildId,
       composerAttachments,
       hasArtifact,
       message,
@@ -1316,7 +1349,9 @@ export function ChatWorkspace({
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {showsRevisionConfirmation ? `v${revision?.targetVersion} 修改计划待确认` : '最新方案待确认'}
+                {showsRevisionConfirmation
+                  ? `基于 v${revision?.baseVersion} → v${revision?.targetVersion} 修改计划待确认`
+                  : '最新方案待确认'}
               </p>
               <p className="text-muted-foreground truncate text-xs">
                 {sending
@@ -1344,6 +1379,33 @@ export function ChatWorkspace({
 
       <div className="bg-background shrink-0 border-t p-4">
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
+          {hasArtifact && (
+            <div className="mb-2 space-y-1 px-1">
+              <Select
+                value={baseBuildId}
+                onValueChange={(value) => {
+                  setBaseBuildId(value)
+                }}
+                disabled={!canCompose || sending || confirming}
+              >
+                <SelectTrigger aria-label="修改基准版本" className="w-full">
+                  <SelectValue placeholder="选择修改基准" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">自动：根据对话选择版本</SelectItem>
+                  {baseVersions.map((build) => (
+                    <SelectItem key={build.id} value={build.id}>
+                      基于 v{build.version}
+                      {build.current ? '（最新）' : ''}
+                      {build.status === 'failed' || build.status === 'building' ? ' · 未完整验收' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">用于下一条修改需求；手动选择后将锁定该版本。</p>
+              {versionsError && <p className="text-destructive text-xs">版本列表加载失败，请刷新后重试。</p>}
+            </div>
+          )}
           {composerAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-2 pt-1" aria-live="polite">
               {composerAttachments.map((attachment) => (

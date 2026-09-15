@@ -61,7 +61,7 @@ import {
   type ReferenceImageAnalyst,
   type ReferenceImageAnalysis,
 } from './reference-image-analyst'
-import type { RequirementAnalysisToolCall } from './playable-agent-adapter'
+import type { AgentInput, RequirementAnalysisToolCall } from './playable-agent-adapter'
 import type {
   MarketResearchIndustrySummary,
   MarketResearchReport,
@@ -537,6 +537,12 @@ function safeVideoAnalysis(current: CurrentVideoAnalysis | undefined) {
 }
 
 const TOOL_PROGRESS_COPY = {
+  read_playable_version: {
+    tool_started: '正在读取历史版本',
+    tool_completed: '历史版本读取完成',
+    tool_pending: '历史版本尚未读取完成',
+    tool_failed: '历史版本暂不可用',
+  },
   inspect_reference_images: {
     tool_started: '正在分析参考图片',
     tool_completed: '参考图片分析完成',
@@ -601,6 +607,15 @@ async function ownedTask(
 
 function safeString(value: string, secrets: readonly string[] = []): string {
   return redactSecrets(value, secrets)
+}
+
+// 需求 Agent 只需理解历史代码；裁剪内嵌媒体以限制上下文，构建时仍读取完整的原始产物。
+function versionSourceForAgent(bytes: Uint8Array, apiKey: string) {
+  const source = safeString(new TextDecoder().decode(bytes), [apiKey]).replace(
+    /data:[^\s"'<>]*;base64,[A-Za-z0-9+/=]+/g,
+    'data:omitted',
+  )
+  return { html: source.slice(0, 160000), truncated: source.length > 160000 }
 }
 
 function requirementFailureMessage(cause: unknown): string {
@@ -711,8 +726,11 @@ function resolveRevisionProposal(input: {
   const successfulBuilds = input.builds.filter((build): build is PlayableBuildRecord & { artifactKey: string } =>
     Boolean(build.artifactKey),
   )
-  const baseIndex = successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
-  if (baseIndex < 0) throw new Error('Current playable build is missing')
+  const baseIndex =
+    input.plan.requestedBaseVersion != null
+      ? input.plan.requestedBaseVersion - 1
+      : successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
+  if (baseIndex < 0 || !successfulBuilds[baseIndex]) throw new Error('Revision base version is unavailable')
   return revisionProposalSchema.parse({
     id: input.id,
     baseBuildId: successfulBuilds[baseIndex].id,
@@ -1447,8 +1465,36 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     abortSignal?: AbortSignal
     onResearchProgress?: (stage: MarketResearchProgressStage) => void
   }): Promise<
-    ReferenceImageAnalysis | MarketResearchReport | { status: string; blueprint?: GameplayBlueprint; reason?: string }
+    | ReferenceImageAnalysis
+    | MarketResearchReport
+    | {
+        status: string
+        blueprint?: GameplayBlueprint
+        reason?: string
+        version?: number
+        confirmation?: ConfirmationProposal
+        html?: string
+        truncated?: boolean
+        acceptance?: 'passed' | 'pending' | 'failed'
+      }
   > => {
+    if (input.call.name === 'read_playable_version') {
+      const builds = (await dependencies.repository.listBuilds(input.task.id)).filter((build) =>
+        Boolean(build.artifactKey),
+      )
+      const build = builds[input.call.version - 1]
+      if (!build?.artifactKey) return { status: 'unavailable', reason: 'version_unavailable' }
+      const stream = await dependencies.artifactStore.get(build.artifactKey)
+      if (!stream) return { status: 'unavailable', reason: 'version_unavailable' }
+      input.cache.set(`read_version:${input.call.version}`, build.id)
+      return {
+        status: 'completed',
+        version: input.call.version,
+        acceptance: build.status === 'succeeded' ? 'passed' : build.status === 'building' ? 'pending' : 'failed',
+        confirmation: sanitizeConfirmation(build.confirmation, [input.apiKey]),
+        ...versionSourceForAgent(await readAll(stream), input.apiKey),
+      }
+    }
     if (input.call.name === 'search_market_references') {
       const repository = dependencies.repository
       if (
@@ -1699,7 +1745,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
       const body = (await request.json().catch(() => undefined)) as
-        | { message?: unknown; attachmentIds?: unknown; referenceSelection?: unknown }
+        | {
+            message?: unknown
+            attachmentIds?: unknown
+            referenceSelection?: unknown
+            baseBuildId?: unknown
+          }
         | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
       if (
@@ -1726,6 +1777,27 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       const apiKey = await dependencies.readApiKey(request, access.userId)
       if (!apiKey) return jsonError(503, 'AI service unavailable')
+      let lockedRevisionBase: AgentInput['lockedRevisionBase']
+      let lockedBaseConfirmation: ConfirmationProposal | undefined
+      // 手动基线先在服务端验证并锁定；模型的文字承诺不能代替真实产物选择。
+      if (body.baseBuildId !== undefined) {
+        if (typeof body.baseBuildId !== 'string' || !body.baseBuildId.trim())
+          return jsonError(400, 'Invalid base version')
+        const successfulBuilds = (await dependencies.repository.listBuilds(access.task.id)).filter((build) =>
+          Boolean(build.artifactKey),
+        )
+        const baseIndex = successfulBuilds.findIndex((build) => build.id === body.baseBuildId)
+        const baseBuild = successfulBuilds[baseIndex]
+        if (!baseBuild?.artifactKey) return jsonError(409, 'Selected base version unavailable')
+        const stream = await dependencies.artifactStore.get(baseBuild.artifactKey)
+        if (!stream) return jsonError(409, 'Selected base version unavailable')
+        lockedBaseConfirmation = sanitizeConfirmation(baseBuild.confirmation, [apiKey])
+        lockedRevisionBase = {
+          buildId: baseBuild.id,
+          version: baseIndex + 1,
+          ...versionSourceForAgent(await readAll(stream), apiKey),
+        }
+      }
       const message = body.message.trim()
       let referenceSelection: ResolvedReferenceSelection | undefined
       if (body.referenceSelection !== undefined) {
@@ -1796,6 +1868,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               // costs nothing, so capping the video tool would only stop the
               // agent from re-checking an analysis that finished mid-turn.
               const referenceToolBudget = { imagesExecuted: false }
+              if (lockedRevisionBase)
+                referenceToolCache.set(`read_version:${lockedRevisionBase.version}`, lockedRevisionBase.buildId)
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -1805,15 +1879,25 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     role: turn.role === 'agent' ? 'assistant' : 'user',
                     content: conversationContent(turn, [apiKey]),
                   })),
-                  confirmation: access.task.confirmation
-                    ? sanitizeConfirmation(access.task.confirmation, [apiKey])
-                    : null,
+                  lockedRevisionBase,
+                  confirmation:
+                    lockedBaseConfirmation ??
+                    (access.task.confirmation ? sanitizeConfirmation(access.task.confirmation, [apiKey]) : null),
                   brief: access.task.requirementBrief
                     ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
                     : null,
                   assets: assets.map(safeAsset),
                   attachedAssetIds,
                   hasArtifact: Boolean(access.task.latestArtifactKey),
+                  versions: builds
+                    .filter((build) => Boolean(build.artifactKey))
+                    .map((build, index) => ({
+                      version: index + 1,
+                      buildId: build.id,
+                      isLatest: build.artifactKey === access.task.latestArtifactKey,
+                      acceptance:
+                        build.status === 'succeeded' ? 'passed' : build.status === 'building' ? 'pending' : 'failed',
+                    })),
                   pendingRevision: access.task.pendingRevision
                     ? sanitizeRevisionProposal(access.task.pendingRevision, [apiKey])
                     : null,
@@ -1961,11 +2045,29 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
                 const revision = resolveRevisionProposal({
-                  plan: validatedReply.revision,
+                  plan: lockedRevisionBase
+                    ? {
+                        ...validatedReply.revision,
+                        requestedBaseVersion: lockedRevisionBase.version,
+                        strategy: 'patch',
+                      }
+                    : validatedReply.revision,
                   builds,
                   latestArtifactKey: access.task.latestArtifactKey,
                   id: dependencies.generateId(),
                 })
+                // 服务端再次校验模型输出，禁止把用户锁定的历史版本悄悄替换成最新版本。
+                if (lockedRevisionBase) {
+                  if (revision.baseBuildId !== lockedRevisionBase.buildId)
+                    throw new Error('Revision base version conflict')
+                  revision.baseSelection = 'manual'
+                }
+                if (
+                  revision.requestedBaseVersion != null &&
+                  referenceToolCache.get(`read_version:${revision.requestedBaseVersion}`) !== revision.baseBuildId
+                ) {
+                  throw new Error('Revision base version must be read before confirmation')
+                }
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
                   access.userId,
@@ -2217,6 +2319,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
         const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
         if (baseBuild && previousTemplate !== nextTemplate) {
+          if (revision.baseSelection === 'manual')
+            return jsonError(409, 'Selected base version requires the same implementation route')
           revision = { ...revision, strategy: 'regenerate' }
         }
       }

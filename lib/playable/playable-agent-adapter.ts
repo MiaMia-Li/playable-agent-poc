@@ -85,6 +85,9 @@ export interface AgentInput {
   gameplayBlueprint?: GameplayBlueprintDocument
   annotations?: GameplayAnnotation[]
   hasArtifact?: boolean
+  // 服务端锁定的真实历史产物优先于模型推断；html 可能裁剪，仅供需求分析。
+  lockedRevisionBase?: { buildId: string; version: number; html: string; truncated: boolean }
+  versions?: { version: number; buildId: string; isLatest: boolean; acceptance?: 'passed' | 'pending' | 'failed' }[]
   pendingRevision?: RevisionProposal | null
   referenceSelection?: ResolvedReferenceSelection
 }
@@ -95,6 +98,13 @@ export interface AgentReplyProgress {
 }
 
 export type RequirementAnalysisToolCall =
+  | {
+      name: 'read_playable_version'
+      version: number
+      assetIds: []
+      assetId: null
+      searchBrief?: null
+    }
   | {
       name: 'inspect_reference_images'
       assetIds: string[]

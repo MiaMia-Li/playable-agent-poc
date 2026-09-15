@@ -636,7 +636,19 @@ it('requires an explicit parameter decision from the model while accepting legac
   expect(requirementAgentStepOutputSchema.safeParse(value).success).toBe(false)
   for (const parameterOnly of [false, true]) {
     const next = structuredClone(value)
-    Object.assign(next.plan.calls[0].revision, { parameterOnly })
+    Object.assign(next.plan.calls[0].revision, { parameterOnly, requestedBaseVersion: null })
     expect(requirementAgentStepOutputSchema.parse(next).plan?.calls[0].revision?.parameterOnly).toBe(parameterOnly)
   }
+})
+
+it('parses historical version reads and rejects missing version numbers', () => {
+  const step = {
+    kind: 'tool_calls',
+    message: null,
+    reasoning: 'Read the requested baseline',
+    plan: null,
+    toolCalls: [{ name: 'read_playable_version', version: 2, assetIds: [], assetId: null, searchBrief: null }],
+  }
+  expect(parseRequirementAgentStep(step)).toMatchObject({ toolCalls: [{ name: 'read_playable_version', version: 2 }] })
+  expect(() => parseRequirementAgentStep({ ...step, toolCalls: [{ ...step.toolCalls[0], version: null }] })).toThrow()
 })
