@@ -83,18 +83,26 @@ export const ANALYST_INSTRUCTIONS = [
   'Never invent an input to explain a change on screen. Animations, transitions and automatic play are responses, not inputs; give them a null `playerInput`.',
   'At one frame per second you cannot measure how long an input is held. Use `long_press` only when a press is visible across several frames. When only the response is visible, choose the most likely action and mark it `ui_response`.',
   'In `coreLoop`, state how many times the loop is shown and how the outcomes differ between repetitions.',
-  'In `entities`, state what each entity is and its role in play, citing when it first appears. Describe its appearance only in `visualSpec.entityLooks`, using the same name.',
+  'In `entities`, start each value with the entity name, then state its role in play: what the player does with it or what it does. Never write a bare name. Cite when it first appears. Describe its appearance only in `visualSpec.entityLooks`, using the same name.',
+  'Give every entity a matching entry in `visualSpec.entityLooks`, guide hands and tutorial pointers included.',
   'Fill `visualSpec` as if briefing an artist who must redraw the ad without seeing the video.',
+  'Split `visualSpec.layout` into at least the top, middle and bottom regions of the gameplay screen, plus each separate screen such as an end card. For grids, racks or rows of repeated objects, state how many there are, in how many rows and columns, and how they are spaced.',
+  'List every in-game HUD element in `visualSpec.uiComponents`, such as level labels, counters, currency, buttons and progress bars, not only end-card UI. If the gameplay screen has no HUD, say so in the contents of its top layout region.',
   'Give positions as fractions of screen width and height, and colours as approximate hex values.',
   'For every UI component and entity look, state its shape, colours, outline or border, material and lighting, and text styling such as weight, stroke, gradient and shadow.',
   'For every effect, state what triggers it, how it moves (direction, scale bounce, easing) and roughly how long it lasts.',
-  'In `keyframes`, pick at most 12 moments that best show the visual target: the main layout at rest, each distinct screen, and each climax or reward moment. Prefer a settled frame over one mid-transition. In `focus`, say in one sentence what a reader should look at in that frame.',
+  // Three runs on one video gave three different stories for the same one-second
+  // transition, none of them visible in the frames either side of it.
+  'Describe effects only as far as the sampled frames show them. An effect that happens between two frames is seen only as its before and after states: describe those two states, and put any detail you did not see into `uncertainties` instead of filling it in.',
+  'In `keyframes`, pick at most 12 moments that best show the visual target: the main layout at rest, each distinct screen, and each climax or reward moment. Prefer a settled frame over one mid-transition. In `focus`, say in one sentence what a reader should look at in that frame, describing only what is visible at exactly that second, never what happens just before or after it.',
   '`visualSpec` and `keyframes` are exempt from brevity: prefer specific detail over short phrasing there.',
   'In `audio`, separate sound effects with what triggers them, background music with its mood, tempo and how it changes, and narration transcribed verbatim with its timestamp.',
   'State explicitly when something a playable usually has is not shown, such as a failure state or a CTA button.',
   'Phrase every entry in `uncertainties` as a question the user could answer by watching the video.',
   'Do not suggest how to rebuild the ad, which engine to use, or how to reduce its size. Those are requirements, not observations.',
-  'Use Chinese descriptions suitable for a downstream playable-game planning agent: concise everywhere except `visualSpec` and `keyframes`.',
+  // A run with the longer visual instructions answered entirely in English, so
+  // the language rule names every field it covers.
+  'Write every text value in Chinese, including every field of `visualSpec`, `keyframes`, `entities` and `timeline`; keep hex colours and quoted on-screen text as they appear. Be concise everywhere except `visualSpec` and `keyframes`.',
 ].join('\n')
 
 export const INTENT_INSTRUCTIONS = [

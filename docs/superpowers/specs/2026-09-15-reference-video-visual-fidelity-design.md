@@ -177,7 +177,7 @@ Sandbox 实现的步骤：
 
 1. 建 sandbox，运行 `ffmpeg -version`。失败则销毁 sandbox 并记为 `unavailable`，不尝试安装（ADR 0003）。
 2. 从 Blob 读出视频，写入 sandbox。
-3. 对每个 keyframe 执行一次 `ffmpeg -ss <seconds> -i <video> -frames:v 1 -vf "scale=w='if(gt(iw,ih),min(1280,iw),-2)':h='if(gt(iw,ih),-2,min(1280,ih))'" -q:v 3 <n>.jpg`，即长边不超过 1280px 的 JPEG。单帧失败只丢弃该帧。
+3. 对每个 keyframe 的秒数及其后 0.5 秒、1 秒各截一帧（夹在片尾之内，重合的只截一次，见 §13），每帧执行一次 `ffmpeg -ss <seconds> -i <video> -frames:v 1 -vf "scale=w='if(gt(iw,ih),min(1280,iw),-2)':h='if(gt(iw,ih),-2,min(1280,ih))'" -q:v 3 <n>.jpg`，即长边不超过 1280px 的 JPEG。单帧失败只丢弃该帧。
 4. 读回图片，逐张存入 Private Blob，键名 `tasks/<taskId>/analyses/<analysisId>/keyframes/<n>.jpg`（文件名只用序号）。
 5. 无论成败都销毁 sandbox。
 
@@ -195,7 +195,8 @@ keyframeStatus: text('keyframe_status', {
 }),
 // 与 blueprint.keyframes 按下标对应；截失败的帧不出现在这里。
 keyframeImages: jsonb('keyframe_images'),
-// [{ keyframeIndex: number, storageKey: string, mimeType: 'image/jpeg', width: number, height: number }]
+// [{ keyframeIndex: number, seconds: number, storageKey: string, mimeType: 'image/jpeg' }]
+// 每个 keyframe 至多 3 帧；seconds 是实际截取的位置。
 ```
 
 - 两列在分析成功时写入 `pending` 与 `[]`，其余状态下为 null。
@@ -238,10 +239,20 @@ visualDirection: z.enum(['match_reference', 'custom']),
 当 `visualDirection === 'match_reference'` 且路线不是 exact 时（按 §4.2，此时不会是 exact）：
 
 - `gameplay-blueprint.json` 照旧写入，含 `visualSpec` 与 `keyframes`。
-- 新增 `reference-keyframes/<n>.jpg` 与 `reference-keyframes.json`：
+- 新增 `reference-keyframes/<时刻>-<帧>.jpg` 与按时刻分组的 `reference-keyframes.json`：
 
 ```json
-[{ "workspacePath": "reference-keyframes/1.jpg", "seconds": 3, "focus": "…" }]
+[
+  {
+    "focus": "…",
+    "labelledSeconds": 26,
+    "frames": [
+      { "workspacePath": "reference-keyframes/4-1.jpg", "seconds": 26 },
+      { "workspacePath": "reference-keyframes/4-2.jpg", "seconds": 26.5 },
+      { "workspacePath": "reference-keyframes/4-3.jpg", "seconds": 27 }
+    ]
+  }
+]
 ```
 
 `custom` 时不写 Reference Keyframe 图片，`gameplay-blueprint.json` 仍含 `visualSpec`，但构建指令明示不以它为视觉目标。
@@ -346,3 +357,12 @@ freeform 与 approximate 的构建提示词（两个 Agent 实现各一处）新
 
 - `pattern` 是否与长度界限一样被网关拒绝（阶段 1 验证）。
 - 自我比对结果在构建活动面板里的具体呈现。
+
+## 13. 实测修订（2026-09-15）
+
+用一支 40 秒的倒水分类广告，经 OpenRouter（`google/gemini-3.5-flash`）连跑四次分析，并用本机 ffmpeg 截帧逐一核对：
+
+- **时间戳偏早约 1 秒。** 模型描述的纸袋打勾、纸袋消失、Play 按钮都真实存在，但分别出现在它所标秒数之后 0.5 到 1 秒；按标注秒数单截一帧，四个关键时刻里有三个截到了事件之前的画面。因此 §3.2 改为在标注秒数及其后 0.5 秒、1 秒各截一帧，构建端按时刻分组交给 Agent 自选（§5.1）。证据只来自这一支视频，若其它视频显示偏移方向不同，再改为前后对称截取。
+- **细节会被补写。** 同一段一秒内的转场，四次分析给出三种说法（烧毁、打勾后消失、化为星星），其中「露出已完成的瓶子」「黄色瓶塞上木塞」在任何一帧都不存在。在指令中要求只描述看到的帧、把没看到的细节写入 `uncertainties`，第四次运行没有可见改善。故不再依赖指令约束，改由构建指令规定：关键帧图像与 `visualSpec`／`focus` 文字冲突时以图像为准。
+- **运行间差异大于单条指令的效果。** 网格计数一次写对（6 行 × 8 列），另一次写成 8 列 7 行；分区数时多时少。单次对比无法判定某条指令是否有效。
+- **随之保留的指令修订**：全部文字字段写中文（加长指令后曾整份改用英文）；`entities` 写出玩法角色而非只写名称；每个实体都要有 `entityLooks`；版面至少切出上中下分区并写明网格数量；列出全部游戏内 HUD，没有时明说；特效与 `focus` 只描述帧内所见。

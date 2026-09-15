@@ -846,7 +846,15 @@ describe('playable task API', () => {
       },
       mediaResolution: 'high',
     })
-    harness.keyframeExtractor.extract.mockResolvedValueOnce([new Uint8Array([255, 216, 255]), null])
+    // Only the first cut of the first keyframe comes out; the second keyframe gets none.
+    harness.keyframeExtractor.extract.mockResolvedValueOnce([
+      new Uint8Array([255, 216, 255]),
+      null,
+      null,
+      null,
+      null,
+      null,
+    ])
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
 
     await harness.handlers.analysis(
@@ -862,7 +870,9 @@ describe('playable task API', () => {
     expect(pending.analysis.keyframeStatus).toBe('pending')
 
     await harness.scheduled[1]()
-    expect(harness.keyframeExtractor.extract).toHaveBeenCalledWith(expect.objectContaining({ seconds: [2, 20] }))
+    expect(harness.keyframeExtractor.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ seconds: [2, 2.5, 3, 20, 20.5, 21] }),
+    )
     const ready = await (await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context)).json()
     expect(ready.analysis.keyframeStatus).toBe('succeeded')
     expect(ready.analysis.keyframes).toEqual([
@@ -949,7 +959,7 @@ describe('playable task API', () => {
       intentText: null,
       blueprint: { ...gameplayBlueprint, keyframes: [{ seconds: 3, focus: '主界面布局' }] },
       keyframeStatus: 'succeeded',
-      keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
+      keyframeImages: [{ keyframeIndex: 0, seconds: 3.5, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -966,7 +976,14 @@ describe('playable task API', () => {
     }
 
     expect((await confirmAs('match_reference')).referenceKeyframes).toEqual([
-      { seconds: 3, focus: '主界面布局', mimeType: 'image/jpeg', bytes: new Uint8Array([255, 216, 255]) },
+      {
+        keyframeIndex: 0,
+        labelledSeconds: 3,
+        seconds: 3.5,
+        focus: '主界面布局',
+        mimeType: 'image/jpeg',
+        bytes: new Uint8Array([255, 216, 255]),
+      },
     ])
     // Borrowing the gameplay only: the build gets no visual target to copy.
     expect((await confirmAs('custom')).referenceKeyframes).toBeUndefined()

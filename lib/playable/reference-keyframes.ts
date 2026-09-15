@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import type { ArtifactStore } from './artifact-store'
 import { createPlayableSandbox, type PlayableSandbox } from './sandbox-runner'
 import type { ReferenceKeyframeBuildInput } from './reference-keyframes-build'
+import { REFERENCE_KEYFRAME_CUT_OFFSETS } from './schemas'
 import type { ReferenceKeyframe, ReferenceKeyframeImage, ReferenceKeyframeStatus } from './schemas'
 import type { PlayableTaskRecord, PlayableTaskRepository, PlayableVideoAnalysisRecord } from './task-api'
 import type { PlayableAsset } from './task-assets'
@@ -216,7 +217,9 @@ export async function loadReferenceKeyframesForBuild(input: {
     const stream = await input.artifactStore.get(image.storageKey)
     if (!stream) continue
     loaded.push({
-      seconds: keyframe.seconds,
+      keyframeIndex: image.keyframeIndex,
+      labelledSeconds: keyframe.seconds,
+      seconds: image.seconds,
       focus: keyframe.focus,
       mimeType: image.mimeType,
       bytes: await readAll(stream),
@@ -225,13 +228,38 @@ export async function loadReferenceKeyframesForBuild(input: {
   return loaded
 }
 
+/** Frames this close together are the same frame at one frame per second of evidence. */
+const SAME_FRAME_SECONDS = 0.01
+const LAST_FRAME_MARGIN_SECONDS = 0.05
+
+/**
+ * Which frames to cut: each keyframe's own second and the offsets after it,
+ * kept inside the video. A keyframe near the end collapses to fewer cuts
+ * rather than asking ffmpeg for frames past the last one.
+ */
+export function referenceKeyframeCutPlan(
+  keyframes: ReferenceKeyframe[],
+  durationSeconds?: number | null,
+): { keyframeIndex: number; cut: number; seconds: number }[] {
+  const lastFrame = durationSeconds ? Math.max(0, durationSeconds - LAST_FRAME_MARGIN_SECONDS) : Infinity
+  return keyframes.flatMap((keyframe, keyframeIndex) => {
+    const cuts: number[] = []
+    for (const offset of REFERENCE_KEYFRAME_CUT_OFFSETS) {
+      const seconds = Math.min(keyframe.seconds + offset, lastFrame)
+      if (!cuts.some((existing) => Math.abs(existing - seconds) < SAME_FRAME_SECONDS)) cuts.push(seconds)
+    }
+    return cuts.map((seconds, cut) => ({ keyframeIndex, cut, seconds }))
+  })
+}
+
 export function referenceKeyframeStorageKey(
   task: Pick<PlayableTaskRecord, 'id' | 'userId'>,
   analysisId: string,
   keyframeIndex: number,
+  cut: number,
 ): string {
   // Indices only: nothing the model wrote reaches a storage path.
-  return `users/${task.userId}/tasks/${task.id}/analyses/${analysisId}/keyframes/${keyframeIndex + 1}.jpg`
+  return `users/${task.userId}/tasks/${task.id}/analyses/${analysisId}/keyframes/${keyframeIndex + 1}-${cut + 1}.jpg`
 }
 
 export interface RunReferenceKeyframeExtractionInput {
@@ -282,10 +310,11 @@ export async function runReferenceKeyframeExtraction(
     await event('reference_keyframes_started', 'Reference keyframe extraction started')
     const stream = await input.artifactStore.get(input.asset.storageKey)
     if (!stream) throw new Error('Reference video is missing')
+    const plan = referenceKeyframeCutPlan(keyframes, input.asset.durationSeconds)
     const frames = await input.extractor.extract({
       analysisId: input.analysis.id,
       video: await readAll(stream),
-      seconds: keyframes.map((keyframe) => keyframe.seconds),
+      seconds: plan.map((entry) => entry.seconds),
       abortSignal: input.abortSignal,
     })
     if (frames === 'unavailable') {
@@ -294,11 +323,12 @@ export async function runReferenceKeyframeExtraction(
       return 'unavailable'
     }
     const images: ReferenceKeyframeImage[] = []
-    for (const [keyframeIndex, bytes] of frames.entries()) {
-      if (!bytes || keyframeIndex >= keyframes.length) continue
-      const storageKey = referenceKeyframeStorageKey(input.task, input.analysis.id, keyframeIndex)
+    for (const [index, bytes] of frames.entries()) {
+      const entry = plan[index]
+      if (!bytes || !entry) continue
+      const storageKey = referenceKeyframeStorageKey(input.task, input.analysis.id, entry.keyframeIndex, entry.cut)
       await input.artifactStore.put(storageKey, bytes, 'image/jpeg')
-      images.push({ keyframeIndex, storageKey, mimeType: 'image/jpeg' })
+      images.push({ keyframeIndex: entry.keyframeIndex, seconds: entry.seconds, storageKey, mimeType: 'image/jpeg' })
     }
     if (images.length === 0) throw new Error('No reference keyframe could be cut')
     await save('succeeded', images)

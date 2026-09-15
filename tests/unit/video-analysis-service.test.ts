@@ -217,7 +217,7 @@ describe('intent divergence comparison', () => {
     mediaResolution: 'default',
     intentText: '',
     keyframeStatus: 'succeeded',
-    keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
+    keyframeImages: [{ keyframeIndex: 0, seconds: 1, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     completedAt: new Date(),
   }
   const divergence = [{ value: '视频是连连看，不是三消', confidence: 0.9, evidence: [] }]
@@ -256,7 +256,7 @@ describe('intent divergence comparison', () => {
       // Same video, same keyframes: without these the Reference Keyframes would
       // vanish every time the intent moved on.
       keyframeStatus: 'succeeded',
-      keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
+      keyframeImages: [{ keyframeIndex: 0, seconds: 1, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     })
   })
 

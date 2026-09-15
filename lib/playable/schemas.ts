@@ -123,6 +123,14 @@ export const MAX_REFERENCE_KEYFRAMES = 12
 export const referenceKeyframeStatuses = ['pending', 'extracting', 'succeeded', 'failed', 'unavailable'] as const
 export const referenceKeyframeStatusSchema = z.enum(referenceKeyframeStatuses)
 
+/**
+ * Offsets after each second the model gave at which a frame is cut. Measured
+ * on a real run: the events a keyframe described showed up about a second
+ * after the second it was labelled with, so a single cut at the label missed
+ * them (spec §13).
+ */
+export const REFERENCE_KEYFRAME_CUT_OFFSETS = [0, 0.5, 1] as const
+
 /** One frame that was actually cut out, pointing back at `blueprint.keyframes[keyframeIndex]`. */
 export const referenceKeyframeImageSchema = z.strictObject({
   keyframeIndex: z
@@ -130,10 +138,14 @@ export const referenceKeyframeImageSchema = z.strictObject({
     .int()
     .min(0)
     .max(MAX_REFERENCE_KEYFRAMES - 1),
+  /** Where in the video this frame was cut, which may be after the keyframe's own second. */
+  seconds: z.number().min(0),
   storageKey: z.string().min(1),
   mimeType: z.literal('image/jpeg'),
 })
-export const referenceKeyframeImagesSchema = z.array(referenceKeyframeImageSchema).max(MAX_REFERENCE_KEYFRAMES)
+export const referenceKeyframeImagesSchema = z
+  .array(referenceKeyframeImageSchema)
+  .max(MAX_REFERENCE_KEYFRAMES * REFERENCE_KEYFRAME_CUT_OFFSETS.length)
 
 /** A moment the model picked to be cut out as a Reference Keyframe. */
 export const referenceKeyframeSchema = z.strictObject({

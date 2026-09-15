@@ -3,6 +3,7 @@ import {
   effectiveKeyframeStatus,
   keyframeFfmpegArgs,
   loadReferenceKeyframesForBuild,
+  referenceKeyframeCutPlan,
   runReferenceKeyframeExtraction,
   type ReferenceKeyframeSnapshot,
   SandboxReferenceKeyframeExtractor,
@@ -122,17 +123,27 @@ function harness(extractor?: ReferenceKeyframeExtractor) {
 }
 
 describe('reference keyframe extraction', () => {
-  it('stores the frames that were cut and records them against their keyframe index', async () => {
-    const extractor = { extract: vi.fn(async () => [null, new Uint8Array([1, 2])]) }
+  // The model's seconds ran about a second early on a real run, so each
+  // keyframe is cut at its second and just after it (spec §13).
+  it('cuts each keyframe at its second and just after, and records every frame that was cut', async () => {
+    const one = new Uint8Array([1])
+    const two = new Uint8Array([2])
+    const extractor = { extract: vi.fn(async () => [null, null, null, one, null, two]) }
     const { repository, artifactStore, run, statuses } = harness(extractor)
 
     await expect(run()).resolves.toBe('succeeded')
 
     expect(extractor.extract).toHaveBeenCalledWith(
-      expect.objectContaining({ analysisId: 'analysis-1', seconds: [1, 29], video: new Uint8Array([9]) }),
+      expect.objectContaining({
+        analysisId: 'analysis-1',
+        seconds: [1, 1.5, 2, 29, 29.5, 30],
+        video: new Uint8Array([9]),
+      }),
     )
-    expect(artifactStore.put).toHaveBeenCalledTimes(1)
-    expect(artifactStore.put.mock.calls[0][0]).toBe('users/user-1/tasks/task-1/analyses/analysis-1/keyframes/2.jpg')
+    expect(artifactStore.put.mock.calls.map((call) => call[0])).toEqual([
+      'users/user-1/tasks/task-1/analyses/analysis-1/keyframes/2-1.jpg',
+      'users/user-1/tasks/task-1/analyses/analysis-1/keyframes/2-3.jpg',
+    ])
     expect(statuses()).toEqual(['extracting', 'succeeded'])
     // Written against every attempt of this video that picked these keyframes.
     expect(repository.saveReferenceKeyframes).toHaveBeenLastCalledWith({
@@ -142,8 +153,21 @@ describe('reference keyframe extraction', () => {
       fromAttempt: 2,
       keyframes: blueprint.keyframes,
       status: 'succeeded',
-      images: [{ keyframeIndex: 1, storageKey: artifactStore.put.mock.calls[0][0], mimeType: 'image/jpeg' }],
+      images: [
+        { keyframeIndex: 1, seconds: 29, storageKey: artifactStore.put.mock.calls[0][0], mimeType: 'image/jpeg' },
+        { keyframeIndex: 1, seconds: 30, storageKey: artifactStore.put.mock.calls[1][0], mimeType: 'image/jpeg' },
+      ],
     })
+  })
+
+  it('keeps cuts inside the video, collapsing those that land on the last frame', () => {
+    expect(referenceKeyframeCutPlan([{ seconds: 31.5, focus: '结束卡' }], 32)).toEqual([
+      { keyframeIndex: 0, cut: 0, seconds: 31.5 },
+      { keyframeIndex: 0, cut: 1, seconds: 31.95 },
+    ])
+    expect(referenceKeyframeCutPlan([{ seconds: 3, focus: '开局' }], null).map((entry) => entry.seconds)).toEqual([
+      3, 3.5, 4,
+    ])
   })
 
   it('succeeds with nothing to cut when the model picked no keyframes', async () => {
@@ -254,7 +278,7 @@ describe('keyframe helpers', () => {
 })
 
 describe('reference keyframes for a build', () => {
-  const images = [{ keyframeIndex: 1, storageKey: 'keyframe-2', mimeType: 'image/jpeg' as const }]
+  const images = [{ keyframeIndex: 1, seconds: 29.5, storageKey: 'keyframe-2', mimeType: 'image/jpeg' as const }]
   const store = {
     get: vi.fn(
       async () =>
@@ -280,7 +304,14 @@ describe('reference keyframes for a build', () => {
     const sleep = vi.fn(async () => undefined)
 
     await expect(loadReferenceKeyframesForBuild({ read, artifactStore: store, sleep })).resolves.toEqual([
-      { seconds: 29, focus: 'EPIC WIN 结算页', mimeType: 'image/jpeg', bytes: new Uint8Array([5]) },
+      {
+        keyframeIndex: 1,
+        labelledSeconds: 29,
+        seconds: 29.5,
+        focus: 'EPIC WIN 结算页',
+        mimeType: 'image/jpeg',
+        bytes: new Uint8Array([5]),
+      },
     ])
     expect(sleep).toHaveBeenCalledOnce()
   })
