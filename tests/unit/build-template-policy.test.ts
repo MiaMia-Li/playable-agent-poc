@@ -1,3 +1,4 @@
+import { sourceTemplateFile } from '@/lib/playable/build-skill'
 import { expect, it } from 'vitest'
 import { access } from 'node:fs/promises'
 import { sourceTemplateIds, playableModeIds } from '@/lib/playable/types'
@@ -21,8 +22,8 @@ const revisions = (strategy: (typeof strategies)[number]) =>
     : undefined
 
 it.each(sourceTemplateIds)('模板源文件和适配说明存在：%s', async (id) => {
-  await access(`skills/mahjong-pair-match-playable/assets/templates/${id}/source.html`)
-  await access(`skills/mahjong-pair-match-playable/references/templates/${id}.md`)
+  await access(sourceTemplateFile(id))
+  await access(sourceTemplateFile(id).replace(`/assets/templates/${id}/source.html`, `/references/templates/${id}.md`))
 })
 
 it.each(

@@ -1,10 +1,56 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { afterEach, expect, it } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { BuildTimeline } from '@/components/playable/build-timeline'
 
 afterEach(cleanup)
+it('运行时持续计时，结束后保留累计阶段耗时且不虚构浏览器验收', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-09-14T00:00:00Z'))
+  const at = Date.now()
+  const events = [
+    { id: 'start', type: 'build_started', createdAt: new Date(at).toISOString() },
+    {
+      id: 'model',
+      type: 'build_activity_stage_started',
+      message: JSON.stringify({ version: 1, detail: { timing: { stage: 'model', at } } }),
+    },
+  ]
+  try {
+    const view = render(<BuildTimeline running events={events} />)
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('正在构建 3 秒 · 模型修改')
+    expect(screen.getByLabelText('构建阶段耗时')).toHaveTextContent('0分3秒 · 进行中')
+    view.rerender(
+      <BuildTimeline
+        running={false}
+        events={[
+          ...events,
+          {
+            id: 'model-end',
+            type: 'build_activity_stage_completed',
+            message: JSON.stringify({
+              version: 1,
+              detail: { timing: { stage: 'model', at: at + 3000, durationMs: 3000 } },
+            }),
+          },
+          { id: 'end', type: 'build_succeeded', createdAt: new Date(at + 3000).toISOString() },
+        ]}
+      />,
+    )
+    act(() => {
+      vi.advanceTimersByTime(2000)
+    })
+    expect(screen.getByLabelText('构建阶段耗时')).toHaveTextContent('浏览器验收未记录')
+    expect(screen.getByRole('status')).toHaveTextContent('已工作 3 秒')
+    view.unmount()
+  } finally {
+    vi.useRealTimers()
+  }
+})
 it('历史完成协议不展示，只有应用发布成功才提示可以体验', () => {
   const events = [
     { id: 'start', type: 'build_started' },

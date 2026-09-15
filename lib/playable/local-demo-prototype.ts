@@ -620,6 +620,7 @@ class LocalDemoAgent implements PlayableAgentAdapter {
     const workspace = await mkdtemp(path.join(tmpdir(), 'playable-local-demo-'))
     const outputPath = path.join(workspace, 'playable.html')
     const starterRoot = path.join(process.cwd(), 'skills/mahjong-pair-match-playable/assets/starter')
+    const freeformCheck = path.join(process.cwd(), 'skills/_shared/assets/starter/work/test-freeform-playable.mjs')
     try {
       const assets = input.assets ?? []
       const assetManifest = createAssetSourceManifest(input.confirmation, assets)
@@ -643,13 +644,13 @@ class LocalDemoAgent implements PlayableAgentAdapter {
         await writeFile(outputPath, input.baseHtml, 'utf8')
         await execFileAsync(process.execPath, [
           input.confirmation.sourceTemplateId || input.confirmation.routing.match === 'freeform'
-            ? path.join(starterRoot, 'work/test-freeform-playable.mjs')
+            ? freeformCheck
             : path.join(starterRoot, 'work/test-playable.mjs'),
           outputPath,
         ])
       } else if (input.confirmation.routing.match === 'freeform') {
         await writeFile(outputPath, createLocalFreeformPlayable(input.confirmation.storeUrl), 'utf8')
-        await execFileAsync(process.execPath, [path.join(starterRoot, 'work/test-freeform-playable.mjs'), outputPath])
+        await execFileAsync(process.execPath, [freeformCheck, outputPath])
       } else {
         await execFileAsync(
           process.execPath,

@@ -74,6 +74,22 @@ export const requirementAgentStepSchema = z.strictObject({
   plan: requirementAgentPlanSchema.nullable(),
 })
 
+// 模型严格输出要求每个属性都必填；历史数据仍使用上面的兼容 schema，允许缺少新增字段。
+export const requirementAgentStepOutputSchema = requirementAgentStepSchema.extend({
+  plan: requirementAgentPlanSchema
+    .extend({
+      calls: z
+        .array(
+          requirementToolCallSchema.extend({
+            revision: revisionPlanSchema.extend({ parameterOnly: z.boolean() }).nullable(),
+          }),
+        )
+        .min(1)
+        .max(8),
+    })
+    .nullable(),
+})
+
 export const MAX_REQUIREMENT_AGENT_STEPS = 6
 
 export type RequirementAgentStep =
@@ -489,6 +505,7 @@ export function executeRequirementToolPlan(input: {
 }
 
 export const REQUIREMENT_AGENT_INSTRUCTIONS = [
+  'For revisions changing only title, CTA text, disclaimer, locale or store URL, set parameterOnly true in the revision plan. Never set it for gameplay, rewards, round order, layout, images or audio changes.',
   'You are a conversational game producer operating through domain tools.',
   'Return one model step matching the supplied schema. Use kind tool_calls with plan null to request reference analysis, or kind terminal with an existing requirement plan and no toolCalls to finish.',
   'You may request inspect_reference_images with one or more uploaded image assetIds and assetId null, or analyze_reference_video with one video assetId and an empty assetIds array.',

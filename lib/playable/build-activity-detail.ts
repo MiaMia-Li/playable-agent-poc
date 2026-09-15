@@ -1,7 +1,9 @@
 import { cliBuildActivity, harnessBuildActivity, type BuildActivityCallback } from './build-activity'
+import { readBuildTiming, type BuildTiming } from './build-timing'
 
 /** 仅保存公开的执行信息，不接受原始模型载荷、隐藏推理或进程环境。 */
 export interface BuildActivityDetail {
+  timing?: BuildTiming
   id?: string
   tool?: string
   input?: string
@@ -121,12 +123,15 @@ export function sanitizeBuildActivityDetail(detail: BuildActivityDetail, secrets
       .replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '')
     return safe.length > 24000 ? safe.slice(0, 24000) + '\n[内容过长，已截断]' : safe
   }
-  return Object.fromEntries(
-    ['id', 'tool', 'input', 'output', 'text'].flatMap((key) => {
-      const value = detail[key as keyof BuildActivityDetail]
-      return typeof value === 'string' ? [[key, sanitize(value)]] : []
-    }),
-  )
+  return {
+    ...Object.fromEntries(
+      ['id', 'tool', 'input', 'output', 'text'].flatMap((key) => {
+        const value = detail[key as keyof BuildActivityDetail]
+        return typeof value === 'string' ? [[key, sanitize(value)]] : []
+      }),
+    ),
+    ...(readBuildTiming(detail.timing) ? { timing: readBuildTiming(detail.timing) } : {}),
+  }
 }
 
 /** 只解析本功能写入的版本化详情；历史文案和任意原始事件不能作为详情展示。 */
@@ -135,11 +140,14 @@ export function readBuildActivityDetail(message?: string): BuildActivityDetail |
   try {
     const value = JSON.parse(message)
     if (value.version !== 1 || !value.detail || typeof value.detail !== 'object') return
-    return Object.fromEntries(
-      ['id', 'tool', 'input', 'output', 'text'].flatMap((key) =>
-        typeof value.detail[key] === 'string' ? [[key, value.detail[key]]] : [],
+    return {
+      ...Object.fromEntries(
+        ['id', 'tool', 'input', 'output', 'text'].flatMap((key) =>
+          typeof value.detail[key] === 'string' ? [[key, value.detail[key]]] : [],
+        ),
       ),
-    )
+      ...(readBuildTiming(value.detail.timing) ? { timing: readBuildTiming(value.detail.timing) } : {}),
+    }
   } catch {
     return
   }

@@ -14,6 +14,7 @@ const infrastructure = vi.hoisted(() => {
     repository: {
       createTask: vi.fn(),
       findOwnedTask: vi.fn(),
+      findBuild: vi.fn(),
       appendMessage: vi.fn(),
       setAwaitingConfirmation: vi.fn(),
       claimBuild: vi.fn(),
@@ -174,6 +175,9 @@ describe('real playable task route wiring', () => {
     expect(infrastructure.repository.touchBuild).toHaveBeenCalledWith('task-1', 'build-1')
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
       onActivity: expect.any(Function),
+      onPreview: expect.any(Function),
+      baseConfirmation: undefined,
+      reusableScenarios: undefined,
       taskId: 'task-1',
       apiKey: 'sk-shared-key',
       confirmation,

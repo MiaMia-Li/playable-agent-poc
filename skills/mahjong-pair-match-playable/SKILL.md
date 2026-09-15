@@ -1,6 +1,6 @@
 ---
 name: mahjong-pair-match-playable
-description: 'Build and package single-file playable ads. Adapt four bundled standalone HTML games or build from four configurable Mahjong modes; generate directly when neither fits.'
+description: 'Build and validate the four Mahjong pair-match modes: center collision, top rack, gravity fill and perspective 3D.'
 ---
 
 # Mahjong Pair-Match Playable
@@ -13,20 +13,7 @@ This Skill is the Agent instruction layer inside the versioned `mahjong-pair-mat
 
 ## 1. Choose a gameplay route
 
-### Selected standalone HTML templates
-
-When `sourceTemplateId` is present in the confirmed configuration, read only its reference below and use `assets/templates/<sourceTemplateId>/source.html` as the initial implementation. For a patch revision, use `current-playable.html` as the base instead. A selected template already answers the gameplay-selection question.
-
-| Source template ID | User-facing name | Reference |
-| --- | --- | --- |
-| `dragon_slots` | 金龙麻将转轴 | [references/templates/dragon_slots.md](references/templates/dragon_slots.md) |
-| `dragon_reward_wheel` | 金龙转盘集奖 | [references/templates/dragon_reward_wheel.md](references/templates/dragon_reward_wheel.md) |
-| `zeus_scatter` | 宙斯 Scatter 转轴 | [references/templates/zeus_scatter.md](references/templates/zeus_scatter.md) |
-| `balloon_master` | 彩球转盘消除 | [references/templates/balloon_master.md](references/templates/balloon_master.md) |
-
-These templates use their own Cocos or Laya engine and the standalone HTML build pipeline. Classify their gameplay match with the same `exact` / `approximate` / `freeform` policy as the Mahjong templates; the build pipeline does not determine the match. They are separate from `plugin.json.modes`, whose IDs select the shared Mahjong runtime. A legacy `mode` such as `gravity_fill` is only scaffold metadata when `sourceTemplateId` is set; it must not replace the selected game's input model or rules. The confirmed gameplay and revision requirements override source defaults. Preserve only behavior the user has not requested to change.
-
-### Configurable Mahjong modes and new games
+### Configurable Mahjong modes
 
 If the user has not already chosen or described a mechanic, the first question must be: **选择哪一种玩法，或者描述你想参考的玩法？** Offer these routes:
 
@@ -62,8 +49,6 @@ After the gameplay route is known, read [references/configuration-checklist.md](
 - Ask the user to approve or amend the whole table once. Do not start implementation before that approval. Do not reintroduce the old eight-stage confirmation sequence.
 
 ## 3. Generate after approval
-
-For a selected standalone HTML template, follow [references/templates/adaptation.md](references/templates/adaptation.md) and its template reference. Modify the seeded `output.html` in place (or create it from `current-playable.html` for a patch revision). Preserve embedded assets and the existing engine while implementing every confirmed change. Do not run the shared Mahjong build command. The direct-generation instructions below apply only when no `sourceTemplateId` is selected.
 
 For `exact` and `approximate` routes, use the chosen template immediately after the consolidated confirmation is approved. For `freeform`, create the requested implementation directly in `output.html`; do not run the registered template build command.
 
@@ -107,7 +92,7 @@ When the platform is AppLovin:
 
 ## Required validation
 
-For standalone HTML templates, use the structural freeform check plus the template-specific browser acceptance checks described in [references/templates/adaptation.md](references/templates/adaptation.md). For new freeform games, also use the freeform check and browser checks derived from the confirmed gameplay. The freeform check alone does not validate gameplay.
+Standalone source templates and freeform games use separate skills selected by the platform; this entry covers Mahjong modes only.
 
 For registered Mahjong modes, run the included behavioral test:
 
@@ -128,3 +113,18 @@ For Mahjong modes, also verify in a browser:
 - portrait and landscape both remain fully visible and interactive.
 
 Publish the validated artifact for human review. Only after explicit approval, expose the final HTML, production configuration, asset-source manifest, and validation report. Each report must identify the Plugin and runtime versions plus known routing differences. Keep extracted references, screenshots, scripts, and intermediate QA artifacts in a work directory.
+
+## Browser acceptance entry
+
+Use `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs`
+for browser checks. Export a default async function from scenario.mjs receiving
+`{ page, context, check, capture, clickCanvas }`. Exercise real inputs and call
+`check(name, observedCondition)` for mismatch, matching motion, score, ending, mute,
+CTA and layout assertions. The runner collects network/console failures and both
+orientation screenshots; inspect them once. Each invocation is timed by the host.
+The platform has already approved confirmed builds; do not repeat confirmation.
+
+Shared dependency: the platform merges `skills/_shared/` into this Skill workspace
+for `assets/starter/work/browser-acceptance.mjs` and `test-freeform-playable.mjs`.
+When packaging this Skill outside the application, include those shared tools at
+the same workspace paths.

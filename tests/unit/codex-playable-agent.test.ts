@@ -1,3 +1,5 @@
+import { executeBuildAgent } from '@/lib/playable/codex-playable-agent'
+import type { PlayableSandbox } from '@/lib/playable/sandbox-runner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   AgentInput,
@@ -795,4 +797,22 @@ describe('CodexPlayableAgent', () => {
 
     await expect(build).rejects.toThrow('build aborted')
   })
+})
+
+it('preserves the execution timeout when session cleanup also fails', async () => {
+  const original = new DOMException('Timed out', 'TimeoutError')
+  harnessMocks.stream.mockRejectedValueOnce(original)
+  harnessMocks.destroy.mockRejectedValueOnce(new Error('command_not_found_or_exited'))
+  await expect(
+    executeBuildAgent(
+      {
+        taskId: 'cleanup-test',
+        sandbox: {} as PlayableSandbox,
+        authEnvironment: { CODEX_API_KEY: 'sk-unit-test', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' },
+      },
+      `${process.cwd()}/skills/mahjong-pair-match-playable`,
+      'exact',
+      undefined,
+    ),
+  ).rejects.toBe(original)
 })

@@ -1,8 +1,10 @@
+import { readBuildSkillFiles } from './build-skill'
+import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT, supportsFastPreview } from './preview-build'
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
 import { reportCliBuildActivity } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { toJSONSchema, z } from 'zod'
@@ -24,7 +26,7 @@ import {
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
-  requirementAgentStepSchema,
+  requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { marketResearchReportSchema } from './research/schemas'
@@ -44,7 +46,7 @@ function codexOutputSchema(schema: z.ZodType): Record<string, unknown> {
 }
 
 export function requirementPlanOutputSchema(): Record<string, unknown> {
-  return codexOutputSchema(requirementAgentStepSchema)
+  return codexOutputSchema(requirementAgentStepOutputSchema)
 }
 
 export interface CodexInvocation {
@@ -213,7 +215,12 @@ function safeWorkspaceFilename(id: string, filename: string): string {
 
 async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: string): Promise<string> {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'playable-codex-work-'))
-  await cp(skillRoot, workspace, { recursive: true })
+  input.onActivity?.('transferring')
+  for (const file of await readBuildSkillFiles(input.confirmation, skillRoot)) {
+    const target = path.join(workspace, file.relativePath)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.content)
+  }
   await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation, null, 2), 'utf8')
   if (input.revision) {
     await writeFile(path.join(workspace, 'revision-plan.json'), JSON.stringify(input.revision, null, 2), 'utf8')
@@ -338,6 +345,54 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
     try {
       input.onActivity?.('preparing')
       workspace = await prepareLocalWorkspace(input, this.skillRoot)
+      // CLI 也采用同一云端浏览器检查；本地只负责模型修改，避免再安装一份浏览器。
+      if (input.onPreview && supportsFastPreview(input.confirmation) && !this.buildRunner) {
+        const localWorkspace = workspace
+        return await runPlayableBuild(input, {
+          skillRoot: this.skillRoot,
+          abortSignal: controller.signal,
+          executeAgent: async ({ phase, sandbox, workspace: remoteWorkspace, abortSignal }) => {
+            const current = await sandbox.readTextFile({ path: path.join(remoteWorkspace, 'output.html'), abortSignal })
+            if (current) await writeFile(path.join(localWorkspace, 'output.html'), current)
+            input.onActivity?.('agent_started')
+            const completion = await this.invokeCodex({
+              workspace: localWorkspace,
+              sandbox: 'workspace-write',
+              reasoningEffort: 'medium',
+              abortSignal: abortSignal ?? controller.signal,
+              schema: codexOutputSchema(completionSchema),
+              onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
+              prompt: [
+                phase === 'preview' ? PREVIEW_BUILD_PROMPT : FULL_ACCEPTANCE_PROMPT,
+                'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
+                'CLI transport override: the host runs the real browser in its prepared cloud sandbox immediately after this call. Write the scenario for that runner; do not install or run a local browser. Return the completion protocol when the files are ready for host checking.',
+              ].join('\n'),
+            })
+            if (!completionSchema.safeParse(completion).success)
+              throw new Error('Codex CLI phase completion is invalid')
+            for (const file of [
+              'output.html',
+              phase === 'preview' ? 'work/preview-scenario.mjs' : 'work/scenario.mjs',
+            ]) {
+              await sandbox.writeBinaryFile({
+                path: path.join(remoteWorkspace, file),
+                content: new Uint8Array(await readFile(path.join(localWorkspace, file))),
+                abortSignal,
+              })
+            }
+            if (phase === 'acceptance') {
+              input.onActivity?.('preview_checking')
+              const result = await sandbox.run({
+                command: 'node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs',
+                workingDirectory: remoteWorkspace,
+                abortSignal,
+              })
+              if (result.exitCode !== 0) throw new Error('Full browser acceptance failed')
+            }
+            input.onActivity?.('agent_completed')
+          },
+        })
+      }
       const perspectiveTemplateInstructions = usesPerspectiveTemplate(input.confirmation)
         ? [
             'Use the current perspective_3d template as the baseline and adapt it rather than recreating the game.',
