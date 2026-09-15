@@ -40,10 +40,11 @@ If a template cannot bind a field, omit the parameter contract rather than claim
 After the implementation and preview scenario are written, return the completion protocol for this phase.`
 
 export const FULL_ACCEPTANCE_PROMPT = `The playable preview is already available to the user. Continue full acceptance in this same workspace.
-Read confirmed-config.json and revision-plan.json when present. Use the selected Skill and its full acceptance requirements.
+Read confirmed-config.json and revision-plan.json when present and treat the confirmed requirements as authoritative.
 Write work/scenario.mjs and run node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs.
 Read expected campaign text and URLs from confirmed-config.json instead of hardcoding the previous campaign values.
-Verify every requested change, affected stage sequence, layout, initial mute, parent mute messages and CTA destination without opening it.
+Verify broad playable invariants: clean load with no blocking console errors or unexpected external requests; one real primary gameplay input produces an observable state change; portrait and landscape remain usable; audio starts muted and follows parent mute messages; the first interaction stays inside gameplay; and the expected CTA destination can be identified without opening it.
+Verify explicitly confirmed changes, but do not introduce template-specific match counts, score values, motion paths, stage sequences, or timing assertions unless confirmed-config.json or revision-plan.json explicitly requires them.
 If playable-campaign-binding-v1 is present, additionally verify that the config drives actual engine copy and the store handler; remove the marker if binding is incomplete.
 Allow at most one focused repair after a failed check. Do not repeatedly replay unchanged passing checks or start a new implementation.
 If any required check still fails, stop and report failure accurately. Do not claim completion.

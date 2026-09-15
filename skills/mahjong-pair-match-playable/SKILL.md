@@ -92,25 +92,23 @@ When the platform is AppLovin:
 
 ## Required validation
 
-Standalone source templates and freeform games use separate skills selected by the platform; this entry covers Mahjong modes only.
-
-For registered Mahjong modes, run the included behavioral test:
+Use the shared structural validation for every route. It checks the offline single-file contract and the platform integration surface without assuming one specific game state machine:
 
 ```bash
-node assets/starter/work/test-playable.mjs <output.html>
+node assets/starter/work/test-freeform-playable.mjs <output.html>
 ```
 
-For Mahjong modes, also verify in a browser:
+Also verify in a browser:
 
-- clean load begins at gameplay with no blocking console errors;
-- one mismatch changes neither score nor board state;
-- all required matches follow the selected mode's motion rule and increment once;
-- completion and end-card timing are correct;
-- audio is silent until the first tap;
-- no external resource request occurs;
-- the exact destination URL is stored without opening it during automated testing;
-- raw HTML size is below the active network limit;
-- portrait and landscape both remain fully visible and interactive.
+- the playable loads without blocking console errors or unexpected external requests;
+- one real primary gameplay interaction produces an observable state change;
+- the explicitly confirmed gameplay and revision requirements work;
+- audio starts muted and follows the parent mute-message contract;
+- the first interaction remains inside gameplay and does not open the store;
+- the expected destination URL can be identified without opening it during automated testing;
+- portrait and landscape remain visible and interactive.
+
+Do not turn template-specific match counts, score values, motion paths, stage sequences, or timing into release gates unless the confirmed requirements explicitly request them.
 
 Publish the validated artifact for human review. Only after explicit approval, expose the final HTML, production configuration, asset-source manifest, and validation report. Each report must identify the Plugin and runtime versions plus known routing differences. Keep extracted references, screenshots, scripts, and intermediate QA artifacts in a work directory.
 
@@ -119,8 +117,8 @@ Publish the validated artifact for human review. Only after explicit approval, e
 Use `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs`
 for browser checks. Export a default async function from scenario.mjs receiving
 `{ page, context, check, capture, clickCanvas }`. Exercise real inputs and call
-`check(name, observedCondition)` for mismatch, matching motion, score, ending, mute,
-CTA and layout assertions. The runner collects network/console failures and both
+`check(name, observedCondition)` for confirmed behavior, observable gameplay state,
+mute, CTA safety, and layout assertions. The runner collects network/console failures and both
 orientation screenshots; inspect them once. Each invocation is timed by the host.
 The platform has already approved confirmed builds; do not repeat confirmation.
 

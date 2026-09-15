@@ -26,6 +26,12 @@ it.each(sourceTemplateIds)('模板源文件和适配说明存在：%s', async (i
   await access(sourceTemplateFile(id).replace(`/assets/templates/${id}/source.html`, `/references/templates/${id}.md`))
 })
 
+it.each(routes)('所有路由使用通用产物校验：%s', (match) => {
+  const command = buildValidationCommand({ routing: { match, confidence: 1, differences: [] } })
+  expect(command).toContain('test-freeform-playable.mjs')
+  expect(command).not.toContain('test-playable.mjs')
+})
+
 it.each(
   sourceTemplateIds.flatMap((sourceTemplateId) =>
     playableModeIds.flatMap((mode) =>
