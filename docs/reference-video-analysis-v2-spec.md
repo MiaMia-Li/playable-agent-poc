@@ -3,6 +3,7 @@
 > 文档基线：2026-09-11，2026-09-14 按网关实测结果修订，并对照代码库复核过一次可行性
 > 2026-09-14 二次修订：Phase 0 执行完毕，结果推翻 §0 对 `generationConfig` 的判断，见 §0.1
 > 状态：Phase 0–5 已实施（2026-09-14），Phase 6 随各阶段一并落地（**Verification Pass 暂缓，本期只做首轮分析**）。与原设计的差异见各阶段下的实施说明与 §6.4 末尾
+> 2026-09-15 三次修订：放慢片段绕行实验（§7.5.1）改写了 Verification Pass 的恢复条件；新增 §7.6 Gameplay Timeline（设计已定，未实施，见 §9 Phase 7）
 > 相关决策：[ADR 0001](./adr/0001-gemini-direct-for-video-analysis.md)、[ADR 0002](./adr/0002-layered-gameplay-blueprint.md)
 > 前置约束：[AI 网关 Gemini 能力申请](./gateway-gemini-api-requests.md)
 > 术语以根目录 `CONTEXT.md` 为准
@@ -24,7 +25,7 @@
 
 **净结论：本次改动仍然值得做，但价值构成变了。** 原设计的卖点是「高帧率首轮 + 定向复查」；实际能拿到的是「1 fps 原生采样 + 音轨 + 高分辨率 + 去掉 ffmpeg 沙箱」。相对现状（0.67 fps、640px、音轨全丢、每次开沙箱装 ffmpeg）仍是明确的一级提升，且删掉的代码远多于新增的。
 
-已申请网关修复的项目（`videoMetadata` 透传、Files API、`countTokens` 路由）若日后放通，Verification Pass 可按 §7.5 原样恢复，本文保留其设计。
+已申请网关修复的项目（`videoMetadata` 透传、Files API、`countTokens` 路由）若日后放通，可以省掉 §7.5.1 的放慢片段绕行。但 2026-09-15 的实验表明，网关放通并不足以让 Verification Pass 成立：瓶颈在模型对录屏中亚秒级手势的判断，而不在取样。用户校正的主路因此改为 §7.6 的 Gameplay Timeline。
 
 ## 0.1 Phase 0 实测结果（2026-09-14）
 
@@ -113,7 +114,7 @@ OpenRouter 路径经实测（合成影片，`google/gemini-3.5-flash`，落在 V
 
 ## 3. 设计原则
 
-1. **Blueprint 是观察文件，不是规格书。** 它描述「视频里发生了什么」，用户想要什么属于 `RequirementBrief`。这条原则在现有 `QDAI_INSTRUCTIONS` 里已经写明，本次继续遵守。
+1. **Blueprint 是观察文件，不是规格书。** 它描述「视频里发生了什么」，用户想要什么属于 `RequirementBrief`。这条原则在现有 `ANALYST_INSTRUCTIONS` 里已经写明，本次继续遵守。
 2. **模型推论与人工标注分层，不合并。** 用户陈述优先，但不覆写模型的话，两者并列呈现。
 3. **确认偏误必须可见。** 用户意图会喂给模型，但模型必须显式输出 Intent Divergence。
 4. **只有一次观看机会，就把这次看清楚。** 原则上成本应跟随信息需求分层（首轮看全局、Verification Pass 看细节），但网关不支持区间裁剪，分层无法落地。退而求其次：单趟分析用高分辨率换取看清 UI 小字，代价见 §6.2。
@@ -449,7 +450,32 @@ Verification Pass 暂缓**不影响**本节，标注层照做，而且它的分�
 >
 > **注意不要连带砍掉普通重跑。** 现有的 `POST /api/playable-tasks/[taskId]/analysis` 已经是一个返回 202、经 `after()` 后台执行的重跑入口（`task-api.ts` 的 `analysis` 路由，约 1585–1644 行），它只是「再分析一次整支视频」，不是 Verification Pass。它必须保留——§5.2 的 v1 记录提示「可重跑」正是靠它落地，否则旧任务将永远停在「尚未分析」。
 >
-> **恢复条件**：网关修复 `parts[].videoMetadata` 透传（见网关申请请求一）。届时本节以下设计原样生效，无需重新论证。数据层已经为它留好位置（`attempt` 列与扩展后的唯一索引），标注层也已就位，恢复成本只剩分析器参数与一个触发入口。
+> **恢复条件（2026-09-15 修订）**：原条件是网关修复 `parts[].videoMetadata` 透传。§7.5.1 的实验表明这一条既非必要也不充分：用 ffmpeg 切片加放慢就能绕过网关拿到高帧率，但模型拿到高帧率之后，对手势的判断反而更差。恢复条件改为：放慢片段（或网关放通后的原生高帧率）在含长按与滑动的标准答案集上，查证准确率明显高于原速。在此之前，用户校正走 §7.6。数据层（`attempt` 列与扩展后的唯一索引）与标注层仍然就位。
+
+#### 7.5.1 放慢片段绕行实验（2026-09-15）
+
+网关会丢弃 `videoMetadata`，但取样规则本身是稳定的：每秒文件时间取一帧。于是在本地用 ffmpeg 切出目标区间并放慢 N 倍，模型照旧按 1 fps 取样，折合到原片就是 N fps，不依赖任何可能被丢弃的请求字段。`scripts/check-gemini-slowed-clip.ts` 可复现全部结论：同一段各送一支原速对照片段与一支放慢片段，两支都烧入原片时间戳，并用 token 数判定实际取样。
+
+测试素材是一支 30 fps 的选角录屏，取 10–16 秒，放慢 4 倍，网关与 OpenRouter 各跑两次。标准答案经人工确认：这一段只有 3 次点击（Cardiel、Oella，以及 14–15.5 秒之间的一次），没有长按，也没有滑动。
+
+| 问题 | 结果 |
+| --- | --- |
+| 取样能否提高 | **能**。网关两条通道与 OpenRouter 全部达到 4 fps（放慢片段 24 帧）。通道 B 显示 3.64 fps 是换算造成的假象：对照片段在通道 B 同样只有 91%，即这支视频在默认分辨率下每帧约 60 token 而非 66 |
+| 模型自报的时间 | **不可用**。观察到三种模式：原片时间（读烧入的时间戳）、文件时间，以及一个固定但错误的比例（两个后端都出现过 `0, 0.9, 2.1`），同一后端的不同轮之间也会切换。逐笔计分，OpenRouter 为「原片 7/12、都不符 5/12、文件 0/12」 |
+| 烧入的时间戳 | **可用**。四次实验共 67 笔输入的起点时间戳全部读出 |
+| 按住时长 | **不可用**。三次点击读出的按住时长在 0.23 到 1.73 秒之间，模型判断「输入在哪一帧结束」并不可靠 |
+| 手势识别 | **放慢反而更差**。OpenRouter 三轮，放慢片段共报出 15 次输入（答案为 9 次），14–15.5 秒的一次点击被拆成三次；网关另有一轮（旧版提示词）把点击判成拖动。原速对照报出 7 次，有漏报，未见误报 |
+| 网关通道 B | 7 次回复全部无法解析（剥掉代码围栏后仍不是 JSON），通道 A 5/5 可用 |
+
+误报的成因推断：录屏里看不到手指，模型只能从 UI 的反应反推输入。放慢之后，选中动画、高亮移动这类 UI 过渡被拆成更多帧，模型把每一段变化都当成一次输入。**帧数越多，可供反推的变化越多，误报也越多**。这不是网关修得好的问题。
+
+顺带的发现，影响首轮而不是 Verification Pass：原速下模型报的是整秒，而实际取到的帧位于每秒约 0.47 秒处（两个后端一致）。首轮 evidence 时间戳因此只有秒级精度，并带固定偏移。§7.6 的时间轴按这个精度设计。
+
+结论：
+
+- 取样这道技术障碍已有绕行方案；**Verification Pass 真正的瓶颈，是模型在录屏上判断亚秒级手势的能力**。
+- 若日后恢复：时间只能取自烧入的时间戳，不能用模型自报的时间；在网关上必须重试到通道 A；并且要先在含长按与滑动的标准答案集上证明比原速准。
+- 用户校正的主路改为 §7.6，由能以 30 fps 看原片的用户来当查证者。
 
 以下为暂缓的原设计，保留备查。
 
@@ -460,6 +486,105 @@ Verification Pass 暂缓**不影响**本节，标注层照做，而且它的分�
 不把标注当既定事实喂入的理由：那样模型会直接复述用户的话并给出高置信度，从此分不清「模型真的看到了」还是「模型只是照抄」，分层的 provenance 价值被压扁。
 
 实现上使用 `videoMetadata` 的 `startOffset` / `endOffset` 裁出标注所指区间，配合高 fps 与高 `media_resolution`。
+
+### 7.6 Gameplay Timeline：首轮草稿与逐段校正（未实施）
+
+> **状态：设计已定，未实施，排期见 §9 Phase 7。** 起因是 §7.5.1：唯一能以 30 fps 看原片的查证者是用户本人。与其让模型重看，不如让首轮给出一份可以逐段核对的草稿。
+
+#### 7.6.1 为什么是它
+
+§11 第一条风险说 1 fps 看不见快速手势，唯一的补救是用户标注，而标注要求用户自己注意到并说出来。时间轴把用户的工作从「回忆并描述」变成「逐段过目，指出错的那条」，门槛低得多。它不依赖网关修复，也绕开了 §7.5.1 测出的三个模型弱点：自报时间、按住时长、从 UI 反推输入。
+
+原速首轮的时间精度足够：秒级，带约 0.47 秒的固定偏移（§7.5.1），对「00:10–00:12 点击 Oella」这类条目够用。
+
+#### 7.6.2 Schema
+
+`gameplayBlueprintSchema` 新增 `timeline`：
+
+```ts
+const timelineSegmentSchema = z.strictObject({
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+  phase: z.enum(['intro', 'tutorial', 'gameplay', 'transition', 'result', 'end_card']),
+  screen: z.string().trim().min(1).max(300),
+  onScreenText: z.string().trim().max(300),
+  playerInput: z
+    .strictObject({
+      action: z.enum(['tap', 'long_press', 'swipe', 'drag', 'unknown']),
+      target: z.string().trim().min(1).max(200),
+      seenVia: z.enum(['touch_indicator', 'guide_hand', 'ui_response']),
+    })
+    .nullable(),
+  response: z.string().trim().max(300),
+  audioCue: z.string().trim().max(200),
+  confidence: z.number().min(0).max(1),
+})
+
+// gameplayBlueprintSchema 内
+timeline: z.array(timelineSegmentSchema).max(40),
+```
+
+字段取舍：
+
+- **`seenVia` 是这一节的核心字段。** 它把「模型怎么知道有这次输入」变成可见的：看得到手指或触控指示、看到教学引导手势，还是只从游戏的反应推断。§7.5.1 的误报全部属于第三类，界面据此把 `ui_response` 标为「推断」，把用户的注意力引过去。引导手势单列，是因为 playable 录像里它极为常见，而它演示的正是预期操作。
+- `playerInput` 为 null 表示这段没有输入，例如自动演示或转场。不允许为了解释 UI 变化而编造一次输入。
+- `onScreenText` 原文照录，没有则为空串。CTA 文案、教学提示是构建需要的原始素材，但与 §5.3 的旁白同属不可信证据。
+- `phase` 让需求 Agent 与构建直接看到教学、结算、End Card 的起止，不必再从 `tutorial`、`endCard` 的 evidence 里拼凑。
+- 上限 40 段：3 分钟视频平均每段 4.5 秒，符合 §6.5 按短片设计的取向。
+- 字符串字段用空串而不是 nullable：少一种形状，模型也少一个选择。`playerInput` 例外，因为「没有输入」与「输入描述为空」语义不同。
+
+与既有字段的关系：`timeline` 是按时间排列的主干，`controls`、`stateTransitions`、`tutorial`、`endCard` 等仍是按主题的归纳，各自保留 evidence。本期不做两者之间的交叉校验。
+
+**版本处理。** 新增必填字段会让现有 v2 行过不了 strict parse。沿用 §5.2 的做法：`VIDEO_ANALYSIS_PIPELINE_VERSION` 升为 `video-analysis-v3`（顺带去掉无意义的 `qdai` 前缀；现值 `qdai-video-v2` 已写入数据库，在此之前不改），`version` 升为 `z.literal(3)`，旧行视为「尚未分析」、可重跑，不同时维护两套 schema。另一条路是在存储端给 `timeline` 加默认值，再为模型另造一份必填的 response schema，但这会打破 §5.1「存储那份是基准、方向单一」的约定，不采用。
+
+`validateEvidenceTimes` 扩展到 `timeline`：每段 `endSeconds >= startSeconds`，且不超过视频时长；服务端按 `startSeconds` 排序后落库。段与段之间的轻微重叠照收，不作为失败理由——为此烧一次计费重试不值得。
+
+#### 7.6.3 提示词
+
+这一节参考了一份外部的四趟式提取样例：逐镜头分解、核心玩法、美术资产、音效各一趟，最后汇总成复刻说明书。**采纳它的字段，不采纳它的多趟结构。** 本方案每一趟都要内联重传整支视频，还要抽通道彩票（§6.1、§6.2），四趟就是四倍的上传与等待。所有采纳项并入同一趟。
+
+`ANALYST_INSTRUCTIONS` 与 `analysisPrompt` 追加：
+
+```text
+Build `timeline` first: split the video into consecutive segments at every change of screen, phase or player input, in order, covering the whole video.
+For each segment record what is on screen, the on-screen text exactly as written, the player input if any, the game's response, and any audio cue.
+Record how you know about each input in `seenVia`: a visible finger or touch indicator, a tutorial guide hand, or only the game's response.
+Never invent an input to explain a change on screen. Animations, transitions and automatic play are responses, not inputs; give them a null `playerInput`.
+At one frame per second you cannot measure how long an input is held. Use `long_press` only when a press is visible across several frames. When only the response is visible, choose the most likely action and mark it `ui_response`.
+In `coreLoop`, state how many times the loop is shown and how the outcomes differ between repetitions.
+For each entity, describe how it looks and cite when it first appears.
+In `audio`, separate sound effects with what triggers them, background music with its mood, tempo and how it changes, and narration transcribed verbatim with its timestamp.
+State explicitly when something a playable usually has is not shown, such as a failure state or a CTA button.
+Phrase every entry in `uncertainties` as a question the user could answer by watching the video.
+Do not suggest how to rebuild the ad, which engine to use, or how to reduce its size. Those are requirements, not observations.
+```
+
+从样例采纳的：逐段的画面、屏幕文字原文、玩家输入与反馈、阶段划分；核心循环的重复次数与各次差异；实体的外观与首次出现时间；音效按触发情境拆分、BGM 的情绪与变化、旁白逐字转写；「没出现」要明说；待确认项写成问题。
+
+没有采纳的，以及原因：
+
+- **技术栈、体积控制、「复刻时可设计为…」**：属于需求，违反 §3 原则 1。
+- **关键帧截图**：本方案不抽帧。界面改为点击时间轴条目直接跳转原视频（§7.6.4），比两张静态图的信息更多。
+- **毫秒格式的时间戳**（`00:00.000`）：1 fps 下是假精度，维持以秒为单位的数值。
+
+#### 7.6.4 呈现与校正
+
+- **常驻时间轴。** 分析卡片旁列出每段 `mm:ss–mm:ss · 阶段 · 输入（目标）· 反馈`。`seenVia = ui_response` 标「推断」，`confidence` 低于 0.6 的段高亮。时间显示为整秒，与模型的实际精度一致。
+- **点击即跳转。** 点一条，参考视频播放器跳到 `startSeconds` 开始播放。这是整个设计的前提：核对一条只要一秒，用户才会真的逐条看。现有预览若不支持跳转，需要新增播放器。
+- **逐段修正。** 条目上的「修正」打开输入框，时间区间预填为该段（可改），占位文案写「视频里实际发生的是…」。提交即产生一条 Gameplay Annotation（§7.2 的结构不变），绑定 Active Reference Video。表达「想要什么」的话，界面提示用户到对话里说。
+- **标注按时间挂回条目。** 与某段时间重叠的标注，无论来自时间轴还是对话，都显示在该段下方并标「以标注为准」。模型那条保留，不改写。
+
+**按时间对齐，不按 id 对齐。** 不给段落发稳定 id，理由同 ADR 0002：重跑后分段会变，id 随之失效；而标注绑定的时间轴不变，按重叠挂回条目在重跑后依然成立。ADR 0002 的「并列而不合并」原样适用，构建 Agent 可能采信模型那条的风险也原样存在；但时间轴修正产生的标注区间与模型那段完全重合，比对话里的模糊时间更容易对上。
+
+#### 7.6.5 与需求 Agent 的并发：标注要分来源
+
+现有写入路径是：需求 Agent 每轮以完整列表替换 Active 视频的标注（§7.3、Phase 4 实施说明）。时间轴可以直接写入之后，这条替换会误删：用户在某轮对话进行中从时间轴提交了修正，而该轮 Agent 手里的列表是开轮时读的，结束时整份替换就把它抹掉了，而且没有任何提示——正是 §7.4 说的静默漏掉。
+
+处理方式：`gameplayAnnotationSchema` 增加 `origin: 'chat' | 'timeline'`，旧数据缺省视为 `chat`。Agent 的整份替换只作用于 `origin = 'chat'` 的部分；`timeline` 来源的标注只能由用户经 `DELETE .../annotations` 删除。Agent 的上下文里仍然看得到全部标注，只是改不动时间轴那部分。新增 `POST /api/playable-tasks/[taskId]/annotations` 供时间轴写入，`MAX_GAMEPLAY_ANNOTATIONS` 按两个来源合计。
+
+#### 7.6.6 与 Verification Pass 的关系
+
+时间轴是主路。Verification Pass 降为可选辅助：用户对某一段存疑、又不想自己看时再发起，前提是 §7.5 修订后的恢复条件已经满足。
 
 ## 8. 失败与降级
 
@@ -539,9 +664,21 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 
 常驻标注列表、分析状态文案、时长超限错误提示。
 
+### Phase 7：Gameplay Timeline（未实施）
+
+`timeline` schema 与 v3 版本号（§7.6.2）、提示词（§7.6.3）、常驻时间轴与跳转播放、逐段修正与 `POST .../annotations`、标注按 `origin` 分来源（§7.6.4–§7.6.5），以及在 `CONTEXT.md` 新增 Gameplay Timeline 词条。
+
+验收：
+
+- 对 §7.5.1 那支选角录屏做首轮分析，10–16 秒出现三段选角点击，`seenVia` 为 `ui_response`，没有凭 UI 过渡编造出来的额外输入。
+- 点击时间轴条目，播放器跳到该段起点。
+- 从时间轴修正一段后，`gameplay-blueprint.json` 的 `annotations` 出现该标注，区间等于该段；在一轮对话进行中提交的修正，该轮结束后依然存在。
+- 重跑同一支视频后，该标注仍挂在时间重叠的新段下方。
+- Blueprint 中不出现技术栈、引擎或体积方面的建议。
+
 ### 暂缓：Verification Pass
 
-触发 API、裁片段的第二趟分析、模型与标注不一致的呈现。**待网关支持 `parts[].videoMetadata` 透传后再排期**，理由见 §7.5。
+触发 API、裁片段的第二趟分析、模型与标注不一致的呈现。**排在 Phase 7 之后，并且须先满足 §7.5 修订后的恢复条件**（在标准答案集上优于原速）。网关放通不再是前提，理由见 §7.5.1。
 
 ## 10. 影响文件
 
@@ -574,6 +711,12 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 | `components/playable/playable-workspace.tsx` | 首页上传同上、标注列表挂载                                                                    |
 | 新增 UI 组件                                 | 常驻标注列表                                                                                  |
 | `lib/playable/sandbox-runner.ts`             | 逻辑不动（Blueprint 整包写文件，annotations 自动带入），仅参数类型换为 `GameplayBlueprintDocument` |
+| `scripts/check-gemini-slowed-clip.ts`        | 放慢片段绕行实验（§7.5.1），不进产品流程                                                      |
+| `lib/playable/schemas.ts`（Phase 7）         | `timeline` 段 schema、`version: 3` 与 pipeline 版本、annotation 的 `origin`                    |
+| `lib/playable/video-gameplay-analyst.ts`（Phase 7） | §7.6.3 的提示词；`validateEvidenceTimes` 覆盖 `timeline` 并排序                         |
+| `lib/playable/task-api.ts`（Phase 7）        | 标注按来源替换、`POST .../annotations`                                                        |
+| 新增 UI 组件（Phase 7）                      | 时间轴面板、跳转播放、逐段修正                                                                |
+| `CONTEXT.md`                                 | 新增 Gameplay Timeline，修订 Verification Pass 的现状说明                                     |
 
 ### 10.1 仓储接口有三份实现
 
@@ -588,13 +731,16 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 
 ## 11. 已接受的风险
 
-- **快速手势观测不到。** 1 fps 采样看不见点击时机、长按时长、滑动方向这类亚秒级动作，而这恰恰是 playable 玩法的核心。唯一的补救是用户标注（§7），而标注要求用户自己注意到并说出来。这是本次改动**最大的一项遗留缺口**，只能靠网关放通 `videoMetadata` 才能真正关闭。
+- **快速手势观测不到。** 1 fps 采样看不见点击时机、长按时长、滑动方向这类亚秒级动作，而这恰恰是 playable 玩法的核心。唯一的补救是用户标注（§7），而标注要求用户自己注意到并说出来。这是本次改动**最大的一项遗留缺口**。§7.5.1 表明网关放通也关不掉它——高帧率下模型从录屏反推手势反而更差。缓解的主路是 §7.6 的时间轴，把「注意到并说出来」降为「逐段过目」。
 - **同一支视频可能得到不同质量的结果。** 网关多通道轮询，耗时在 19–137 秒间波动，质量大概率同样波动。缓解手段只有 `attempt` 列提供的人工重跑。
 - **构建 Agent 可能选错边。** 标注与模型推论并列时，构建 Agent 有可能采信模型那条。升级路径是 per-inference 稳定 id 加精准覆写。
 - **标注可能被静默漏掉。** `record_gameplay_annotations` 每轮重发完整列表，Agent 可能遗漏。由常驻列表暴露，不做技术性防护。
 - **v1 记录不可读。** 旧任务需要用户重新发起分析。POC 阶段记录量小，换取避免双 Schema 维护。
 - **duration 由客户端上报。** 可被伪造，但它只用于理智检查与上传拦截，不是安全边界。
 - **每次分析重传整个文件。** 无 Files API 复用。本期只有一趟分析，影响有限；Verification Pass 恢复时这项要重新评估。
+- **用户照单全收时间轴草稿（Phase 7）。** 给了草稿，确认偏误就反过来了：用户可能不逐段核对就默认它对。缓解只靠呈现手段（「推断」标记、低置信高亮、点击即跳转），不做强制逐条确认。
+- **时间轴修正绕过观察与意图的区分（Phase 7）。** 对话里的标注由需求 Agent 按 §7.1 判别，时间轴直接写入则没有这一步，用户可能在修正框里写需求。靠占位文案引导，不做模型判别。
+- **原文照录的屏幕文字进入构建（Phase 7）。** `onScreenText` 把视频里的文字原样带给需求 Agent 与构建 Sandbox，与 §5.3 的旁白同属注入面。它以 JSON 数据的形式传递，构建侧须继续把 Blueprint 当作数据而非指令。
 
 ## 12. 未决事项
 
@@ -603,4 +749,6 @@ Blueprint v2 的存储层与文档层两份 schema（§5.1）、`attempt` 列与
 - **大文件上传路径**。`MAX_REFERENCE_VIDEO_BYTES = 100 MiB` 是否在部署环境真的成立，若不成立则要决定是改成客户端直传 Blob 还是下调该常量，见 §6.5。这一项独立于 Gemini，但会决定 Phase 0 第 2 项测什么。
 - **每用户的分析速率与成本上限**。改为上传即分析后，每次上传都会产生费用，且内联意味着每次都重传整个文件。注意不能用 `:countTokens` 做闸门（§6.2）。
 - **数据处理合规**。参考视频可能是客户或竞品素材。走公司网关后这项大概率已在网关侧统一处理，但仍需确认网关背后接的是付费层账号——Gemini API 免费层会使用送入的数据改进产品。
-- **网关修复的时间表**。`videoMetadata` 透传、Files API、`countTokens` 路由三项已提出申请。其中只有第一项会改变产品形态（解锁 Verification Pass），另两项是成本与效率优化。
+- **网关修复的时间表**。`videoMetadata` 透传、Files API、`countTokens` 路由三项已提出申请。第一项原被视为解锁 Verification Pass 的前提；§7.5.1 之后，它只能省掉放慢片段的绕行，不再改变产品形态。另两项是成本与效率优化。
+- **时间轴的细节**。`phase` 枚举是否够用；40 段上限在 3 分钟视频上是否会截断；用户对某段点「正确」要不要记录——记录下来能区分「核对过」与「没看」，但会让标注列表充斥确认项。
+- **Verification Pass 的标准答案集**。需要包含长按与滑动，最好也有开启触控指示的录屏；目前手上只有一支纯点击的选角录屏。

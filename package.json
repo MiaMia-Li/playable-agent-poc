@@ -12,6 +12,7 @@
     "check:sandbox-connectivity": "tsx scripts/check-vercel-sandbox-connectivity.ts",
     "sandbox:prepare-playable": "tsx scripts/prepare-playable-sandbox.ts",
     "check:gemini-video": "node --env-file=.env.local --import tsx scripts/check-gemini-video-analysis.ts",
+    "check:gemini-slowed-clip": "node --env-file=.env.local --import tsx scripts/check-gemini-slowed-clip.ts",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
