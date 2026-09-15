@@ -371,7 +371,12 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           executeAgent: async ({ phase, sandbox, workspace: remoteWorkspace, abortSignal }) => {
             const current = await sandbox.readTextFile({ path: path.join(remoteWorkspace, 'output.html'), abortSignal })
             if (current) await writeFile(path.join(localWorkspace, 'output.html'), current)
-            for (const file of ['sandbox-tools.json', 'work/preview-repair.json', 'work/preview-failure-report.json']) {
+            for (const file of [
+              'sandbox-tools.json',
+              'work/preview-repair.json',
+              'work/preview-failure-report.json',
+              'work/acceptance-handoff.json',
+            ]) {
               const content = await sandbox.readTextFile({ path: path.join(remoteWorkspace, file), abortSignal })
               if (content) {
                 await mkdir(path.dirname(path.join(localWorkspace, file)), { recursive: true })
@@ -395,7 +400,9 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                   : phase === 'preview_repair'
                     ? PREVIEW_REPAIR_PROMPT
                     : FULL_ACCEPTANCE_PROMPT,
-                'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
+                phase === 'acceptance'
+                  ? 'Use the acceptance handoff first; read only missing details.'
+                  : 'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
                 'CLI transport override: the host runs the real browser in its prepared cloud sandbox immediately after this call. Write the scenario for that runner; do not install or run a local browser. Return the completion protocol when the files are ready for host checking.',
               ].join('\n'),
             })
@@ -410,6 +417,17 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                 content: new Uint8Array(await readFile(path.join(localWorkspace, file))),
                 abortSignal,
               })
+            }
+            if (phase !== 'acceptance') {
+              const notes = await readFile(path.join(localWorkspace, 'work/preview-handoff.md'), 'utf8').catch(
+                () => null,
+              )
+              if (notes)
+                await sandbox.writeTextFile({
+                  path: path.join(remoteWorkspace, 'work/preview-handoff.md'),
+                  content: notes.slice(0, 12000),
+                  abortSignal,
+                })
             }
             if (phase === 'acceptance') {
               input.onActivity?.('preview_checking')

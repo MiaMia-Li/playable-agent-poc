@@ -1141,6 +1141,10 @@ it.each(['passed', 'failed', 'unchanged', 'stale', 'launch', 'cancelled', 'unsaf
           await writeFile(path.join(workspace, 'work/preview-scenario.mjs'), 'export default async () => {}')
         }
         if (phase === 'preview_repair') {
+          await writeFile(
+            path.join(workspace, 'work/preview-handoff.md'),
+            `Changed the gameplay handler. ${input.apiKey}`,
+          )
           expect(abortSignal).toBe(controller.signal)
           expect(JSON.parse(await readFile(path.join(workspace, 'work/preview-repair.json'), 'utf8')).attempt).toBe(1)
           expect(input.onPreview).toHaveBeenCalledOnce()
@@ -1153,6 +1157,11 @@ it.each(['passed', 'failed', 'unchanged', 'stale', 'launch', 'cancelled', 'unsaf
         }
         if (phase === 'acceptance') {
           const html = await readFile(path.join(workspace, 'output.html'))
+          const handoff = JSON.parse(await readFile(path.join(workspace, 'work/acceptance-handoff.json'), 'utf8'))
+          expect(handoff.artifactSha256).toBe(createHash('sha256').update(html).digest('hex'))
+          expect(handoff.confirmation.mode).toBe('center_collision')
+          expect(handoff.implementationNotes).toBe('Changed the gameplay handler. [REDACTED]')
+          expect(handoff.toolInventory).toContain('builtins')
           await writeFile(path.join(workspace, 'work/scenario.mjs'), 'export default async () => {}')
           await writeFile(
             path.join(workspace, 'work/browser-acceptance/report.json'),
