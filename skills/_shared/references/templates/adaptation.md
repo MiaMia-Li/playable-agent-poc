@@ -78,3 +78,20 @@ node assets/starter/work/patch-cocos-bundle.mjs work/base/files/assets/main/inde
 ```
 
 The JSON plan is `{ "sourceSha256": "hash from inspection", "patches": [{ "before": "exact source fragment", "after": "replacement fragment" }] }`. Each fragment must match exactly once in sequence. The helper rejects stale source hashes, missing/ambiguous matches and invalid final JavaScript before writing the separate output. Never patch the master source. Re-embed the changed file into `output.html`, then run structural and browser checks; successful parsing alone is not acceptance.
+
+
+## Use the common template package tools
+
+For all four standalone source templates, unpack the current artifact once:
+
+```sh
+node assets/starter/work/template-package.mjs unpack output.html work/package
+```
+
+Use a new extraction directory. `manifest.json` records original hashes and resource destinations. Cocos ZIP entries are under `files/`, with `__res` content exposed separately under `resources/`; Laya script/text/binary maps are under `script_data/`, `text_data/`, `bin_data/` and data-URI assets under `url/`. Keep resource names, `source.html` and `manifest.json` unchanged. Edit only the extracted resource representing the actual loaded script. Do not edit both raw `files/__res` and its exposed resources.
+
+```sh
+node assets/starter/work/template-package.mjs pack work/package output.html
+```
+
+No-change round trips preserve the exact original HTML bytes. Changed scripts and JSON are syntax-checked; the tool preserves other entries and original HTML wrappers. Packing rejects unsafe paths, modified manifests, missing resources and conflicting edits. It replaces output only after validation. Continue to validate the real re-embedded HTML in the browser; a successful pack is not gameplay acceptance. Apply any outer HTML changes after packing, or unpack that newer HTML into a fresh directory before another resource edit.

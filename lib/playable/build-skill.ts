@@ -33,7 +33,11 @@ export function includeBuildSkillFile(
 ) {
   const file = relativePath.split(path.sep).join('/')
   if (file.startsWith('agents/')) return false
-  if (/^assets\/starter\/work\/(?:inspect-cocos-bundle\.mjs|patch-cocos-bundle\.mjs|vendor\/acorn\.)/.test(file))
+  if (
+    /^assets\/starter\/work\/(?:inspect-cocos-bundle\.mjs|patch-cocos-bundle\.mjs|template-package\.mjs|zip-codec\.mjs|vendor\/acorn\.)/.test(
+      file,
+    )
+  )
     return Boolean(confirmation.sourceTemplateId)
   const template = /^assets\/templates\/([^/]+)\//.exec(file)
   if (template) return template[1] === (confirmation.sourceTemplateId ?? confirmation.mode)
