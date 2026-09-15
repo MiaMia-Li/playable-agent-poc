@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createTemplateProbe } from './template-probe.mjs'
 
 // 通用验收入口：环境、监听、截图和证据只维护一份；玩法断言由本次场景模块补充。
 const require = createRequire(import.meta.url)
@@ -23,6 +24,7 @@ try {
       return createRequire(path.join(process.cwd(), 'package.json'))('playwright')
     }
   })()
+  const config = JSON.parse(await readFile('confirmed-config.json', 'utf8').catch(() => '{}'))
   const run = (await import(pathToFileURL(path.resolve(scenario)).href)).default
   if (typeof run !== 'function') throw new Error('Scenario must export an acceptance function')
   await mkdir(evidenceDir, { recursive: true })
@@ -49,7 +51,7 @@ try {
     (async () => {
       await page.goto(pathToFileURL(artifact).href, { waitUntil: 'load', timeout: 30000 })
       await page.waitForFunction(() => Boolean(window.__PLAYABLE__), undefined, { timeout: 15000 })
-      await run({ page, context, check, capture,
+      await run({ page, context, check, capture, probe: createTemplateProbe(page, config.sourceTemplateId ?? config.mode),
         // 坐标基于当前画布边界，避免模板逻辑尺寸与浏览器缩放不同导致误点。
         clickCanvas: async (x, y) => {
           const box = await page.locator('canvas').first().boundingBox()
