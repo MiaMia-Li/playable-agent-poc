@@ -894,6 +894,29 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return true
   }
 
+  // 演示模式同样先保留预览，构建状态留给后续验收更新。
+  async savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus: 'building' | 'failed' = 'building',
+  ): Promise<boolean> {
+    const task = this.tasks.get(taskId)
+    const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
+    if (
+      !task ||
+      !(expectedStatus === 'failed' ? ['failed'] : ['building', 'validating']).includes(task.phase) ||
+      build?.status !== expectedStatus
+    )
+      return false
+    build.artifactKey = artifactKey
+    build.validation = validation
+    task.latestArtifactKey = artifactKey
+    task.latestValidation = validation
+    return true
+  }
+
   async publishArtifact(
     taskId: string,
     buildId: string,

@@ -381,6 +381,63 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
+  // 只登记产物，不结束构建；完整验收仍可继续更新同一条构建记录。
+  async savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus: 'building' | 'failed' = 'building',
+  ): Promise<boolean> {
+    return db.transaction(async (transaction) => {
+      // 限定最新构建与预期状态，防止迟到的预览回调覆盖新版本或恢复已终止的构建。
+      const newestBuild = transaction
+        .select({ id: playableTaskBuilds.id })
+        .from(playableTaskBuilds)
+        .where(eq(playableTaskBuilds.taskId, taskId))
+        .orderBy(desc(playableTaskBuilds.createdAt))
+        .limit(1)
+      const activeBuild = transaction
+        .select({ id: playableTaskBuilds.id })
+        .from(playableTaskBuilds)
+        .where(
+          and(
+            eq(playableTaskBuilds.id, buildId),
+            inArray(playableTaskBuilds.id, newestBuild),
+            eq(playableTaskBuilds.taskId, taskId),
+            eq(playableTaskBuilds.status, expectedStatus),
+          ),
+        )
+      const updated = await transaction
+        .update(tasks)
+        .set({ latestArtifactKey: artifactKey, latestValidation: validation, updatedAt: new Date() })
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            inArray(tasks.phase, expectedStatus === 'failed' ? ['failed'] : ['building', 'validating']),
+            exists(activeBuild),
+          ),
+        )
+        .returning({ id: tasks.id })
+      if (updated.length !== 1) return false
+      const saved = await transaction
+        .update(playableTaskBuilds)
+        .set({ artifactKey, validation })
+        .where(
+          and(
+            eq(playableTaskBuilds.id, buildId),
+            inArray(playableTaskBuilds.id, newestBuild),
+            eq(playableTaskBuilds.taskId, taskId),
+            eq(playableTaskBuilds.status, expectedStatus),
+          ),
+        )
+        .returning({ id: playableTaskBuilds.id })
+      // 构建记录保存失败时抛错回滚整个事务，保证任务指针与版本记录一致。
+      if (saved.length !== 1) throw new Error('Preview record transition failed')
+      return true
+    })
+  }
+
   async publishArtifact(
     taskId: string,
     buildId: string,

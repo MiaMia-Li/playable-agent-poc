@@ -243,6 +243,13 @@ export interface PlayableTaskRepository {
     expected: PlayableTaskPhase,
     next: PlayableTaskPhase,
   ): Promise<boolean>
+  savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus?: 'building' | 'failed',
+  ): Promise<boolean>
   publishArtifact(
     taskId: string,
     buildId: string,
@@ -457,6 +464,18 @@ export function safeValidationSummary(
       label: profile.label,
       maxBytes: profile.maxBytes,
     },
+  }
+}
+
+// 基础检查后的预览可以保存，但必须保留未完整验收的状态，不能据此宣称交付通过。
+function previewValidation(html: string, confirmation: ConfirmationProposal): PlayableValidationSummary {
+  const bytes = new TextEncoder().encode(html).byteLength
+  const profile = getDeliveryProfile(deliveryProfileIdFor(confirmation.delivery))
+  return {
+    buildPassed: false,
+    deliveryCompliant: profile.maxBytes === null || bytes <= profile.maxBytes,
+    bytes,
+    delivery: { profileId: profile.id, label: profile.label, maxBytes: profile.maxBytes },
   }
 }
 
@@ -689,9 +708,8 @@ function resolveRevisionProposal(input: {
   latestArtifactKey: string
   id: string
 }): RevisionProposal {
-  const successfulBuilds = input.builds.filter(
-    (build): build is PlayableBuildRecord & { artifactKey: string } =>
-      build.status === 'succeeded' && Boolean(build.artifactKey),
+  const successfulBuilds = input.builds.filter((build): build is PlayableBuildRecord & { artifactKey: string } =>
+    Boolean(build.artifactKey),
   )
   const baseIndex = successfulBuilds.findIndex((build) => build.artifactKey === input.latestArtifactKey)
   if (baseIndex < 0) throw new Error('Current playable build is missing')
@@ -1028,7 +1046,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     if (revision?.strategy === 'patch') {
       stage = 'base_artifact'
       const baseBuild = await repository.findBuild(task.id, revision.baseBuildId)
-      if (!baseBuild || baseBuild.status !== 'succeeded' || !baseBuild.artifactKey) {
+      if (!baseBuild || !baseBuild.artifactKey) {
         throw new Error('Revision base artifact is missing')
       }
       const baseStream = await artifactStore.get(baseBuild.artifactKey)
@@ -1036,9 +1054,11 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       baseHtml = new TextDecoder().decode(await readAll(baseStream))
       const parsedBase = confirmationProposalSchema.safeParse(baseBuild.confirmation)
       if (parsedBase.success) baseConfirmation = parsedBase.data
-      const scenarioStream = await artifactStore.get(
-        baseBuild.artifactKey.replace(/\/playable\.html$/, '/scenarios.json'),
-      )
+      // 未验收版本可作为修改基线，但不能复用其场景作为已通过的验收依据。
+      const scenarioStream =
+        baseBuild.status === 'succeeded'
+          ? await artifactStore.get(baseBuild.artifactKey.replace(/\/(?:playable|preview)\.html$/, '/scenarios.json'))
+          : undefined
       if (scenarioStream) {
         try {
           const saved = JSON.parse(new TextDecoder().decode(await readAll(scenarioStream)))
@@ -1102,7 +1122,28 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           throw new Error('Preview contains a credential')
         const current = await repository.findBuild(task.id, buildId)
         if (!current || current.status !== 'building') throw new Error('Preview build is no longer active')
-        await artifactStore.put(`${artifactPrefix(task, buildId)}/preview.html`, html, 'text/html; charset=utf-8')
+        const prefix = artifactPrefix(task, buildId)
+        const previewKey = `${prefix}/preview.html`
+        const validation = previewValidation(html, sanitizedConfirmation)
+        // 先落盘并登记可试玩版本，再写辅助文件；后续验收或辅助文件失败也不丢失已有产物。
+        await artifactStore.put(previewKey, html, 'text/html; charset=utf-8')
+        if (!(await repository.savePreviewArtifact(task.id, buildId, previewKey, validation)))
+          throw new Error('Preview build is no longer active')
+        await artifactStore.put(
+          `${prefix}/preview-production-config.json`,
+          JSON.stringify(createProductionConfig(sanitizedConfirmation)),
+          'application/json',
+        )
+        await artifactStore.put(
+          `${prefix}/preview-asset-manifest.json`,
+          JSON.stringify(createAssetSourceManifest(sanitizedConfirmation, assets)),
+          'application/json',
+        )
+        await artifactStore.put(
+          `${prefix}/preview-validation-report.json`,
+          JSON.stringify(validation),
+          'application/json',
+        )
         await activityQueue
         await repository.appendEvent({
           taskId: task.id,
@@ -1193,6 +1234,50 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
 }
 
 export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
+  // 仅补登记最新一次失败构建中已宣布可试玩的旧预览，避免旧产物覆盖后续构建。
+  const recoverLegacyPreview = async (task: PlayableTaskRecord) => {
+    if (task.phase !== 'failed') return
+    const latest = (await dependencies.repository.listBuilds(task.id)).at(-1)
+    if (!latest || latest.status !== 'failed' || latest.artifactKey) return
+    const events = await dependencies.repository.listEvents(task.id)
+    const announced = events.some((event) => {
+      if (event.type !== 'build_preview_ready') return false
+      try {
+        return JSON.parse(event.message ?? 'null')?.buildId === latest.id
+      } catch {
+        return false
+      }
+    })
+    if (!announced) return
+    const prefix = artifactPrefix(task, latest.id)
+    const key = `${prefix}/preview.html`
+    const stream = await dependencies.artifactStore.get(key)
+    if (!stream) return
+    const html = new TextDecoder().decode(await readAll(stream))
+    if (!html || redactSecrets(html) !== html) return
+    const validation = previewValidation(html, latest.confirmation)
+    await dependencies.artifactStore.put(
+      `${prefix}/preview-production-config.json`,
+      JSON.stringify(createProductionConfig(latest.confirmation)),
+      'application/json',
+    )
+    await dependencies.artifactStore.put(
+      `${prefix}/preview-validation-report.json`,
+      JSON.stringify(validation),
+      'application/json',
+    )
+    if (!(await dependencies.artifactStore.get(`${prefix}/preview-asset-manifest.json`)))
+      await dependencies.artifactStore.put(
+        `${prefix}/preview-asset-manifest.json`,
+        JSON.stringify(createAssetSourceManifest(latest.confirmation, [])),
+        'application/json',
+      )
+    if (await dependencies.repository.savePreviewArtifact(task.id, latest.id, key, validation, 'failed')) {
+      task.latestArtifactKey = key
+      task.latestValidation = validation
+    }
+  }
+
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
   const claimVideoAnalysis = async (taskId: string, assetId: string, model: string, rerun: boolean) => {
@@ -1537,7 +1622,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const versions = artifactTasks.flatMap((task) => {
         let successfulVersion = 0
         return (buildsByTask.get(task.id) ?? []).flatMap((build) => {
-          if (build.status !== 'succeeded') return []
+          if (!build.artifactKey) return []
           const version = ++successfulVersion
           const delivery = build.confirmation.delivery
           const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(delivery))
@@ -2136,6 +2221,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         }
       }
 
+      if (revision)
+        revision = {
+          ...revision,
+          targetVersion:
+            (await dependencies.repository.listBuilds(access.task.id)).filter((build) => Boolean(build.artifactKey))
+              .length + 1,
+        }
       const buildId = dependencies.generateId()
       const claimed = await dependencies.repository.claimBuild(
         access.task.id,
@@ -2185,6 +2277,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.staleBuildTimeoutMs ?? DEFAULT_STALE_BUILD_TIMEOUT_MS,
       )
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
+      await recoverLegacyPreview(latestTask)
       const events = await dependencies.repository.listEvents(access.task.id)
       // 预览与正式产物分开存储；新一轮开始后不再把旧预览当成本轮结果。
       const latestStart = events.findLastIndex((event) => event.type === 'build_started')
@@ -2198,7 +2291,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       } catch {
         /* 历史或不完整事件不展示为预览。 */
       }
-      if (latestTask.phase === 'ready') previewVersion = null
+      if (latestTask.phase === 'ready' || latestTask.latestArtifactKey?.split('/').at(-2) === previewVersion)
+        previewVersion = null
       return Response.json(
         { task: { ...safeTaskState(latestTask), previewVersion }, events: events.map(eventJson) },
         { headers: { 'Cache-Control': 'private, no-store' } },
@@ -2208,12 +2302,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     async versions(request: NextRequest, context: RouteContext): Promise<Response> {
       const access = await ownedTask(request, context, dependencies)
       if (access instanceof Response) return access
+      await recoverLegacyPreview(access.task)
       const builds = await dependencies.repository.listBuilds(access.task.id)
       let successfulVersion = 0
       return Response.json(
         {
           builds: builds.map((build) => {
-            const version = build.status === 'succeeded' ? ++successfulVersion : null
+            // 版本号按已保存产物递增，验收失败的预览同样占一个版本；验收通过后不另增版本。
+            const version = build.artifactKey ? ++successfulVersion : null
             return {
               id: build.id,
               status: build.status,
@@ -2287,13 +2383,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       let artifactKey = access.task.latestArtifactKey
       if (versionId) {
         const build = await dependencies.repository.findBuild(access.task.id, versionId)
-        if (!build || build.status !== 'succeeded' || !build.artifactKey) return jsonError(404, 'Not found')
+        if (!build || !build.artifactKey) return jsonError(404, 'Not found')
         artifactKey = build.artifactKey
       }
       if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
       const download = url.searchParams.get('download') === '1'
-      const prefix = artifactKey.slice(0, -'/playable.html'.length)
+      const prefix = artifactKey.slice(0, artifactKey.lastIndexOf('/'))
+      // 预览和正式产物各自读取对应的配置与报告，防止展示尚未通过的正式验收结果。
+      const sidecarPrefix = artifactKey.endsWith('/preview.html') ? 'preview-' : ''
       const artifacts = {
         playable: {
           key: artifactKey,
@@ -2301,17 +2399,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           filename: 'playable.html',
         },
         config: {
-          key: `${prefix}/production-config.json`,
+          key: `${prefix}/${sidecarPrefix}production-config.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'production-config.json',
         },
         manifest: {
-          key: `${prefix}/asset-manifest.json`,
+          key: `${prefix}/${sidecarPrefix}asset-manifest.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'asset-manifest.json',
         },
         validation: {
-          key: `${prefix}/validation-report.json`,
+          key: `${prefix}/${sidecarPrefix}validation-report.json`,
           contentType: 'application/json; charset=utf-8',
           filename: 'validation-report.json',
         },

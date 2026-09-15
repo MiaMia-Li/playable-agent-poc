@@ -300,6 +300,28 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
+  async savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus: 'building' | 'failed' = 'building',
+  ): Promise<boolean> {
+    const task = this.tasks.get(taskId)
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (
+      !task ||
+      !(expectedStatus === 'failed' ? ['failed'] : ['building', 'validating']).includes(task.phase) ||
+      build?.status !== expectedStatus
+    )
+      return false
+    build.artifactKey = artifactKey
+    build.validation = validation
+    task.latestArtifactKey = artifactKey
+    task.latestValidation = validation
+    return true
+  }
+
   async publishArtifact(
     taskId: string,
     buildId: string,
@@ -3456,7 +3478,7 @@ describe('PrivateVercelArtifactStore', () => {
   })
 })
 
-it('publishes preview independently, retains it on acceptance failure, and blocks preview downloads', async () => {
+it('immediately saves a numbered preview and retains download and revision access after acceptance failure', async () => {
   const h = createHarness()
   const task = h.repository.tasks.get('owned')!
   task.phase = 'awaiting_confirmation'
@@ -3465,10 +3487,10 @@ it('publishes preview independently, retains it on acceptance failure, and block
   vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
     await input.onPreview!('<html>provisional</html>')
     expect(task.phase).toBe('building')
-    expect(task.latestArtifactKey).toBeNull()
+    expect(task.latestArtifactKey).toContain('/preview-build/preview.html')
     const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
     const response = await h.handlers.events(request('/api/playable-tasks/owned/events'), ctx)
-    expect((await response.json()).task.previewVersion).toBe('preview-build')
+    expect((await response.json()).task).toMatchObject({ previewVersion: null, hasArtifact: true })
     const inline = await h.handlers.artifact(
       request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build'),
       ctx,
@@ -3503,7 +3525,123 @@ it('publishes preview independently, retains it on acceptance failure, and block
     artifactStore: h.artifactStore,
   })
   expect(task.phase).toBe('failed')
-  expect(task.latestArtifactKey).toBeNull()
+  expect(task.latestArtifactKey).toContain('/preview-build/preview.html')
   expect([...h.artifacts.keys()].some((key) => key.endsWith('/preview.html'))).toBe(true)
   expect([...h.artifacts.keys()].some((key) => key.endsWith('/playable.html'))).toBe(false)
+  const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+  const versions = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), ctx)
+  expect((await versions.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'preview-build',
+      version: 1,
+      status: 'failed',
+      validation: expect.objectContaining({ buildPassed: false }),
+    }),
+  ])
+  const download = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=playable&version=preview-build&download=1'),
+    ctx,
+  )
+  expect(download.status).toBe(200)
+  expect(download.headers.get('content-disposition')).toContain('attachment')
+  expect(await download.text()).toBe('<html>provisional</html>')
+  const report = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=validation&version=preview-build&download=1'),
+    ctx,
+  )
+  expect((await report.json()).buildPassed).toBe(false)
+  vi.mocked(h.agent.proposeConfirmation).mockResolvedValueOnce({
+    kind: 'revision',
+    message: '修复',
+    reasoning: '继续修改',
+    revision: patchRevision,
+    confirmation,
+  })
+  const message = await h.handlers.message(
+    request('/api/playable-tasks/owned/messages', 'POST', { message: '继续修复', baseBuildId: 'preview-build' }),
+    ctx,
+  )
+  expect(await message.text()).toContain('"type":"revision"')
+  expect(task.pendingRevision).toMatchObject({ baseBuildId: 'preview-build', baseVersion: 1, targetVersion: 2 })
+})
+
+it('recovers a previously unregistered failed preview without another build', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'failed'
+  task.confirmation = confirmation
+  h.repository.builds.push({
+    id: 'legacy',
+    taskId: 'owned',
+    status: 'failed',
+    confirmation,
+    artifactKey: null,
+    createdAt: new Date(1),
+  })
+  const key = 'users/user-1/tasks/owned/legacy/preview.html'
+  h.artifacts.set(key, new TextEncoder().encode('<html>recoverable</html>'))
+  await h.repository.appendEvent({
+    taskId: 'owned',
+    type: 'build_preview_ready',
+    message: JSON.stringify({ buildId: 'legacy' }),
+  })
+  const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+  const response = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), ctx)
+  expect((await response.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'legacy',
+      version: 1,
+      status: 'failed',
+      current: true,
+      validation: expect.objectContaining({ buildPassed: false }),
+    }),
+  ])
+  expect(task.latestArtifactKey).toBe(key)
+  const file = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=playable&version=legacy&download=1'),
+    ctx,
+  )
+  expect(await file.text()).toBe('<html>recoverable</html>')
+  expect(h.agent.build).not.toHaveBeenCalled()
+})
+
+it('upgrades a saved preview to accepted output without creating a second version', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'awaiting_confirmation'
+  task.confirmation = confirmation
+  await h.repository.claimBuild(task.id, task.userId, confirmation, 'one-build')
+  vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
+    await input.onPreview!('<html>preview</html>')
+    return {
+      html: '<html>accepted</html>',
+      validation: createValidationReport({ bytes: 21, offlineResources: true, responsiveViewport: true }),
+    }
+  })
+  await runConfirmedBuild({
+    task,
+    apiKey: 'sk-test-secret',
+    buildId: 'one-build',
+    repository: h.repository,
+    agent: h.agent,
+    artifactStore: h.artifactStore,
+  })
+  expect(task.phase).toBe('ready')
+  const response = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), {
+    params: Promise.resolve({ taskId: 'owned' }),
+  })
+  expect((await response.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'one-build',
+      version: 1,
+      status: 'succeeded',
+      validation: expect.objectContaining({ buildPassed: true }),
+    }),
+  ])
+  expect(task.latestArtifactKey).toContain('/one-build/playable.html')
+  expect(h.repository.builds).toHaveLength(1)
+  const previewReport = h.artifacts.get('users/user-1/tasks/owned/one-build/preview-validation-report.json')!
+  const fullReport = h.artifacts.get('users/user-1/tasks/owned/one-build/validation-report.json')!
+  expect(JSON.parse(new TextDecoder().decode(previewReport)).buildPassed).toBe(false)
+  expect(JSON.parse(new TextDecoder().decode(fullReport)).buildPassed).toBe(true)
 })

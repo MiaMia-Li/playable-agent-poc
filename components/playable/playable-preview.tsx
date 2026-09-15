@@ -68,11 +68,12 @@ export function PlayablePreview({
   const [retrying, setRetrying] = useState(false)
   const [actionError, setActionError] = useState('')
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const showingPreview = Boolean(previewVersion && phase !== 'ready')
+  // 预览一旦登记成版本，改走正式版本入口，才能选择、下载并保留其验收状态。
+  const showingPreview = Boolean(previewVersion && phase !== 'ready' && artifactVersion !== previewVersion)
   const canPreview = hasArtifact || showingPreview
+  // 有版本号即表示产物已保存，不要求完整验收成功。
   const successfulBuilds = builds.filter(
-    (build): build is PlayableBuildSummary & { version: number } =>
-      build.status === 'succeeded' && build.version !== null,
+    (build): build is PlayableBuildSummary & { version: number } => build.version !== null,
   )
   const selectedBuild = successfulBuilds.find((build) => build.id === selectedBuildId)
   const currentBuild = successfulBuilds.find((build) => build.current)
@@ -99,7 +100,7 @@ export function PlayablePreview({
         const nextBuilds = responseBuilds ?? []
         setBuilds(nextBuilds)
         const requestedBuild = initialBuildId
-          ? nextBuilds.find((build) => build.id === initialBuildId && build.status === 'succeeded')
+          ? nextBuilds.find((build) => build.id === initialBuildId && build.version !== null)
           : undefined
         setSelectedBuildId(requestedBuild?.id ?? nextBuilds.find((build) => build.current)?.id)
       })
@@ -109,7 +110,7 @@ export function PlayablePreview({
     return () => {
       active = false
     }
-  }, [artifactVersion, hasArtifact, initialBuildId, taskId])
+  }, [artifactVersion, hasArtifact, initialBuildId, taskId, phase])
 
   const postMute = (value: boolean) => {
     iframeRef.current?.contentWindow?.postMessage({ type: 'playable:set-muted', muted: value }, '*')
@@ -281,6 +282,7 @@ export function PlayablePreview({
                   <SelectItem key={build.id} value={build.id}>
                     v{build.version}
                     {build.current ? ' · 当前' : ''}
+                    {build.status !== 'succeeded' ? ' · 未完整验收' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -289,6 +291,13 @@ export function PlayablePreview({
             <span className="text-xs font-medium">{displayedVersion ? `v${displayedVersion}` : '当前版本'}</span>
           )}
         </div>
+      )}
+      {hasArtifact && !showingPreview && activeValidation && !activeValidation.buildPassed && (
+        <p role="status" className="mx-4 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          {phase === 'building' || phase === 'validating'
+            ? '可试玩版本已保存，完整验收中。可下载当前产物。'
+            : '可试玩版本已保存，完整验收未通过。可下载，或基于此版本继续修改。'}
+        </p>
       )}
       {hasArtifact && !showingPreview && activeValidation && !activeValidation.deliveryCompliant && (
         <div
@@ -311,7 +320,10 @@ export function PlayablePreview({
       )}
       {phase === 'failed' && hasArtifact && !showingPreview && (
         <p className="text-destructive shrink-0 px-4 pb-2 text-center text-xs" role="alert">
-          {failureMessage ?? '本次构建失败，正在展示上一成功版本。'}
+          {failureMessage ??
+            (activeValidation?.buildPassed === false
+              ? '本次完整验收未通过，已保留可试玩产物。'
+              : '本次构建失败，正在展示上一成功版本。')}
         </p>
       )}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 [container-type:size] sm:p-6">

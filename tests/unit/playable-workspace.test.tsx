@@ -1762,6 +1762,38 @@ it('shows a provisional playable without enabling delivery, then switches to the
   )
 })
 
+it('shows a saved failed-acceptance version with download controls and honest status', async () => {
+  const validation = {
+    buildPassed: false,
+    deliveryCompliant: true,
+    bytes: 100,
+    delivery: { profileId: 'applovin' as const, label: 'AppLovin', maxBytes: 5242880 },
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({ builds: [{ id: 'saved-preview', status: 'failed', version: 1, current: true, validation }] }),
+    ),
+  )
+  render(
+    <PlayablePreview
+      taskId="saved"
+      phase="failed"
+      hasArtifact
+      artifactVersion="saved-preview"
+      initialValidation={validation}
+    />,
+  )
+  expect(await screen.findByText('v1')).toBeInTheDocument()
+  expect(screen.getByText('可试玩版本已保存，完整验收未通过。可下载，或基于此版本继续修改。')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '下载交付物' })).toBeEnabled()
+  expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+    'src',
+    '/api/playable-tasks/saved/artifact?kind=playable&version=saved-preview',
+  )
+  expect(screen.queryByText('本次构建失败，正在展示上一成功版本。')).not.toBeInTheDocument()
+})
+
 it.each(sourceTemplateIds)('preserves native conversion UI defaults for %s', (id) => {
   const bound = bindSourceTemplate(proposal, id)
   expect(bound.resources.endCard.treatment).toBe('复用模板原生结束页，不新增通用结束卡')
