@@ -1,5 +1,6 @@
 'use client'
 
+import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { BuildTimeline } from './build-timeline'
 import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
 import { AgentText, ReasoningText } from './reasoning-text'
@@ -884,7 +885,13 @@ export function ChatWorkspace({
             [asset.slot]:
               slotAssets.length > 0
                 ? { status: '用户上传', treatment: slotAssets.map((candidate) => candidate.filename).join('、') }
-                : { status: '内置默认', treatment: defaultResourceTreatments[asset.slot] },
+                : {
+                    status: '内置默认',
+                    treatment:
+                      asset.slot === 'endCard' && nativeTemplateUiPolicy(proposal.sourceTemplateId)
+                        ? NATIVE_END_CARD_TREATMENT
+                        : defaultResourceTreatments[asset.slot],
+                  },
           },
         })
       }

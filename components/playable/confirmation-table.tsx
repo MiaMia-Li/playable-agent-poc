@@ -1,5 +1,6 @@
 'use client'
 
+import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { useId, useRef } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
 import { defaultConfirmationPresentation, type ConfirmationProposal } from '@/lib/playable/schemas'
@@ -104,6 +105,7 @@ export function ConfirmationTable({
 }: ConfirmationTableProps) {
   const uploadInputs = useRef<Partial<Record<PlayableAssetSlot, HTMLInputElement | null>>>({})
   const storeUrlId = useId()
+  const nativeUi = nativeTemplateUiPolicy(proposal.sourceTemplateId)
   const presentation = proposal.presentation ?? defaultConfirmationPresentation
   const assetFields = presentation.assetFields.filter(
     (field, index, fields) => fields.findIndex((candidate) => candidate.slot === field.slot) === index,
@@ -151,6 +153,11 @@ export function ConfirmationTable({
 
   return (
     <section aria-label="确认方案" className="space-y-4">
+      {nativeUi && (
+        <p className="text-muted-foreground text-sm">
+          复用模板原生 CTA 和结束页，不额外添加。文案与素材修改应用到原生界面。
+        </p>
+      )}
       {showHeader && (
         <div>
           <h2 className="font-semibold">{title}</h2>
@@ -255,7 +262,8 @@ export function ConfirmationTable({
                         onClick={() =>
                           updateResource(slot, {
                             status: '内置默认',
-                            treatment: defaultTreatments[slot],
+                            treatment:
+                              nativeUi && slot === 'endCard' ? NATIVE_END_CARD_TREATMENT : defaultTreatments[slot],
                           })
                         }
                       >
@@ -405,7 +413,7 @@ export function ConfirmationTable({
                       <Input
                         key={field}
                         aria-label={config.label}
-                        placeholder={config.label}
+                        placeholder={nativeUi && field === 'cta' ? '原生 CTA 文案（留空保留）' : config.label}
                         maxLength={config.maxLength}
                         value={proposal.copy[field]}
                         disabled={controlsDisabled}

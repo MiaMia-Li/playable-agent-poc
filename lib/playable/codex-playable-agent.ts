@@ -1,3 +1,4 @@
+import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
@@ -328,6 +329,7 @@ export async function executeBuildAgent(
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
           PLAYABLE_TOOLS_PROMPT,
+          NATIVE_TEMPLATE_UI_PROMPT,
           input.phase === 'preview'
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'acceptance'

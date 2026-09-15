@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import { NATIVE_UI_MARKER } from '@/lib/playable/native-template-ui'
 import { applyCampaignParameters, campaignParameters } from '@/lib/playable/campaign-parameters'
 import { fastPreviewTemplateIds, supportsFastPreview } from '@/lib/playable/preview-build'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
@@ -25,7 +26,8 @@ it.each(fastPreviewTemplateIds)('safely patches campaign data for %s', (template
     delivery: { network: 'applovin', logicalWidth: 360, logicalHeight: 640, output: 'single-html', maxBytes: 5242880 },
   } as ConfirmationProposal
   const after = { ...before, copy: { ...before.copy, title: '</script><script>alert(1)</script>' } }
-  const html = `<script id="playable-campaign-config" type="application/json">${JSON.stringify(campaignParameters(before))}</script><script>/*playable-campaign-binding-v1*/nativeEngine()</script>`
+  const html = `<script id="playable-campaign-config" type="application/json">${JSON.stringify(campaignParameters(before))}</script><script>/*playable-campaign-binding-v1 ${source ? NATIVE_UI_MARKER : ''}*/nativeEngine()</script>`
+  if (source) expect(applyCampaignParameters(html.replace(NATIVE_UI_MARKER, ''), before, after)).toBeNull()
   const result = applyCampaignParameters(html, before, after)!
   expect(supportsFastPreview(before)).toBe(true)
   expect(result).not.toBeNull()

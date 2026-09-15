@@ -32,6 +32,16 @@ it.each([...playableModeIds, ...sourceTemplateIds])(
       routing: { match: 'exact' as const, confidence: 1, differences: [] },
     }
     const files = await readBuildSkillFiles(confirmation)
+    const policy = files.find((file) => file.relativePath === 'template-ui-policy.json')
+    if (sourceTemplateId)
+      expect(JSON.parse(new TextDecoder().decode(policy?.content))).toMatchObject({
+        sourceTemplateId,
+        cta: 'reuse-native',
+        endCard: 'reuse-native',
+        allowAdditionalCta: false,
+        allowAdditionalEndCard: false,
+      })
+    else expect(policy).toBeUndefined()
     const names = files.map((file) => file.relativePath)
     expect(new Set(names).size).toBe(names.length)
     expect(names).toContain('SKILL.md')

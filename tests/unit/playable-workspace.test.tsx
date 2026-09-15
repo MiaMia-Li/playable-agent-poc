@@ -1761,3 +1761,15 @@ it('shows a provisional playable without enabling delivery, then switches to the
     '/api/playable-tasks/preview-task/artifact?kind=playable',
   )
 })
+
+it.each(sourceTemplateIds)('preserves native conversion UI defaults for %s', (id) => {
+  const bound = bindSourceTemplate(proposal, id)
+  expect(bound.resources.endCard.treatment).toBe('复用模板原生结束页，不新增通用结束卡')
+  expect(bound.copy).toEqual(proposal.copy)
+  const uploaded = { status: '用户上传' as const, treatment: 'custom.png' }
+  expect(
+    bindSourceTemplate({ ...proposal, resources: { ...proposal.resources, endCard: uploaded } }, id).resources.endCard,
+  ).toEqual(uploaded)
+  render(<ConfirmationTable proposal={bound} onChange={vi.fn()} onConfirm={vi.fn()} />)
+  expect(screen.getByText('复用模板原生 CTA 和结束页，不额外添加。文案与素材修改应用到原生界面。')).toBeInTheDocument()
+})
