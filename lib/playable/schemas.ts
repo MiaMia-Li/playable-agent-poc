@@ -26,14 +26,19 @@ export const MAX_TIMELINE_SEGMENTS = 40
  * One stretch of the reference video. The timeline is the draft the user
  * reviews segment by segment (spec section 7.6), so every field is something a
  * person can check by jumping to `startSeconds` and watching.
+ *
+ * The length bounds are generous on purpose. They are stripped from the
+ * response schema because the gateway rejects them, so the model never sees
+ * them; the prompt asks for shorter text instead, and one long caption should
+ * not throw away a billed run.
  */
 export const gameplayTimelineSegmentSchema = z.strictObject({
   startSeconds: z.number().min(0),
   endSeconds: z.number().min(0),
   phase: z.enum(['intro', 'tutorial', 'gameplay', 'transition', 'result', 'end_card']),
-  screen: z.string().trim().min(1).max(300),
+  screen: z.string().trim().min(1).max(500),
   /** Verbatim, empty when there is none. Untrusted evidence, like narration (spec section 5.3). */
-  onScreenText: z.string().trim().max(300),
+  onScreenText: z.string().trim().max(1000),
   /**
    * Null for automatic play and transitions. `seenVia` says how the model knows
    * about the input: a screen recording rarely shows the finger, and an input
@@ -43,14 +48,21 @@ export const gameplayTimelineSegmentSchema = z.strictObject({
   playerInput: z
     .strictObject({
       action: z.enum(['tap', 'long_press', 'swipe', 'drag', 'unknown']),
-      target: z.string().trim().min(1).max(200),
+      target: z.string().trim().min(1).max(300),
       seenVia: z.enum(['touch_indicator', 'guide_hand', 'ui_response']),
     })
     .nullable(),
-  response: z.string().trim().max(300),
-  audioCue: z.string().trim().max(200),
+  response: z.string().trim().max(500),
+  audioCue: z.string().trim().max(300),
   confidence: z.number().min(0).max(1),
 })
+
+/**
+ * One constant for the schema literal and the prompt that names it. When the
+ * schema moved to 3 and the prompt still asked for "v2", a model that ignored
+ * the schema's `const` wrote 2 and every attempt was rejected.
+ */
+export const GAMEPLAY_BLUEPRINT_VERSION = 3
 
 /**
  * What the model produces and what gets stored. It deliberately has no
@@ -60,7 +72,7 @@ export const gameplayTimelineSegmentSchema = z.strictObject({
  * Annotations are attached on the way out, by `toGameplayBlueprintDocument`.
  */
 export const gameplayBlueprintSchema = z.strictObject({
-  version: z.literal(3),
+  version: z.literal(GAMEPLAY_BLUEPRINT_VERSION),
   summary: z.string().trim().min(1).max(1000),
   orientation: z.enum(['portrait', 'landscape', 'square', 'unknown']),
   // Early in the schema because the response schema's property order is the

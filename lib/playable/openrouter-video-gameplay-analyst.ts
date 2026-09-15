@@ -6,6 +6,7 @@ import {
   ANALYST_INSTRUCTIONS,
   analysisPrompt,
   blueprintResponseSchema,
+  describeBlueprintFailure,
   intentComparisonPrompt,
   intentResponseSchema,
   parseBlueprint,
@@ -105,8 +106,8 @@ export class OpenRouterVideoGameplayAnalyst implements VideoGameplayAnalyst {
             input.video.durationSeconds,
           ),
         }
-      } catch {
-        console.error('OpenRouter video analysis returned an unusable blueprint')
+      } catch (error) {
+        console.error('OpenRouter video analysis returned an unusable blueprint:', describeBlueprintFailure(error))
       }
     }
     throw new Error('OpenRouter video analysis produced no usable blueprint')

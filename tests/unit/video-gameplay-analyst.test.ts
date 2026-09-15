@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { GameplayBlueprint, GameplayTimelineSegment } from '@/lib/playable/schemas'
-import { blueprintResponseSchema, parseBlueprint, validateEvidenceTimes } from '@/lib/playable/video-gameplay-analyst'
+import {
+  GAMEPLAY_BLUEPRINT_VERSION,
+  type GameplayBlueprint,
+  type GameplayTimelineSegment,
+} from '@/lib/playable/schemas'
+import {
+  analysisPrompt,
+  blueprintResponseSchema,
+  describeBlueprintFailure,
+  parseBlueprint,
+  validateEvidenceTimes,
+} from '@/lib/playable/video-gameplay-analyst'
 
 function segment(startSeconds: number, endSeconds: number): GameplayTimelineSegment {
   return {
@@ -69,5 +79,58 @@ describe('gameplay timeline in the blueprint', () => {
     const keys = Object.keys(blueprintResponseSchema().properties as Record<string, unknown>)
     expect(keys.indexOf('timeline')).toBeGreaterThan(-1)
     expect(keys.indexOf('timeline')).toBeLessThan(keys.indexOf('controls'))
+  })
+
+  // At one frame per second the model labels whole seconds, so a timeline that
+  // covers the whole video ends on the second after the last frame. Rejecting
+  // that failed a real run on a 21.1 s recording.
+  it('clamps a timeline tail just past the end to the video duration', () => {
+    const validated = validateEvidenceTimes({ ...blueprint, timeline: [segment(20, 22)] }, 21.1)
+    expect(validated.timeline[0]).toMatchObject({ startSeconds: 20, endSeconds: 21.1 })
+  })
+
+  // A prompt still asking for "v2" after the schema moved to 3 made a model
+  // that ignores the schema's `const` write 2, failing every attempt.
+  it('names the current blueprint version in the prompt', () => {
+    const prompt = analysisPrompt({
+      prompt: '',
+      video: { bytes: new Uint8Array(), mimeType: 'video/mp4', durationSeconds: 21.1 },
+    })
+    expect(prompt).toContain(`\`version\` set to ${GAMEPLAY_BLUEPRINT_VERSION}`)
+    expect(prompt).not.toMatch(/Blueprint v\d/)
+  })
+
+  // The first real run came back with every segment's confidence above 1:
+  // the bound is stripped from the response schema, so the model never saw it.
+  it('reads a percentage confidence as a fraction, and still rejects beyond 100', () => {
+    const parsed = parseBlueprint(
+      JSON.stringify({ ...blueprint, overallConfidence: 88, timeline: [{ ...segment(0, 1), confidence: 90 }] }),
+    )
+    expect(parsed.timeline[0].confidence).toBe(0.9)
+    expect(parsed.overallConfidence).toBe(0.88)
+    expect(() =>
+      parseBlueprint(JSON.stringify({ ...blueprint, timeline: [{ ...segment(0, 1), confidence: 150 }] })),
+    ).toThrow()
+  })
+
+  // The model's text can quote anything in the video, so the log gets the
+  // failing stage and schema paths only.
+  it('describes an unusable reply by stage and schema path, never by content', () => {
+    expect(describeBlueprintFailure(new SyntaxError('Unexpected token'))).toEqual({ stage: 'json' })
+    expect(describeBlueprintFailure(new Error('Gameplay blueprint contains invalid evidence timestamps'))).toEqual({
+      stage: 'evidence_times',
+    })
+
+    let schemaError: unknown
+    try {
+      parseBlueprint(
+        JSON.stringify({ ...blueprint, timeline: [{ ...segment(0, 1), onScreenText: 'secret'.repeat(200) }] }),
+      )
+    } catch (error) {
+      schemaError = error
+    }
+    const described = describeBlueprintFailure(schemaError)
+    expect(described).toEqual({ stage: 'schema', issues: [{ path: 'timeline.0.onScreenText', code: 'too_big' }] })
+    expect(JSON.stringify(described)).not.toContain('secret')
   })
 })
