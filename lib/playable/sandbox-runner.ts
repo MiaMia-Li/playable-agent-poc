@@ -1,5 +1,6 @@
 import { referenceImageWorkspaceFiles } from './reference-images'
 import { browserAcceptanceDiagnostics } from './browser-acceptance-diagnostics'
+import { applyTemplateBrowserCompatibility } from './template-browser-compatibility'
 import { readBuildSkillFiles } from './build-skill'
 import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
@@ -254,7 +255,7 @@ export async function runPlayableBuild(
     if (input.baseHtml) {
       await sandbox.writeTextFile({
         path: path.join(workspace, 'current-playable.html'),
-        content: input.baseHtml,
+        content: applyTemplateBrowserCompatibility(input.baseHtml, confirmation.sourceTemplateId),
         abortSignal: dependencies.abortSignal,
       })
     }
@@ -305,7 +306,7 @@ export async function runPlayableBuild(
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),
-        content: input.baseHtml,
+        content: applyTemplateBrowserCompatibility(input.baseHtml, confirmation.sourceTemplateId),
         abortSignal: dependencies.abortSignal,
       })
     } else if (!freeform) {
@@ -388,10 +389,12 @@ export async function runPlayableBuild(
         // Save the safe artifact before browser acceptance so failed checks still
         // leave a numbered, explicitly unaccepted version for the user.
         stage = 'artifact_check'
-        const preview = await sandbox.readTextFile({
+        const originalPreview = await sandbox.readTextFile({
           path: path.join(workspace, 'output.html'),
           abortSignal: checkSignal,
         })
+        const preview =
+          originalPreview && applyTemplateBrowserCompatibility(originalPreview, confirmation.sourceTemplateId)
         if (
           !preview ||
           !hasResponsiveViewport(preview) ||
@@ -400,6 +403,13 @@ export async function runPlayableBuild(
           redactSecrets(preview) !== preview
         )
           throw new Error('Preview artifact check failed')
+        if (preview !== originalPreview) {
+          await sandbox.writeTextFile({
+            path: path.join(workspace, 'output.html'),
+            content: preview,
+            abortSignal: checkSignal,
+          })
+        }
         await input.onPreview!(preview)
         input.onActivity?.('preview_checking')
         stage = 'preview_check'
