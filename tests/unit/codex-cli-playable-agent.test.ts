@@ -1,7 +1,7 @@
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuildResult, ConfirmedBuildInput } from '@/lib/playable/playable-agent-adapter'
 import { CodexCliPlayableAgent } from '@/lib/playable/codex-cli-playable-agent'
 import { createValidationReport } from '@/lib/playable/production-contract'
@@ -91,6 +91,10 @@ const confirmationPlan = {
     },
   ],
 } as const
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('CodexCliPlayableAgent', () => {
   it('uses a read-only Codex invocation and validates the structured proposal', async () => {
@@ -340,6 +344,26 @@ describe('CodexCliPlayableAgent', () => {
       }),
     )
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
+  })
+
+  it('skips Codex CLI validation instructions when sandbox validation is disabled', async () => {
+    vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
+    const invokeCodex = vi.fn(async () => ({ completed: true }))
+    const result: BuildResult = {
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({ bytes: 42, offlineResources: true, responsiveViewport: true }),
+    }
+
+    await new CodexCliPlayableAgent({ invokeCodex, buildRunner: vi.fn(async () => result) }).build({
+      taskId: 'task-cli-validation-disabled',
+      apiKey: 'local-marker',
+      confirmation: proposal,
+    })
+
+    const calls = invokeCodex.mock.calls as unknown as Array<[{ prompt: string }]>
+    expect(calls[0][0].prompt).toContain('full Codex validation is disabled')
+    expect(calls[0][0].prompt).not.toContain('test-playable.mjs')
+    expect(calls[0][0].prompt).not.toContain('work/validation-checklist.md')
   })
 
   it.each(
