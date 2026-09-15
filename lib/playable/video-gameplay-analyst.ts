@@ -1,6 +1,7 @@
 import { toJSONSchema, z } from 'zod'
 import { gameplayBlueprintSchema, type GameplayBlueprint, type GameplayInference } from './schemas'
 
+// Stored in playable_video_analyses: the meaningless qdai prefix is dropped at the v3 bump, not before (spec section 7.6.2).
 export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'qdai-video-v2'
 
 /** Which resolution the service actually applied, as opposed to which was asked for. */
@@ -57,8 +58,8 @@ export interface VideoGameplayAnalyst {
 const VIDEO_TOKENS_PER_SECOND: Record<AppliedMediaResolution, number> = { high: 264, default: 66 }
 const RESOLUTION_TOLERANCE = 0.12
 
-export const QDAI_INSTRUCTIONS = [
-  'You are QDAI Video Gameplay Analyst.',
+export const ANALYST_INSTRUCTIONS = [
+  'You are a video gameplay analyst.',
   'Infer the observable gameplay shown by the supplied video.',
   'Describe evidence independently of any registered implementation template.',
   'Do not select a template, write code, or assume hidden rules that are not visible.',
@@ -70,7 +71,7 @@ export const QDAI_INSTRUCTIONS = [
 ].join('\n')
 
 export const INTENT_INSTRUCTIONS = [
-  'You are QDAI Intent Comparator.',
+  'You are an intent comparator.',
   'You receive a Gameplay Blueprint that describes what a reference video shows, and a statement of what the user wants to build.',
   'You cannot see the video. The blueprint is the only evidence about it.',
   'Report every place where the gameplay in the blueprint differs from the stated intent, such as a different genre, control scheme, core loop, or objective.',

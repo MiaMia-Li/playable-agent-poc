@@ -315,7 +315,7 @@ describe('PlayableWorkspace', () => {
     expect(await screen.findByText('已采用参考方向，请选择核心玩法。')).toBeInTheDocument()
   })
 
-  it('refreshes QDAI analysis immediately when the video tool completes', async () => {
+  it('refreshes video analysis immediately when the video tool completes', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/messages')) {
         return new Response(

@@ -96,7 +96,7 @@ function harness(mediaResolution: AppliedMediaResolution = 'high') {
   return { repository, artifactStore, analyst }
 }
 
-describe('QDAI video analysis service', () => {
+describe('Video analysis service', () => {
   it('hands the raw video bytes to the analyst and persists the structured blueprint', async () => {
     const dependencies = harness()
 

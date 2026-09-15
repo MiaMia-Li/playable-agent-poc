@@ -4,7 +4,7 @@ import { logExternalRequestError } from './external-request-logging'
 import { readGeminiApiKey, readGeminiBaseUrl, readGeminiVideoAnalysisModel } from './shared-ai-key'
 import {
   INTENT_INSTRUCTIONS,
-  QDAI_INSTRUCTIONS,
+  ANALYST_INSTRUCTIONS,
   analysisPrompt,
   blueprintResponseSchema,
   intentComparisonPrompt,
@@ -88,7 +88,7 @@ export class GeminiVideoGameplayAnalyst implements VideoGameplayAnalyst {
           model,
           contents,
           config: {
-            systemInstruction: QDAI_INSTRUCTIONS,
+            systemInstruction: ANALYST_INSTRUCTIONS,
             mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
             responseMimeType: 'application/json',
             responseJsonSchema,

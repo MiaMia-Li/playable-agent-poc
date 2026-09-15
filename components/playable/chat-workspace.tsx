@@ -981,7 +981,7 @@ export function ChatWorkspace({
         {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
           <section aria-label="参考视频分析" className="space-y-2 rounded-xl border p-3">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold">QDAI 视频玩法分析</h2>
+              <h2 className="text-sm font-semibold">视频玩法分析</h2>
               <Badge
                 variant={videoAnalysisUnavailable || videoAnalysisStatus === 'failed' ? 'destructive' : 'secondary'}
               >

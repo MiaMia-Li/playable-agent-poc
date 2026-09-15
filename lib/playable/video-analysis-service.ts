@@ -70,7 +70,7 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
     await input.repository.appendEvent({
       taskId: input.task.id,
       type: 'video_gameplay_analysis_started',
-      message: 'QDAI gameplay analysis started',
+      message: 'Gameplay analysis started',
     })
     // Recorded with the result, so a later change of intent can be detected
     // and compared without watching the video again.
@@ -97,7 +97,7 @@ export async function runVideoAnalysis(input: RunVideoAnalysisInput): Promise<Ga
     })
     return sanitizedBlueprint
   } catch {
-    console.error('QDAI video gameplay analysis failed')
+    console.error('Video gameplay analysis failed')
     await input.repository.failVideoAnalysis(input.analysis.id, 'analysis_failed').catch(() => undefined)
     await input.repository
       .appendEvent({
