@@ -56,3 +56,25 @@ the runner does not prove those game-specific properties automatically. Every in
 - After a fix, rerun the failed check and affected downstream transitions. A state-machine change requires the affected sequence to pass end to end; unrelated passing checks need not be repeated. Tie evidence to the tested output hash and check scope. Reuse it only while the artifact and relevant test assertions remain unchanged; never carry stale evidence across builds.
 - Generate the concise requirement-to-evidence checklist from collected results once. Stop when required checks pass. Editing only reports does not require another structural check, ZIP extraction, screenshot run, or full gameplay replay. Report optional size warnings without restarting acceptance.
 - Use the available Node.js runtime for JSON summaries and hashes instead of assuming tools such as `jq` are installed. Keep report formatting separate from test exit status. A report-rendering failure does not invalidate already recorded test results, and a required test failure must never be reported as passed.
+
+## Inspect and patch obfuscated Cocos business scripts
+
+For the dragon templates' array/offset/rotation obfuscation, use the bundled helper after extracting the **current** business script:
+
+```sh
+node assets/starter/work/inspect-cocos-bundle.mjs work/base/files/assets/main/index.js
+```
+
+Read `work/cocos-inspection/latest.json` for the report location. `inspection.json` contains the source SHA-256, decoder name, offset, rotation, and hexadecimal-index-to-string dictionary. Look up only the indices or gameplay names needed for the confirmed change; do not print the entire minified script or dictionary into the conversation. The helper uses bundled Acorn 8.15.0 (MIT; license beside the parser); it needs no install, network access or Sandbox snapshot update.
+
+The helper statically evaluates only a supported string-table rotation pattern. It never runs the bundle, engine, or extracted initialization. AST ranges identify source locations, **not independently executable snippets**. Do not reconstruct initialization by string slicing, guessed closing parentheses or `vm.runInContext`. Unsupported structures and exhausted analysis budgets return exit zero with `status: unsupported` and a diagnostic `code` in `work/cocos-inspection/latest.json`; zero only means the report was saved, not successful decoding. Missing inputs and report write failures still return nonzero. Read the fixed JSON entry directly, without a temporary pretty file; inspect the specific structure before choosing another approach, rather than repeatedly retrying an unchanged input.
+
+Analysis is cached by tool version and exact source hash. Reuse it for unchanged input; changes to a revision's business script automatically select a new report. This cache is analysis only, never browser acceptance evidence.
+
+Apply targeted literal replacements through a checked patch plan when useful:
+
+```sh
+node assets/starter/work/patch-cocos-bundle.mjs work/base/files/assets/main/index.js work/patch-plan.json work/patched/assets/main/index.js
+```
+
+The JSON plan is `{ "sourceSha256": "hash from inspection", "patches": [{ "before": "exact source fragment", "after": "replacement fragment" }] }`. Each fragment must match exactly once in sequence. The helper rejects stale source hashes, missing/ambiguous matches and invalid final JavaScript before writing the separate output. Never patch the master source. Re-embed the changed file into `output.html`, then run structural and browser checks; successful parsing alone is not acceptance.
