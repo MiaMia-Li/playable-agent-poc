@@ -1,4 +1,5 @@
 import { createOpenAI } from '@ai-sdk/openai'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 const DEFAULT_PLAYABLE_AGENT_MODEL = 'openai/gpt-5.6-sol'
@@ -8,6 +9,10 @@ const DEFAULT_OPENROUTER_VIDEO_ANALYSIS_MODEL = 'google/gemini-3.5-flash'
 
 export function createPlayableAIProvider(apiKey: string) {
   return createOpenAI({ apiKey, baseURL: OPENROUTER_BASE_URL })
+}
+
+export function createPlayableResearchAIProvider(apiKey: string) {
+  return createOpenRouter({ apiKey, baseURL: OPENROUTER_BASE_URL, compatibility: 'strict' })
 }
 
 export function readOpenRouterApiKey(

@@ -15,7 +15,7 @@ import {
 } from './schemas'
 import { PlayableAgentError } from './playable-agent-adapter'
 import type { AgentReplyOptions, RequirementAnalysisToolCall } from './playable-agent-adapter'
-import { searchBriefSchema } from './research/schemas'
+import { marketResearchReportSchema, searchBriefSchema, type MarketResearchReport } from './research/schemas'
 import type { SafePlayableAsset } from './task-assets'
 import { MAHJONG_PLAYABLE_PLUGIN, PLAYABLE_MODES } from './template-registry'
 import { PLAYABLE_TEMPLATES } from './template-catalog'
@@ -33,6 +33,7 @@ export const requirementToolNames = [
   'list_playable_capabilities',
   'validate_implementation_route',
   'respond_to_user',
+  'present_market_research',
   'offer_market_research',
   'ask_user',
   'submit_confirmation',
@@ -381,6 +382,7 @@ export function executeRequirementToolPlan(input: {
   prompt: string
   assets?: SafePlayableAsset[]
   hasArtifact?: boolean
+  marketResearch?: MarketResearchReport
 }): RequirementToolExecution {
   const plan = requirementAgentPlanSchema.parse(input.plan)
   let brief = input.currentBrief ? requirementBriefSchema.parse(input.currentBrief) : createRequirementBrief()
@@ -441,6 +443,16 @@ export function executeRequirementToolPlan(input: {
         brief,
         annotations,
         tools,
+      }
+      continue
+    }
+    if (call.name === 'present_market_research') {
+      if (!input.marketResearch) throw new Error('Market research presentation requires a completed report')
+      terminalReply = {
+        kind: 'research',
+        message: plan.message,
+        reasoning: plan.reasoning,
+        research: marketResearchReportSchema.parse(input.marketResearch),
       }
       continue
     }
@@ -510,6 +522,7 @@ export function executeRequirementToolPlan(input: {
   // a way to skip the brief update entirely.
   if (
     terminalReply.kind !== 'informational' &&
+    terminalReply.kind !== 'research' &&
     !tools.includes('offer_market_research') &&
     !tools.includes('update_requirement_brief')
   ) {
@@ -530,9 +543,13 @@ export const REQUIREMENT_AGENT_INSTRUCTIONS = [
   'First infer the conversational intent from the full conversation. Do not classify by keywords alone.',
   'For greetings, identity or capability questions, usage help, unrelated conversation, and other messages that do not state or modify a game requirement, call only respond_to_user. Answer naturally and do not update the brief, inspect capabilities, or evaluate a route.',
   'A message may contain both a question and a game requirement. When it states or changes a requirement, treat it as a requirement turn instead of an informational turn.',
-  'When the user explicitly asks to search competitors, popular gameplay, market references, or similar ads, request search_market_references immediately.',
-  'When research would help only because the direction is broad, uncertain, approximate, or freeform, call only offer_market_research with an approval request offering 开始搜索 and 跳过搜索. Preserve the current brief unchanged.',
+  'Decide whether to call search_market_references from the user goal and full conversation, not from keywords or fixed query categories. Search when current public evidence would materially improve the answer or the next requirement decision.',
+  'When research is merely optional and would interrupt an otherwise useful response, call only offer_market_research with an approval request offering 开始搜索 and 跳过搜索. Preserve the current brief unchanged.',
   'Skip market research when gameplay is already clear, a strong reference is attached, the user is revising an existing playable, or the conversation is not a game requirement.',
+  'A completed search_market_references result is private evidence for another model decision; it does not automatically require a selectable market-research presentation.',
+  'After reviewing completed market research and the full conversation, decide naturally whether to answer with respond_to_user, ask a useful question, continue the requirement workflow, or call present_market_research as the only terminal tool.',
+  'Call present_market_research only when exposing selectable directions would materially help the user choose or combine inputs for the playable. Do not use keyword rules or rigid query categories to make this decision.',
+  'When a conversational synthesis answers the user better than a selector, use respond_to_user and ground the answer in the completed research evidence.',
   'Market research results do not update the requirement brief. Only a supplied referenceSelection represents user-approved research input.',
   'Treat referenceSelection as approved observational evidence while still excluding brands, original assets, trademarks, and original copy.',
   'Never describe public trend evidence as CTR, CVR, IPM, ROAS, conversion proof, or performance proof.',

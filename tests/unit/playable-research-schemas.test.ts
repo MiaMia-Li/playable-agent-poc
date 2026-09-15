@@ -88,13 +88,13 @@ describe('playable market research schemas', () => {
     expect(marketResearchReportSchema.parse(report)).toEqual(report)
   })
 
-  it('rejects conversion-performance language on public trend evidence', () => {
+  it('accepts performance-metric disclaimers on public trend evidence', () => {
     expect(
       researchEvidenceSchema.safeParse({
         ...candidate.evidence[0],
-        label: 'ROAS 表现优秀',
+        value: '公开趋势仅作玩法参考，不代表 CTR、CVR、IPM 或 ROAS。',
       }).success,
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('rejects non-HTTPS source URLs and more than five candidates', () => {

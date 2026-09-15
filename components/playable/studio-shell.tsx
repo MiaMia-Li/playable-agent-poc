@@ -320,7 +320,7 @@ function SidebarContent({
         {collapsed ? (
           <div className="min-h-0 flex-1" />
         ) : (
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-none px-3 pb-4">
             <div className="text-muted-foreground mb-3 flex items-center gap-2 px-2 text-xs font-medium">
               <MessageSquareText className="size-3.5" aria-hidden="true" />
               最近对话

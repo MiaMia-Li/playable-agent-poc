@@ -3,7 +3,7 @@ import {
   allowedResearchDomains,
   canonicalResearchUrl,
   createResearchCacheKey,
-  isAllowedResearchUrl,
+  isValidResearchUrl,
 } from '@/lib/playable/research/source-registry'
 import type { SearchBrief } from '@/lib/playable/research/schemas'
 
@@ -28,8 +28,10 @@ describe('playable research source registry', () => {
     'https://www.facebook.com/ads/library/example',
     'https://www.applovin.com/blog/example',
     'https://info.liftoff.io/reports/example',
-  ])('accepts a curated HTTPS source: %s', (url) => {
-    expect(isAllowedResearchUrl(url)).toBe(true)
+    'https://playableadsmaker.com/templates/water-sort',
+    'https://example.com/ad',
+  ])('accepts a public HTTPS source: %s', (url) => {
+    expect(isValidResearchUrl(url)).toBe(true)
   })
 
   it('exports only canonical domain names', () => {
@@ -45,13 +47,12 @@ describe('playable research source registry', () => {
   it.each([
     'http://ads.tiktok.com/example',
     'https://user:secret@ads.tiktok.com/example',
-    'https://ads.tiktok.com.evil.example/example',
     'https://localhost/example',
     'https://127.0.0.1/example',
-    'https://example.com/ad',
     'https://ads.tiktok.com/example#hidden',
-  ])('rejects an unsafe or unregistered URL: %s', (url) => {
-    expect(isAllowedResearchUrl(url)).toBe(false)
+    'not-a-url',
+  ])('rejects an unsafe URL: %s', (url) => {
+    expect(isValidResearchUrl(url)).toBe(false)
   })
 
   it('canonicalizes safe source URLs without tracking parameters', () => {

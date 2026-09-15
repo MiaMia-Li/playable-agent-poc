@@ -1022,7 +1022,7 @@ export function ChatWorkspace({
     <section aria-label="需求对话" className="flex min-h-0 flex-col overflow-hidden">
       <div
         ref={scrollContainer}
-        className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pt-5 pb-1"
+        className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-y-none px-5 pt-5 pb-1"
         onScroll={() => {
           const node = scrollContainer.current
           if (node) followBuild.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
@@ -1289,11 +1289,9 @@ export function ChatWorkspace({
                         />
                       </div>
                     ) : (
-                      <details className="mt-4 overflow-hidden rounded-xl border">
-                        <summary className="bg-muted/30 cursor-pointer select-none px-4 py-3 text-sm font-semibold">
-                          历史构建方案
-                        </summary>
-                        <div className="border-t p-4">
+                      <details className="mt-4">
+                        <summary className="cursor-pointer select-none font-semibold">历史构建方案</summary>
+                        <div className="mt-4">
                           <ConfirmationTable
                             proposal={item.confirmation}
                             onChange={() => undefined}
