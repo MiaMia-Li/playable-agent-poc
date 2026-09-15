@@ -25,6 +25,7 @@ import { createVideoGameplayAnalyst } from './video-analysis-backend'
 import { authenticatePublicPlayable } from './public-access'
 import { CodexCliReferenceImageAnalyst, OpenAIReferenceImageAnalyst } from './reference-image-analyst'
 import { OpenAIMarketResearchAgent } from './research/openai-market-research-agent'
+import { LocalFfmpegReferenceKeyframeExtractor, SandboxReferenceKeyframeExtractor } from './reference-keyframes'
 
 const localDemo = isLocalDemoMode()
 const localCodex = isLocalCodexMode()
@@ -49,6 +50,13 @@ const imageAnalyst = localDemo
     ? new CodexCliReferenceImageAnalyst()
     : new OpenAIReferenceImageAnalyst()
 const marketResearchAgent = localDemo ? localDemoRuntime.marketResearchAgent : new OpenAIMarketResearchAgent()
+// Local demo cuts no frames; local Codex has no remote snapshot and uses the
+// ffmpeg on PATH; everything else restores the build snapshot (ADR 0003).
+const keyframeExtractor = localDemo
+  ? undefined
+  : localCodex
+    ? new LocalFfmpegReferenceKeyframeExtractor()
+    : new SandboxReferenceKeyframeExtractor()
 
 const authenticate = localDemo
   ? authenticateLocalDemo
@@ -67,6 +75,7 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   mediaGenerator: localDemo ? localDemoRuntime.mediaGenerator : undefined,
   imageAnalyst,
   videoAnalyst,
+  keyframeExtractor,
   marketResearchAgent,
   generateId,
 })

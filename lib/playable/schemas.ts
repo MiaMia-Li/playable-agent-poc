@@ -120,6 +120,21 @@ export const visualSpecSchema = z.strictObject({
 
 export const MAX_REFERENCE_KEYFRAMES = 12
 
+export const referenceKeyframeStatuses = ['pending', 'extracting', 'succeeded', 'failed', 'unavailable'] as const
+export const referenceKeyframeStatusSchema = z.enum(referenceKeyframeStatuses)
+
+/** One frame that was actually cut out, pointing back at `blueprint.keyframes[keyframeIndex]`. */
+export const referenceKeyframeImageSchema = z.strictObject({
+  keyframeIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_REFERENCE_KEYFRAMES - 1),
+  storageKey: z.string().min(1),
+  mimeType: z.literal('image/jpeg'),
+})
+export const referenceKeyframeImagesSchema = z.array(referenceKeyframeImageSchema).max(MAX_REFERENCE_KEYFRAMES)
+
 /** A moment the model picked to be cut out as a Reference Keyframe. */
 export const referenceKeyframeSchema = z.strictObject({
   seconds: z.number().min(0),
@@ -252,6 +267,8 @@ export function toGameplayBlueprintDocument(
 export type GameplayInference = z.infer<typeof gameplayInferenceSchema>
 export type VisualSpec = z.infer<typeof visualSpecSchema>
 export type ReferenceKeyframe = z.infer<typeof referenceKeyframeSchema>
+export type ReferenceKeyframeStatus = z.infer<typeof referenceKeyframeStatusSchema>
+export type ReferenceKeyframeImage = z.infer<typeof referenceKeyframeImageSchema>
 export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
 export type GameplayBlueprintDocument = z.infer<typeof gameplayBlueprintDocumentSchema>
 export type GameplayAnnotation = z.infer<typeof gameplayAnnotationSchema>

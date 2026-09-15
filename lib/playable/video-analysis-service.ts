@@ -7,7 +7,7 @@ import type { PlayableAsset } from './task-assets'
 import type { VideoGameplayAnalyst } from './video-gameplay-analyst'
 import { deriveGameplayIntent } from './gameplay-intent'
 
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+export async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const reader = stream.getReader()
   const chunks: Uint8Array[] = []
   let length = 0
@@ -158,6 +158,10 @@ export async function runIntentComparison(input: RunIntentComparisonInput): Prom
       blueprint: sanitizeBlueprint({ ...base, intentDivergence }),
       mediaResolution: input.analysis.mediaResolution,
       intentText: input.intent,
+      // Same video, same keyframes: carried over so the Reference Keyframes do
+      // not vanish whenever the intent moves on (spec §3.3).
+      keyframeStatus: input.analysis.keyframeStatus,
+      keyframeImages: input.analysis.keyframeImages,
     })
     if (!recorded) return false
     await input.repository.appendEvent({

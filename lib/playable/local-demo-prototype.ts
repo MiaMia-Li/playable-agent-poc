@@ -21,6 +21,7 @@ import type {
   GameplayBlueprint,
   PlayableAgentReply,
   PlayableTaskPhase,
+  ReferenceKeyframe,
   RequirementBrief,
   RevisionProposal,
 } from './schemas'
@@ -1065,6 +1066,8 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
       attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
+      keyframeStatus: null,
+      keyframeImages: null,
       mediaResolution: null,
       intentText: null,
       errorCode: null,
@@ -1112,6 +1115,8 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     blueprint: GameplayBlueprint
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
     intentText: string
+    keyframeStatus: PlayableVideoAnalysisRecord['keyframeStatus']
+    keyframeImages: PlayableVideoAnalysisRecord['keyframeImages']
   }): Promise<PlayableVideoAnalysisRecord | undefined> {
     const analyses = this.videoAnalyses.get(input.taskId) ?? []
     const taken = analyses.some(
@@ -1151,9 +1156,36 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = structuredClone(blueprint)
+    analysis.keyframeStatus = 'pending'
+    analysis.keyframeImages = []
     analysis.mediaResolution = mediaResolution
     analysis.intentText = intentText
     analysis.completedAt = new Date()
+  }
+
+  async saveReferenceKeyframes(input: {
+    assetId: string
+    pipelineVersion: string
+    model: string
+    fromAttempt: number
+    keyframes: ReferenceKeyframe[]
+    status: NonNullable<PlayableVideoAnalysisRecord['keyframeStatus']>
+    images: NonNullable<PlayableVideoAnalysisRecord['keyframeImages']>
+  }): Promise<void> {
+    const keyframes = JSON.stringify(input.keyframes)
+    for (const analysis of [...this.videoAnalyses.values()].flat()) {
+      if (
+        analysis.assetId === input.assetId &&
+        analysis.pipelineVersion === input.pipelineVersion &&
+        analysis.model === input.model &&
+        analysis.status === 'succeeded' &&
+        analysis.attempt >= input.fromAttempt &&
+        JSON.stringify(analysis.blueprint?.keyframes) === keyframes
+      ) {
+        analysis.keyframeStatus = input.status
+        analysis.keyframeImages = structuredClone(input.images)
+      }
+    }
   }
 
   async failVideoAnalysis(id: string, errorCode: string): Promise<void> {

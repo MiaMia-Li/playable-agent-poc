@@ -22,7 +22,15 @@ const blueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualSpec: { artStyle: '卡通', palette: [], background: '', layout: [], uiComponents: [], entityLooks: [], effects: [] },
+  visualSpec: {
+    artStyle: '卡通',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
   keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
@@ -64,6 +72,8 @@ const analysis: PlayableVideoAnalysisRecord = {
   mediaResolution: null,
   intentText: null,
   blueprint: null,
+  keyframeStatus: null,
+  keyframeImages: null,
   errorCode: null,
   createdAt: new Date(),
   completedAt: null,
@@ -206,6 +216,8 @@ describe('intent divergence comparison', () => {
     blueprint,
     mediaResolution: 'default',
     intentText: '',
+    keyframeStatus: 'succeeded',
+    keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     completedAt: new Date(),
   }
   const divergence = [{ value: '视频是连连看，不是三消', confidence: 0.9, evidence: [] }]
@@ -241,6 +253,10 @@ describe('intent divergence comparison', () => {
       blueprint: { ...blueprint, intentDivergence: divergence },
       mediaResolution: 'default',
       intentText: '玩法概念：三消',
+      // Same video, same keyframes: without these the Reference Keyframes would
+      // vanish every time the intent moved on.
+      keyframeStatus: 'succeeded',
+      keyframeImages: [{ keyframeIndex: 0, storageKey: 'keyframe-1', mimeType: 'image/jpeg' }],
     })
   })
 

@@ -273,7 +273,10 @@ export function parseBlueprint(text: string): GameplayBlueprint {
   const blueprint = gameplayBlueprintSchema.parse(normalizeConfidence(normalizePalette(JSON.parse(unwrapJson(text)))))
   const keyframes = [...blueprint.keyframes]
     .sort((left, right) => left.seconds - right.seconds)
-    .filter((keyframe, index, sorted) => index === 0 || keyframe.seconds - sorted[index - 1].seconds >= KEYFRAME_MIN_GAP_SECONDS)
+    .filter(
+      (keyframe, index, sorted) =>
+        index === 0 || keyframe.seconds - sorted[index - 1].seconds >= KEYFRAME_MIN_GAP_SECONDS,
+    )
   return {
     ...blueprint,
     timeline: [...blueprint.timeline].sort((left, right) => left.startSeconds - right.startSeconds),

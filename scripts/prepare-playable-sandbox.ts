@@ -84,8 +84,12 @@ export async function preparePlayableSandbox() {
     await run('cp', ['-R', '/tmp/playable-tools-bootstrap/.', PLAYABLE_TOOLS_ROOT], true)
     console.log('Updating system package index')
     await run('apt-get', ['update'], true)
-    console.log('Installing utilities and Chinese fonts')
-    await run('apt-get', ['install', '-y', 'jq', 'zip', 'unzip', 'fonts-noto-cjk'], true)
+    console.log('Installing utilities, Chinese fonts and ffmpeg')
+    // ffmpeg cuts Reference Keyframes. It is checked by the keyframe extractor
+    // itself, not by the build's tools version, so an older snapshot only costs
+    // the keyframes (ADR 0003).
+    await run('apt-get', ['install', '-y', 'jq', 'zip', 'unzip', 'fonts-noto-cjk', 'ffmpeg'], true)
+    await run('ffmpeg', ['-hide_banner', '-version'])
     console.log('Installing pinned Playwright package')
     await run('npm', ['install', '--prefix', PLAYABLE_TOOLS_ROOT, '--ignore-scripts', '--no-audit', '--no-fund'], true)
     console.log('Installing Chromium and browser system dependencies')
@@ -118,6 +122,8 @@ export async function preparePlayableSandbox() {
       env: checkEnv,
     })
     if (check.exitCode !== 0) throw new Error('Restored browser check failed')
+    const ffmpegCheck = await restored.runCommand({ cmd: 'ffmpeg', args: ['-hide_banner', '-version'] })
+    if (ffmpegCheck.exitCode !== 0) throw new Error('Restored ffmpeg check failed')
     // wx 防止并发覆盖；只有恢复验证成功的快照才能进入部署配置。
     await writeFile(output, `PLAYABLE_SANDBOX_SNAPSHOT_ID=${snapshot.snapshotId}\n`, { flag: 'wx', mode: 0o600 })
     saved = true

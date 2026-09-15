@@ -90,7 +90,15 @@ const gameplayBlueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualSpec: { artStyle: '卡通风格', palette: [], background: '', layout: [], uiComponents: [], entityLooks: [], effects: [] },
+  visualSpec: {
+    artStyle: '卡通风格',
+    palette: [],
+    background: '',
+    layout: [],
+    uiComponents: [],
+    entityLooks: [],
+    effects: [],
+  },
   keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
@@ -481,6 +489,8 @@ class MemoryRepository implements PlayableTaskRepository {
       attempt: (latest?.attempt ?? 0) + 1,
       status: 'pending',
       blueprint: null,
+      keyframeStatus: null,
+      keyframeImages: null,
       mediaResolution: null,
       intentText: null,
       errorCode: null,
@@ -526,6 +536,8 @@ class MemoryRepository implements PlayableTaskRepository {
     blueprint: GameplayBlueprint
     mediaResolution: PlayableVideoAnalysisRecord['mediaResolution']
     intentText: string
+    keyframeStatus: PlayableVideoAnalysisRecord['keyframeStatus']
+    keyframeImages: PlayableVideoAnalysisRecord['keyframeImages']
   }): Promise<PlayableVideoAnalysisRecord | undefined> {
     const taken = this.videoAnalyses.some(
       (analysis) =>
@@ -562,9 +574,36 @@ class MemoryRepository implements PlayableTaskRepository {
     if (!analysis) return
     analysis.status = 'succeeded'
     analysis.blueprint = blueprint
+    analysis.keyframeStatus = 'pending'
+    analysis.keyframeImages = []
     analysis.mediaResolution = mediaResolution
     analysis.intentText = intentText
     analysis.completedAt = new Date()
+  }
+
+  async saveReferenceKeyframes(input: {
+    assetId: string
+    pipelineVersion: string
+    model: string
+    fromAttempt: number
+    keyframes: GameplayBlueprint['keyframes']
+    status: NonNullable<PlayableVideoAnalysisRecord['keyframeStatus']>
+    images: NonNullable<PlayableVideoAnalysisRecord['keyframeImages']>
+  }): Promise<void> {
+    const keyframes = JSON.stringify(input.keyframes)
+    for (const analysis of this.videoAnalyses) {
+      if (
+        analysis.assetId === input.assetId &&
+        analysis.pipelineVersion === input.pipelineVersion &&
+        analysis.model === input.model &&
+        analysis.status === 'succeeded' &&
+        analysis.attempt >= input.fromAttempt &&
+        JSON.stringify(analysis.blueprint?.keyframes) === keyframes
+      ) {
+        analysis.keyframeStatus = input.status
+        analysis.keyframeImages = input.images
+      }
+    }
   }
 
   async failVideoAnalysis(id: string, errorCode: string): Promise<void> {
@@ -632,6 +671,12 @@ function createHarness() {
     compareIntent: vi.fn(async (): Promise<GameplayBlueprint['intentDivergence']> => []),
   }
   const imageAnalyst = { analyze: vi.fn(async () => referenceImageAnalysis) }
+  const keyframeExtractor = {
+    extract: vi.fn(
+      async (input: { seconds: number[] }): Promise<(Uint8Array | null)[] | 'unavailable'> =>
+        input.seconds.map(() => new Uint8Array([255, 216, 255])),
+    ),
+  }
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
   let mediaApiKey: string | undefined = 'sk-test-media-secret'
@@ -644,6 +689,7 @@ function createHarness() {
     artifactStore,
     videoAnalyst,
     imageAnalyst,
+    keyframeExtractor,
     schedule: scheduler,
     buildStartedEventTimeoutMs: 10,
     generateId: (() => {
@@ -659,6 +705,7 @@ function createHarness() {
     artifactStore,
     videoAnalyst,
     imageAnalyst,
+    keyframeExtractor,
     artifacts,
     handlers,
     setAuthenticatedUser(value: string | undefined) {
@@ -781,6 +828,58 @@ describe('playable task API', () => {
     )
   })
 
+  // Keyframes are cut in their own background work after the analysis, and
+  // served only for the active video's current analysis (spec §3).
+  it('cuts reference keyframes after the analysis and serves them for the active video only', async () => {
+    const video = referenceVideo('video-keyframes')
+    harness.repository.assets.push(video)
+    harness.artifacts.set(video.storageKey, new Uint8Array([1]))
+    harness.videoAnalyst.analyze.mockResolvedValueOnce({
+      blueprint: {
+        ...gameplayBlueprint,
+        keyframes: [
+          { seconds: 2, focus: '主界面布局' },
+          { seconds: 20, focus: '结算页' },
+        ],
+      },
+      mediaResolution: 'high',
+    })
+    harness.keyframeExtractor.extract.mockResolvedValueOnce([new Uint8Array([255, 216, 255]), null])
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+
+    await harness.handlers.analysis(
+      request('/api/playable-tasks/owned/analysis', 'POST', { assetId: video.id }),
+      context,
+    )
+    await harness.scheduled[0]()
+    // The analysis queues the extraction rather than running it on its own clock.
+    expect(harness.scheduled).toHaveLength(2)
+    const pending = await (
+      await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context)
+    ).json()
+    expect(pending.analysis.keyframeStatus).toBe('pending')
+
+    await harness.scheduled[1]()
+    expect(harness.keyframeExtractor.extract).toHaveBeenCalledWith(expect.objectContaining({ seconds: [2, 20] }))
+    const ready = await (await harness.handlers.analysis(request('/api/playable-tasks/owned/analysis'), context)).json()
+    expect(ready.analysis.keyframeStatus).toBe('succeeded')
+    expect(ready.analysis.keyframes).toEqual([
+      { index: 0, seconds: 2, focus: '主界面布局', available: true },
+      { index: 1, seconds: 20, focus: '结算页', available: false },
+    ])
+
+    const keyframe = (index: string) =>
+      harness.handlers.analysisKeyframe(request(`/api/playable-tasks/owned/analysis/keyframes/${index}`), {
+        params: Promise.resolve({ taskId: 'owned', index }),
+      })
+    const served = await keyframe('0')
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('image/jpeg')
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(new Uint8Array([255, 216, 255]))
+    expect((await keyframe('1')).status).toBe(404)
+    expect((await keyframe('../x')).status).toBe(404)
+  })
+
   it('does not pass an older video blueprint after a new reference video is uploaded', async () => {
     harness.repository.assets.push(
       {
@@ -819,6 +918,8 @@ describe('playable task API', () => {
       mediaResolution: null,
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       completedAt: new Date('2026-01-01T00:01:00Z'),
@@ -1241,6 +1342,8 @@ describe('playable task API', () => {
       mediaResolution: 'high',
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1370,6 +1473,8 @@ describe('playable task API', () => {
       mediaResolution: 'default',
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1419,6 +1524,8 @@ describe('playable task API', () => {
       mediaResolution: 'high',
       intentText: '',
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
@@ -1701,6 +1808,8 @@ describe('playable task API', () => {
       mediaResolution: null,
       intentText: null,
       blueprint: gameplayBlueprint,
+      keyframeStatus: null,
+      keyframeImages: null,
       errorCode: null,
       createdAt: new Date(),
       completedAt: new Date(),
