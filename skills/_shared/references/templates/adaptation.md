@@ -79,7 +79,6 @@ node assets/starter/work/patch-cocos-bundle.mjs work/base/files/assets/main/inde
 
 The JSON plan is `{ "sourceSha256": "hash from inspection", "patches": [{ "before": "exact source fragment", "after": "replacement fragment" }] }`. Each fragment must match exactly once in sequence. The helper rejects stale source hashes, missing/ambiguous matches and invalid final JavaScript before writing the separate output. Never patch the master source. Re-embed the changed file into `output.html`, then run structural and browser checks; successful parsing alone is not acceptance.
 
-
 ## Use the common template package tools
 
 For all four standalone source templates, unpack the current artifact once:
@@ -96,9 +95,12 @@ node assets/starter/work/template-package.mjs pack work/package output.html
 
 No-change round trips preserve the exact original HTML bytes. Changed scripts and JSON are syntax-checked; the tool preserves other entries and original HTML wrappers. Packing rejects unsafe paths, modified manifests, missing resources and conflicting edits. It replaces output only after validation. Continue to validate the real re-embedded HTML in the browser; a successful pack is not gameplay acceptance. Apply any outer HTML changes after packing, or unpack that newer HTML into a fresh directory before another resource edit.
 
-
 ## Use the supplied state probe
 
 The browser runner passes a `probe` to every scenario. `await probe.snapshot()` returns a bounded read-only snapshot: engine, readiness, current public state, native scene nodes/component state and visible input-target bounds. Cocos and Laya probes traverse the actual scene; the existing `__PLAYABLE__.snapshot()` contract supplies state for other templates. Missing fields remain absent, not fabricated.
 
 Use `await probe.waitFor(s => s.state.ended === true, { timeout: 12000 })` only when that field is actually exposed. Otherwise use the observed native node/component field. Waiting is bounded; do not replace state waits with long fixed sleeps. `await probe.click('start')` targets the wheel's native start button; dragon slots and Zeus expose `spin`, Zeus exposes `collect`. Actual node names or unique scene paths from `snapshot().targets` are also accepted. Missing or ambiguous bounds fail instead of guessing coordinates. For Balloon Master, select an observed gameplay target from the scene; its `download` target is for inspection, not a gameplay start. Never click a store target during acceptance. Still assert the observed gameplay outcome with `check`; probe availability alone proves nothing.
+
+## Tool availability
+
+Read the host-generated `sandbox-tools.json`. Use `node assets/starter/work/node-tools.mjs header INPUT OUTPUT`, `json INPUT OUTPUT`, or `hash INPUT OUTPUT` instead of assuming `xxd`, `jq` or Python exist. Results are saved to files, not dumped into conversation. The inventory records actual command availability, not support for every possible flag. Do not install missing optional utilities during a build.

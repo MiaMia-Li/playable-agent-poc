@@ -1,3 +1,4 @@
+import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { referenceImageWorkspaceFiles, REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { readBuildSkillFiles } from './build-skill'
@@ -365,6 +366,11 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           executeAgent: async ({ phase, sandbox, workspace: remoteWorkspace, abortSignal }) => {
             const current = await sandbox.readTextFile({ path: path.join(remoteWorkspace, 'output.html'), abortSignal })
             if (current) await writeFile(path.join(localWorkspace, 'output.html'), current)
+            const inventory = await sandbox.readTextFile({
+              path: path.join(remoteWorkspace, 'sandbox-tools.json'),
+              abortSignal,
+            })
+            if (inventory) await writeFile(path.join(localWorkspace, 'sandbox-tools.json'), inventory)
             input.onActivity?.('agent_started')
             const completion = await this.invokeCodex({
               workspace: localWorkspace,
@@ -374,6 +380,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               schema: codexOutputSchema(completionSchema),
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
+                PLAYABLE_TOOLS_PROMPT,
                 REFERENCE_IMAGES_BUILD_PROMPT,
                 NATIVE_TEMPLATE_UI_PROMPT,
                 phase === 'preview' ? PREVIEW_BUILD_PROMPT : FULL_ACCEPTANCE_PROMPT,

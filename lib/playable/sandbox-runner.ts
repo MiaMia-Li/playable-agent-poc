@@ -233,6 +233,15 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
+    await requireSuccessfulCommand(
+      sandbox,
+      {
+        command: 'node assets/starter/work/node-tools.mjs inventory sandbox-tools.json',
+        workingDirectory: workspace,
+        abortSignal: dependencies.abortSignal,
+      },
+      'Failed to inspect Sandbox tools',
+    )
     if (input.revision) {
       await sandbox.writeTextFile({
         path: path.join(workspace, 'revision-plan.json'),
