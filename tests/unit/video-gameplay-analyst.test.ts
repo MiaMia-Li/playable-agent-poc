@@ -27,7 +27,7 @@ function segment(startSeconds: number, endSeconds: number): GameplayTimelineSegm
 }
 
 const blueprint: GameplayBlueprint = {
-  version: 3,
+  version: 4,
   summary: '依次选择英雄',
   orientation: 'portrait',
   timeline: [],
@@ -41,7 +41,8 @@ const blueprint: GameplayBlueprint = {
   progression: [],
   tutorial: [],
   endCard: null,
-  visualStyle: '卡通',
+  visualSpec: { artStyle: '卡通', palette: [], background: '', layout: [], uiComponents: [], entityLooks: [], effects: [] },
+  keyframes: [],
   audio: [],
   intentDivergence: [],
   uncertainties: [],
@@ -110,6 +111,61 @@ describe('gameplay timeline in the blueprint', () => {
     expect(parsed.overallConfidence).toBe(0.88)
     expect(() =>
       parseBlueprint(JSON.stringify({ ...blueprint, timeline: [{ ...segment(0, 1), confidence: 150 }] })),
+    ).toThrow()
+  })
+
+  it('asks for the visual spec and keyframes after the timeline', () => {
+    const keys = Object.keys(blueprintResponseSchema().properties as Record<string, unknown>)
+    expect(keys.indexOf('timeline')).toBeLessThan(keys.indexOf('visualSpec'))
+    expect(keys.indexOf('visualSpec')).toBeLessThan(keys.indexOf('keyframes'))
+    expect(keys).not.toContain('visualStyle')
+  })
+
+  // The gateway returns a bare 400 for the bounds zod emits; `pattern` is
+  // stripped with them rather than risking every analysis on it.
+  it('sends no regex pattern to the model', () => {
+    expect(JSON.stringify(blueprintResponseSchema())).not.toContain('"pattern"')
+  })
+
+  // An off-format colour is the same colour, not worth a billed retry.
+  it('normalises palette colours and still rejects something that is not a colour', () => {
+    const withPalette = (hex: string) =>
+      JSON.stringify({ ...blueprint, visualSpec: { ...blueprint.visualSpec, palette: [{ hex, usage: '背景' }] } })
+    expect(parseBlueprint(withPalette('F5AABB')).visualSpec.palette[0].hex).toBe('#F5AABB')
+    expect(parseBlueprint(withPalette(' #f5a ')).visualSpec.palette[0].hex).toBe('#ff55aa')
+    expect(() => parseBlueprint(withPalette('pink'))).toThrow()
+  })
+
+  it('orders keyframes and drops ones that would cut out the same frame', () => {
+    const parsed = parseBlueprint(
+      JSON.stringify({
+        ...blueprint,
+        keyframes: [
+          { seconds: 9, focus: '结算页' },
+          { seconds: 2, focus: '主界面' },
+          { seconds: 2.3, focus: '主界面近似' },
+        ],
+      }),
+    )
+    expect(parsed.keyframes.map((keyframe) => keyframe.focus)).toEqual(['主界面', '结算页'])
+  })
+
+  // ffmpeg yields nothing at the exact end of the stream.
+  it('pulls a keyframe on the last second inside the video and rejects one well past it', () => {
+    const validated = validateEvidenceTimes({ ...blueprint, keyframes: [{ seconds: 22, focus: '结算页' }] }, 21.1)
+    expect(validated.keyframes[0].seconds).toBeCloseTo(21.05)
+    expect(() => validateEvidenceTimes({ ...blueprint, keyframes: [{ seconds: 30, focus: '结算页' }] }, 21.1)).toThrow()
+  })
+
+  it('checks visual evidence against the video duration', () => {
+    const effect = {
+      name: '倍数放大',
+      trigger: '中奖',
+      motion: '弹簧缩放',
+      evidence: [{ startSeconds: 24, endSeconds: 40, observation: '倍数从 x1 升到 x1000' }],
+    }
+    expect(() =>
+      validateEvidenceTimes({ ...blueprint, visualSpec: { ...blueprint.visualSpec, effects: [effect] } }, 28),
     ).toThrow()
   })
 

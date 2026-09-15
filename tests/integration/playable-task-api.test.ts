@@ -72,7 +72,7 @@ const patchRevision: RevisionPlan = {
 }
 
 const gameplayBlueprint: GameplayBlueprint = {
-  version: 3,
+  version: 4,
   timeline: [],
   summary: '点击相同目标后消除。',
   orientation: 'portrait',
@@ -90,7 +90,8 @@ const gameplayBlueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通风格',
+  visualSpec: { artStyle: '卡通风格', palette: [], background: '', layout: [], uiComponents: [], entityLooks: [], effects: [] },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
 }

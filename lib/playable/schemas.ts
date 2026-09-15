@@ -58,11 +58,80 @@ export const gameplayTimelineSegmentSchema = z.strictObject({
 })
 
 /**
+ * Every visual list item names what it describes and cites when it is seen, so
+ * the build agent can line it up with a Reference Keyframe. No `confidence`:
+ * appearance is seen directly, and doubt belongs in `uncertainties`.
+ */
+const visualItemShape = {
+  name: z.string().trim().min(1).max(120),
+  evidence: z.array(gameplayEvidenceSchema).min(1).max(6),
+}
+
+/**
+ * What the Reference Video looks like (Visual Spec in CONTEXT.md). Entity
+ * appearance lives here, keyed by the name used in `entities`, which holds only
+ * the entity's role in play.
+ */
+export const visualSpecSchema = z.strictObject({
+  artStyle: z.string().trim().max(600),
+  palette: z
+    .array(
+      z.strictObject({
+        hex: z
+          .string()
+          .trim()
+          .regex(/^#[0-9a-fA-F]{6}$/),
+        usage: z.string().trim().max(120),
+      }),
+    )
+    .max(10),
+  background: z.string().trim().max(600),
+  layout: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        region: z.string().trim().max(120),
+        contents: z.string().trim().max(400),
+      }),
+    )
+    .max(8),
+  uiComponents: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        position: z.string().trim().max(160),
+        shape: z.string().trim().max(300),
+        colors: z.string().trim().max(200),
+        textStyle: z.string().trim().max(200),
+      }),
+    )
+    .max(16),
+  entityLooks: z.array(z.strictObject({ ...visualItemShape, look: z.string().trim().max(500) })).max(20),
+  effects: z
+    .array(
+      z.strictObject({
+        ...visualItemShape,
+        trigger: z.string().trim().max(200),
+        motion: z.string().trim().max(400),
+      }),
+    )
+    .max(12),
+})
+
+export const MAX_REFERENCE_KEYFRAMES = 12
+
+/** A moment the model picked to be cut out as a Reference Keyframe. */
+export const referenceKeyframeSchema = z.strictObject({
+  seconds: z.number().min(0),
+  focus: z.string().trim().min(1).max(200),
+})
+
+/**
  * One constant for the schema literal and the prompt that names it. When the
  * schema moved to 3 and the prompt still asked for "v2", a model that ignored
  * the schema's `const` wrote 2 and every attempt was rejected.
  */
-export const GAMEPLAY_BLUEPRINT_VERSION = 3
+export const GAMEPLAY_BLUEPRINT_VERSION = 4
 
 /**
  * What the model produces and what gets stored. It deliberately has no
@@ -89,7 +158,8 @@ export const gameplayBlueprintSchema = z.strictObject({
   progression: z.array(gameplayInferenceSchema).max(12),
   tutorial: z.array(gameplayInferenceSchema).max(8),
   endCard: gameplayInferenceSchema.nullable(),
-  visualStyle: z.string().trim().max(1000),
+  visualSpec: visualSpecSchema,
+  keyframes: z.array(referenceKeyframeSchema).max(MAX_REFERENCE_KEYFRAMES),
   audio: z.array(gameplayInferenceSchema).max(12),
   intentDivergence: z.array(gameplayInferenceSchema).max(8),
   uncertainties: z.array(z.string().trim().min(1).max(500)).max(12),
@@ -180,6 +250,8 @@ export function toGameplayBlueprintDocument(
 }
 
 export type GameplayInference = z.infer<typeof gameplayInferenceSchema>
+export type VisualSpec = z.infer<typeof visualSpecSchema>
+export type ReferenceKeyframe = z.infer<typeof referenceKeyframeSchema>
 export type GameplayBlueprint = z.infer<typeof gameplayBlueprintSchema>
 export type GameplayBlueprintDocument = z.infer<typeof gameplayBlueprintDocumentSchema>
 export type GameplayAnnotation = z.infer<typeof gameplayAnnotationSchema>

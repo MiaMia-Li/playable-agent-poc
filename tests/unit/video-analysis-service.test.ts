@@ -6,7 +6,7 @@ import { runIntentComparison, runVideoAnalysis } from '@/lib/playable/video-anal
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
 
 const blueprint: GameplayBlueprint = {
-  version: 3,
+  version: 4,
   timeline: [],
   summary: '点击两个相同目标并消除。',
   orientation: 'portrait',
@@ -22,7 +22,8 @@ const blueprint: GameplayBlueprint = {
   endCard: null,
   audio: [],
   intentDivergence: [],
-  visualStyle: '卡通',
+  visualSpec: { artStyle: '卡通', palette: [], background: '', layout: [], uiComponents: [], entityLooks: [], effects: [] },
+  keyframes: [],
   uncertainties: [],
   overallConfidence: 0.88,
 }
@@ -57,7 +58,7 @@ const analysis: PlayableVideoAnalysisRecord = {
   taskId: task.id,
   assetId: asset.id,
   status: 'pending',
-  pipelineVersion: 'video-analysis-v3',
+  pipelineVersion: 'video-analysis-v4',
   model: 'model',
   attempt: 1,
   mediaResolution: null,
@@ -234,7 +235,7 @@ describe('intent divergence comparison', () => {
       id: 'analysis-2',
       taskId: task.id,
       assetId: asset.id,
-      pipelineVersion: 'video-analysis-v3',
+      pipelineVersion: 'video-analysis-v4',
       model: 'model',
       attempt: 2,
       blueprint: { ...blueprint, intentDivergence: divergence },

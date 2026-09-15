@@ -9,7 +9,7 @@ import {
 // Stored with every analysis row. Bumped whenever the blueprint shape changes,
 // so older rows read as not yet analysed rather than failing to parse (spec
 // sections 5.2 and 7.6.2).
-export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'video-analysis-v3'
+export const VIDEO_ANALYSIS_PIPELINE_VERSION = 'video-analysis-v4'
 
 /** Which resolution the service actually applied, as opposed to which was asked for. */
 export type AppliedMediaResolution = 'high' | 'default'
@@ -83,12 +83,18 @@ export const ANALYST_INSTRUCTIONS = [
   'Never invent an input to explain a change on screen. Animations, transitions and automatic play are responses, not inputs; give them a null `playerInput`.',
   'At one frame per second you cannot measure how long an input is held. Use `long_press` only when a press is visible across several frames. When only the response is visible, choose the most likely action and mark it `ui_response`.',
   'In `coreLoop`, state how many times the loop is shown and how the outcomes differ between repetitions.',
-  'For each entity, describe how it looks and cite when it first appears.',
+  'In `entities`, state what each entity is and its role in play, citing when it first appears. Describe its appearance only in `visualSpec.entityLooks`, using the same name.',
+  'Fill `visualSpec` as if briefing an artist who must redraw the ad without seeing the video.',
+  'Give positions as fractions of screen width and height, and colours as approximate hex values.',
+  'For every UI component and entity look, state its shape, colours, outline or border, material and lighting, and text styling such as weight, stroke, gradient and shadow.',
+  'For every effect, state what triggers it, how it moves (direction, scale bounce, easing) and roughly how long it lasts.',
+  'In `keyframes`, pick at most 12 moments that best show the visual target: the main layout at rest, each distinct screen, and each climax or reward moment. Prefer a settled frame over one mid-transition. In `focus`, say in one sentence what a reader should look at in that frame.',
+  '`visualSpec` and `keyframes` are exempt from brevity: prefer specific detail over short phrasing there.',
   'In `audio`, separate sound effects with what triggers them, background music with its mood, tempo and how it changes, and narration transcribed verbatim with its timestamp.',
   'State explicitly when something a playable usually has is not shown, such as a failure state or a CTA button.',
   'Phrase every entry in `uncertainties` as a question the user could answer by watching the video.',
   'Do not suggest how to rebuild the ad, which engine to use, or how to reduce its size. Those are requirements, not observations.',
-  'Use concise Chinese descriptions suitable for a downstream playable-game planning agent.',
+  'Use Chinese descriptions suitable for a downstream playable-game planning agent: concise everywhere except `visualSpec` and `keyframes`.',
 ].join('\n')
 
 export const INTENT_INSTRUCTIONS = [
@@ -150,9 +156,12 @@ export function intentComparisonPrompt(input: { blueprint: GameplayBlueprint; in
  * 400, both through the gateway and through OpenRouter. Everything else
  * survives, including the `const` for the version literal and
  * `additionalProperties: false`, so strictness reaches the model. Bounds are
- * still enforced on the way back in by parsing with zod.
+ * still enforced on the way back in by parsing with zod. `pattern` (the palette
+ * hex) is stripped too: untested against the gateway, and a bare 400 would fail
+ * every analysis, whereas an off-pattern colour is normalised on the way in.
  */
 const UNSUPPORTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+  'pattern',
   'minLength',
   'maxLength',
   'minimum',
@@ -229,11 +238,46 @@ function normalizeConfidence(value: unknown): unknown {
   )
 }
 
+/**
+ * Colours come back as `#f5a`, `F5AABB` or ` #F5AABB `; all mean the same thing
+ * and none is worth a billed retry. Anything that is still not a colour after
+ * this fails validation.
+ */
+function normalizeHex(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const digits = value.trim().replace(/^#/, '')
+  if (/^[0-9a-fA-F]{3}$/.test(digits)) return `#${[...digits].map((digit) => digit + digit).join('')}`
+  return /^[0-9a-fA-F]{6}$/.test(digits) ? `#${digits}` : value
+}
+
+function normalizePalette(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const blueprint = value as { visualSpec?: { palette?: unknown } }
+  const palette = blueprint.visualSpec?.palette
+  if (!Array.isArray(palette)) return value
+  return {
+    ...blueprint,
+    visualSpec: {
+      ...blueprint.visualSpec,
+      palette: palette.map((entry) =>
+        entry && typeof entry === 'object' ? { ...entry, hex: normalizeHex((entry as { hex?: unknown }).hex) } : entry,
+      ),
+    },
+  }
+}
+
+/** Keyframes closer than this cut out what is effectively the same frame. */
+const KEYFRAME_MIN_GAP_SECONDS = 0.5
+
 export function parseBlueprint(text: string): GameplayBlueprint {
-  const blueprint = gameplayBlueprintSchema.parse(normalizeConfidence(JSON.parse(unwrapJson(text))))
+  const blueprint = gameplayBlueprintSchema.parse(normalizeConfidence(normalizePalette(JSON.parse(unwrapJson(text)))))
+  const keyframes = [...blueprint.keyframes]
+    .sort((left, right) => left.seconds - right.seconds)
+    .filter((keyframe, index, sorted) => index === 0 || keyframe.seconds - sorted[index - 1].seconds >= KEYFRAME_MIN_GAP_SECONDS)
   return {
     ...blueprint,
     timeline: [...blueprint.timeline].sort((left, right) => left.startSeconds - right.startSeconds),
+    keyframes,
   }
 }
 
@@ -292,6 +336,10 @@ export function validateEvidenceTimes(
     ...blueprint.audio,
     ...blueprint.intentDivergence,
     ...(blueprint.endCard ? [blueprint.endCard] : []),
+    ...blueprint.visualSpec.layout,
+    ...blueprint.visualSpec.uiComponents,
+    ...blueprint.visualSpec.entityLooks,
+    ...blueprint.visualSpec.effects,
   ]
   for (const evidence of inferences.flatMap((inference) => inference.evidence)) {
     if (evidence.endSeconds < evidence.startSeconds || evidence.endSeconds > durationSeconds + 0.5) {
@@ -314,5 +362,16 @@ export function validateEvidenceTimes(
       endSeconds: Math.min(segment.endSeconds, durationSeconds),
     }
   })
-  return { ...blueprint, timeline }
+  // A keyframe is cut out with ffmpeg, which yields nothing at the exact end of
+  // the stream, so one labelled on the last second is pulled just inside it.
+  const lastFrameSeconds = Math.max(0, durationSeconds - KEYFRAME_END_MARGIN_SECONDS)
+  const keyframes = blueprint.keyframes.map((keyframe) => {
+    if (keyframe.seconds > durationSeconds + TIMELINE_END_SLACK_SECONDS) {
+      throw new Error('Gameplay blueprint contains invalid evidence timestamps')
+    }
+    return { ...keyframe, seconds: Math.min(keyframe.seconds, lastFrameSeconds) }
+  })
+  return { ...blueprint, timeline, keyframes }
 }
+
+const KEYFRAME_END_MARGIN_SECONDS = 0.05
