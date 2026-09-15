@@ -1,3 +1,4 @@
+import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT, NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { buildValidationCommand } from './build-template-policy'
 import { sourceTemplateIds, type SourceTemplateId } from './types'
 import { templatePrompts } from './template-catalog'
@@ -30,10 +31,34 @@ export function bindSourceTemplate(
   const { sourceTemplateId: _ignored, ...proposal } = confirmation
   void _ignored
   if (sourceTemplateId === undefined) return proposal
-  return { ...proposal, sourceTemplateId }
+  if (!nativeTemplateUiPolicy(sourceTemplateId)) return { ...proposal, sourceTemplateId }
+  // 只替换历史通用默认值，保留用户明确指定的素材或自定义处理要求。
+  const defaultEndCard =
+    proposal.resources.endCard.status === '内置默认' &&
+    ['使用系统提供的结束卡', '使用内置结束卡', '默认结束卡', '使用默认结束卡'].includes(
+      proposal.resources.endCard.treatment,
+    )
+  return {
+    ...proposal,
+    sourceTemplateId,
+    resources: defaultEndCard
+      ? { ...proposal.resources, endCard: { status: '内置默认', treatment: NATIVE_END_CARD_TREATMENT } }
+      : proposal.resources,
+    ...(proposal.presentation
+      ? {
+          presentation: {
+            ...proposal.presentation,
+            assetFields: proposal.presentation.assetFields.map((field) =>
+              field.slot === 'endCard' ? { ...field, label: '模板原生结束页' } : field,
+            ),
+          },
+        }
+      : {}),
+  }
 }
 
 export const SOURCE_TEMPLATE_BUILD_PROMPT = [
+  NATIVE_TEMPLATE_UI_PROMPT,
   'Read confirmed-config.json, asset-manifest.json, current-playable.html, and revision-plan.json when present.',
   'Read SKILL.md, references/templates/adaptation.md, and references/templates/<sourceTemplateId>.md using the sourceTemplateId from confirmed-config.json.',
   'The user selected an existing HTML template. output.html is already seeded from that source.',

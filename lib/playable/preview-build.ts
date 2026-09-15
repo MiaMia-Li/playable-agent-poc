@@ -34,7 +34,7 @@ Use assets/starter/work/browser-acceptance.mjs only for targeted debugging if ne
 Do not claim full acceptance. Preserve existing behavior and only implement confirmed changes.
 For all eight templates expose campaign configuration through a JSON script element with id="playable-campaign-config" and type="application/json".
 Its object is {templateId,copy:{title,cta,disclaimer,locale},storeUrl}. Read this configuration to drive the actual game copy and store destination.
-Preserve native text/layout: bind the config to the actual engine text and CTA handler, not a fake QA snapshot or an extra overlay.
+Read template-ui-policy.json when present. Preserve native text/layout and the original CTA/end flow: bind only existing engine text and CTA handlers, not a fake QA snapshot or an extra overlay. Generic default fields never require new visible UI. If a native field does not exist, preserve the original screen and omit the binding contract instead of adding it.
 Only after binding all five campaign fields correctly, add the marker playable-campaign-binding-v1 to the runtime code.
 If a template cannot bind a field, omit the parameter contract rather than claiming it works.
 After the implementation and preview scenario are written, return the completion protocol for this phase.`

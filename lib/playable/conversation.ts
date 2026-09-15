@@ -1,3 +1,5 @@
+import { readPlayableUserTurn } from './reference-images'
+import type { ReferenceImageEvidence } from './schemas'
 import { playableAgentReplySchema } from './schemas'
 import type {
   ClarificationOption,
@@ -13,6 +15,8 @@ export interface RestoredPlayableConversationMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  attachments?: { id: string; filename: string; mimeType: string }[]
+  referenceImages?: ReferenceImageEvidence[]
   status: 'sent'
   createdAt?: string
   reasoning?: string
@@ -33,12 +37,15 @@ export function restorePlayableConversation(
   const decoded = storedMessages.flatMap(
     (stored): Array<{ message: RestoredPlayableConversationMessage; createdAt: Date }> => {
       if (stored.role === 'user') {
+        const turn = readPlayableUserTurn(stored.content)
         return [
           {
             message: {
               id: stored.id,
               role: 'user',
-              content: stored.content,
+              content: turn.text,
+              attachments: turn.attachments,
+              referenceImages: turn.referenceImages,
               status: 'sent',
               createdAt: stored.createdAt.toISOString(),
             },

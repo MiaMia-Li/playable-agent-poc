@@ -6,6 +6,7 @@ import type { BuildResult, ConfirmedBuildInput } from '@/lib/playable/playable-a
 import { CodexCliPlayableAgent } from '@/lib/playable/codex-cli-playable-agent'
 import { createValidationReport } from '@/lib/playable/production-contract'
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
+import { LocalDemoMarketResearchAgent } from '@/lib/playable/research/local-demo-market-research-agent'
 import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 
 const proposal = {
@@ -130,6 +131,8 @@ describe('CodexCliPlayableAgent', () => {
     expect(JSON.stringify(invocation.schema)).not.toContain('"oneOf"')
     expect(invocation.prompt).toContain('domain tools')
     expect(invocation.prompt).toContain('respond_to_user')
+    expect(invocation.prompt).toContain('present_market_research')
+    expect(invocation.prompt).toContain('not from keywords or fixed query categories')
     expect(invocation.prompt).toContain('update_requirement_brief')
     expect(invocation.prompt).toContain('exact when a template fully covers')
     expect(invocation.prompt).toContain('freeform')
@@ -184,6 +187,78 @@ describe('CodexCliPlayableAgent', () => {
     expect(onProgress).toHaveBeenCalledWith({ type: 'tool_failed', toolCall })
   })
 
+  it('lets Codex decide how to present a completed market search on a second model step', async () => {
+    const searchBrief = {
+      version: 1 as const,
+      trigger: 'explicit' as const,
+      category: '休闲游戏',
+      subcategory: '颜色分类倒瓶',
+      gameplayKeywords: ['颜色分类'],
+      market: '全球',
+      locale: 'zh-CN',
+      adNetwork: 'AppLovin',
+      timeRange: '最近 90 天',
+      focusAreas: ['玩法结构'],
+      requirementSummary: '研究公开参考',
+    }
+    const report = await new LocalDemoMarketResearchAgent().search({
+      runId: 'cli-research-run',
+      apiKey: 'local-marker',
+      brief: searchBrief,
+    })
+    const invokeCodex = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'tool_calls',
+        message: null,
+        reasoning: '需要先搜索公开资料。',
+        toolCalls: [
+          {
+            name: 'search_market_references',
+            assetIds: [],
+            assetId: null,
+            searchBrief,
+          },
+        ],
+        plan: null,
+      })
+      .mockResolvedValueOnce({
+        kind: 'terminal',
+        message: null,
+        reasoning: '搜索结果适合直接回答。',
+        toolCalls: [],
+        plan: {
+          message: '我根据公开资料整理了适合倒瓶玩法的结构建议。',
+          reasoning: '无需展示可选择方向。',
+          calls: [
+            {
+              name: 'respond_to_user',
+              brief: null,
+              annotations: null,
+              request: null,
+              confirmation: null,
+              revision: null,
+            },
+          ],
+        },
+      })
+    const executeTool = vi.fn(async () => report)
+
+    await expect(
+      new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation(
+        { taskId: 'task-cli-research', prompt: '找一些颜色分类倒瓶的参考', apiKey: 'local-marker' },
+        { executeTool },
+      ),
+    ).resolves.toMatchObject({
+      kind: 'informational',
+      message: '我根据公开资料整理了适合倒瓶玩法的结构建议。',
+    })
+    expect(invokeCodex).toHaveBeenCalledTimes(2)
+    const calls = invokeCodex.mock.calls as unknown as Array<[{ prompt: string }]>
+    expect(calls[1][0].prompt).toContain('"tool":"search_market_references"')
+    expect(calls[1][0].prompt).toContain('"runId":"cli-research-run"')
+  })
+
   it('stops after six model steps when analysis never reaches a terminal reply', async () => {
     const invokeCodex = vi.fn(async () => ({
       kind: 'tool_calls',
@@ -208,6 +283,18 @@ describe('CodexCliPlayableAgent', () => {
   it('runs Codex with workspace writes before delegating the isolated build', async () => {
     const onActivity = vi.fn()
     const invokeCodex = vi.fn(async (invocation) => {
+      const references = JSON.parse(await readFile(path.join(invocation.workspace, 'reference-images.json'), 'utf8'))
+      expect(references[0]).toMatchObject({
+        sourceVersion: 2,
+        purpose: 'problem',
+        workspacePath: 'reference-images/1.png',
+      })
+      expect(new Uint8Array(await readFile(path.join(invocation.workspace, 'reference-images/1.png')))).toEqual(
+        new Uint8Array([1, 2]),
+      )
+      const resources = await readFile(path.join(invocation.workspace, 'asset-manifest.json'), 'utf8')
+      expect(resources).not.toContain('reference-images')
+      expect(invocation.prompt).toContain('not game assets')
       invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
       invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
       return { completed: true }
@@ -222,6 +309,18 @@ describe('CodexCliPlayableAgent', () => {
       onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
+      referenceImages: [
+        {
+          assetId: 'ref',
+          filename: 'ref.png',
+          mimeType: 'image/png',
+          sourceBuildId: 'v2',
+          sourceVersion: 2,
+          purpose: 'problem',
+          description: 'Extra row',
+          bytes: new Uint8Array([1, 2]),
+        },
+      ],
     }
 
     await expect(new CodexCliPlayableAgent({ invokeCodex, buildRunner }).build(input)).resolves.toBe(result)

@@ -79,6 +79,45 @@ afterEach(() => {
 })
 
 describe('PlayableWorkspace', () => {
+  it('sends the selected base build separately from the prompt and can return to automatic selection', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).endsWith('/versions'))
+        return Response.json({
+          builds: [
+            { id: 'build-2', version: 2, status: 'succeeded', current: false },
+            { id: 'build-5', version: 5, status: 'succeeded', current: true },
+            { id: 'failed', version: null, status: 'failed', current: false },
+          ],
+        })
+      return new Response(`${JSON.stringify({ type: 'informational', message: '收到修改需求' })}\n`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ChatWorkspace taskId="task-7" phase="ready" hasArtifact onProposal={vi.fn()} onPhase={vi.fn()} />)
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '修改基准版本' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: '基于 v2' }))
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '只删掉多余一行' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({
+          body: JSON.stringify({ message: '只删掉多余一行', referenceImageIds: [], baseBuildId: 'build-2' }),
+        }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '修改基准版本' })).toBeEnabled())
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '修改基准版本' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: '自动：根据对话选择版本' }))
+    fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '调整标题' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/playable-tasks/task-7/messages',
+        expect.objectContaining({ body: JSON.stringify({ message: '调整标题', referenceImageIds: [] }) }),
+      ),
+    )
+  })
+
   it('does not expose shared AI credential controls to public users', () => {
     render(<PlayableWorkspace taskId="task-7" publicAccess />)
 
@@ -292,7 +331,7 @@ describe('PlayableWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
 
     const card = await screen.findByRole('region', { name: '市场参考分析' })
-    expect(card).toHaveTextContent('3 个可参考方向')
+    expect(card).toHaveTextContent('3 个方向')
     fireEvent.click(within(card).getAllByRole('radio')[0])
     fireEvent.click(within(card).getByRole('button', { name: '采用此方向' }))
 
@@ -345,7 +384,9 @@ describe('PlayableWorkspace', () => {
   it('renders chat, upload, confirmation, progress, and preview controls', () => {
     render(<PlayableWorkspace taskId="task-7" initialApiKeyConfigured />)
 
-    expect(screen.getByRole('region', { name: '需求对话' })).toBeInTheDocument()
+    const chat = screen.getByRole('region', { name: '需求对话' })
+    expect(chat).toBeInTheDocument()
+    expect(chat.firstElementChild).toHaveClass('overscroll-y-none')
     expect(screen.queryByRole('region', { name: '确认方案' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: '构建进度' })).toHaveTextContent('方案生成中可试玩')
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
@@ -565,6 +606,9 @@ describe('PlayableWorkspace', () => {
     expect(within(replies[0]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第一版麻将配对玩法')
     expect(within(replies[0]).getByRole('img', { name: 'historical-tiles.png' })).toBeInTheDocument()
     expect(within(replies[1]).getByRole('region', { name: '确认方案' })).toHaveTextContent('第二版跑酷战斗玩法')
+    expect(within(replies[0]).getByRole('region', { name: '确认方案' }).parentElement?.className).toBe(
+      within(replies[1]).getByRole('region', { name: '确认方案' }).parentElement?.className,
+    )
     expect(within(replies[0]).getByLabelText('玩法说明')).toBeDisabled()
     expect(within(replies[1]).getByLabelText('玩法说明')).toBeEnabled()
   })
@@ -1072,7 +1116,9 @@ describe('PlayableWorkspace', () => {
     })
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(responseStream)),
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/versions') ? Response.json({ builds: [] }) : new Response(responseStream),
+      ),
     )
 
     render(
@@ -1146,6 +1192,24 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace
         taskId="task-7"
         phase="draft"
+        initialConversation={[
+          {
+            id: 'old-turn',
+            role: 'user',
+            status: 'sent',
+            content: '上一轮截图',
+            referenceImages: [
+              {
+                assetId: 'old-image',
+                filename: 'old.png',
+                sourceBuildId: null,
+                sourceVersion: null,
+                purpose: 'target',
+                description: '旧参考',
+              },
+            ],
+          },
+        ]}
         onProposal={vi.fn()}
         onPhase={vi.fn()}
         onRequireApiKey={vi.fn()}
@@ -1165,6 +1229,7 @@ describe('PlayableWorkspace', () => {
     expect(await screen.findByText('board.png')).toBeInTheDocument()
     expect(await screen.findByText('gameplay.mp4')).toBeInTheDocument()
     expect(screen.getAllByText('待上传')).toHaveLength(2)
+    expect(screen.queryByLabelText('本轮参考截图')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '参考这些素材制作' } })
@@ -1182,7 +1247,12 @@ describe('PlayableWorkspace', () => {
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/playable-tasks/task-7/messages',
       expect.objectContaining({
-        body: JSON.stringify({ message: '参考这些素材制作', attachmentIds: ['image-1', 'video-1'] }),
+        body: JSON.stringify({
+          message: '参考这些素材制作',
+          referenceImageIds: ['image-1'],
+          screenshotPurpose: 'target',
+          attachmentIds: ['image-1', 'video-1'],
+        }),
       }),
     )
     expect(onAssetsChange).toHaveBeenLastCalledWith(uploadedAssets)
@@ -1255,7 +1325,12 @@ describe('PlayableWorkspace', () => {
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/playable-tasks/task-7/messages',
       expect.objectContaining({
-        body: JSON.stringify({ message: '带附件重试', attachmentIds: ['image-success', 'video-retry'] }),
+        body: JSON.stringify({
+          message: '带附件重试',
+          referenceImageIds: ['image-success'],
+          screenshotPurpose: 'target',
+          attachmentIds: ['image-success', 'video-retry'],
+        }),
       }),
     )
   })
@@ -1761,4 +1836,48 @@ it('shows a provisional playable without enabling delivery, then switches to the
     'src',
     '/api/playable-tasks/preview-task/artifact?kind=playable',
   )
+})
+
+it('shows a saved failed-acceptance version with download controls and honest status', async () => {
+  const validation = {
+    buildPassed: false,
+    deliveryCompliant: true,
+    bytes: 100,
+    delivery: { profileId: 'applovin' as const, label: 'AppLovin', maxBytes: 5242880 },
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({ builds: [{ id: 'saved-preview', status: 'failed', version: 1, current: true, validation }] }),
+    ),
+  )
+  render(
+    <PlayablePreview
+      taskId="saved"
+      phase="failed"
+      hasArtifact
+      artifactVersion="saved-preview"
+      initialValidation={validation}
+    />,
+  )
+  expect(await screen.findByText('v1')).toBeInTheDocument()
+  expect(screen.getByText('可试玩版本已保存，完整验收未通过。可下载，或基于此版本继续修改。')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '下载交付物' })).toBeEnabled()
+  expect(screen.getByTitle('Playable preview')).toHaveAttribute(
+    'src',
+    '/api/playable-tasks/saved/artifact?kind=playable&version=saved-preview',
+  )
+  expect(screen.queryByText('本次构建失败，正在展示上一成功版本。')).not.toBeInTheDocument()
+})
+
+it.each(sourceTemplateIds)('preserves native conversion UI defaults for %s', (id) => {
+  const bound = bindSourceTemplate(proposal, id)
+  expect(bound.resources.endCard.treatment).toBe('复用模板原生结束页，不新增通用结束卡')
+  expect(bound.copy).toEqual(proposal.copy)
+  const uploaded = { status: '用户上传' as const, treatment: 'custom.png' }
+  expect(
+    bindSourceTemplate({ ...proposal, resources: { ...proposal.resources, endCard: uploaded } }, id).resources.endCard,
+  ).toEqual(uploaded)
+  render(<ConfirmationTable proposal={bound} onChange={vi.fn()} onConfirm={vi.fn()} />)
+  expect(screen.getByText('复用模板原生 CTA 和结束页，不额外添加。文案与素材修改应用到原生界面。')).toBeInTheDocument()
 })

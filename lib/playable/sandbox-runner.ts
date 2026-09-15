@@ -1,3 +1,4 @@
+import { referenceImageWorkspaceFiles } from './reference-images'
 import { readBuildSkillFiles } from './build-skill'
 import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
@@ -250,6 +251,14 @@ export async function runPlayableBuild(
       await sandbox.writeTextFile({
         path: path.join(workspace, 'gameplay-blueprint.json'),
         content: JSON.stringify(input.gameplayBlueprint, null, 2),
+        abortSignal: dependencies.abortSignal,
+      })
+    }
+    // 使用与本地 CLI 相同的清单格式，让构建 Agent 能读取图片本身而非仅看到文件名。
+    for (const file of referenceImageWorkspaceFiles(input.referenceImages)) {
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, file.path),
+        content: file.bytes,
         abortSignal: dependencies.abortSignal,
       })
     }

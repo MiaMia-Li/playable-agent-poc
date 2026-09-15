@@ -301,6 +301,28 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
+  async savePreviewArtifact(
+    taskId: string,
+    buildId: string,
+    artifactKey: string,
+    validation: unknown,
+    expectedStatus: 'building' | 'failed' = 'building',
+  ): Promise<boolean> {
+    const task = this.tasks.get(taskId)
+    const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
+    if (
+      !task ||
+      !(expectedStatus === 'failed' ? ['failed'] : ['building', 'validating']).includes(task.phase) ||
+      build?.status !== expectedStatus
+    )
+      return false
+    build.artifactKey = artifactKey
+    build.validation = validation
+    task.latestArtifactKey = artifactKey
+    task.latestValidation = validation
+    return true
+  }
+
   async publishArtifact(
     taskId: string,
     buildId: string,
@@ -815,6 +837,119 @@ describe('playable task API', () => {
     )
   })
 
+  it('replaces screenshot batches, inherits a follow-up, reuses selected history and freezes the build snapshot', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = confirmation
+    task.latestArtifactKey = 'base/playable.html'
+    harness.repository.builds.push({
+      id: 'base',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation,
+      artifactKey: task.latestArtifactKey,
+      createdAt: new Date(1),
+    })
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>base</html>'))
+    for (const id of ['a', 'b', 'c']) {
+      harness.repository.assets.push({
+        id,
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: `${id}.png`,
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: `images/${id}`,
+        durationSeconds: null,
+        createdAt: new Date(),
+      })
+      harness.artifacts.set(`images/${id}`, new Uint8Array([id.charCodeAt(0)]))
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValue({
+      kind: 'revision',
+      message: '修改',
+      reasoning: '修复截图问题',
+      revision: patchRevision,
+      confirmation,
+    })
+    const send = async (body: Record<string, unknown>) => {
+      const result = await harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', body), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(await result.text()).toContain('"type":"revision"')
+    }
+    await send({ message: '最底部多出红中', attachmentIds: ['a', 'b'] })
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b'])
+    await send({ message: '看新的顶部问题', attachmentIds: ['c'] })
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['c'])
+    await send({ message: '这个问题仍在' })
+    expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        attachedAssetIds: ['c'],
+        referenceImages: [
+          expect.objectContaining({
+            assetId: 'c',
+            sourceVersion: 1,
+            purpose: 'problem',
+            description: '看新的顶部问题',
+          }),
+        ],
+      }),
+      expect.anything(),
+    )
+    await send({ message: '再对照第一张', referenceImageIds: ['a', 'c'] })
+    const frozen = task.confirmation!.referenceImages!
+    expect(frozen.map((ref) => ref.assetId)).toEqual(['a', 'c'])
+    expect(frozen[0].description).toBe('最底部多出红中')
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        revisionId: task.pendingRevision!.id,
+        confirmation: { ...confirmation, referenceImages: [] },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(confirmed.status).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        referenceImages: [
+          expect.objectContaining({ assetId: 'a', bytes: new Uint8Array([97]) }),
+          expect.objectContaining({ assetId: 'c', bytes: new Uint8Array([99]) }),
+        ],
+        assets: [],
+      }),
+    )
+    expect(
+      harness.repository.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => JSON.parse(message.content).referenceImages.map((ref: { assetId: string }) => ref.assetId)),
+    ).toEqual([['a', 'b'], ['c'], ['c'], ['a', 'c']])
+    await send({ message: '新的修改不参考截图', referenceImageIds: [] })
+    expect(task.confirmation!.referenceImages).toBeUndefined()
+  })
+
+  it('rejects a reference screenshot owned by a different task', async () => {
+    harness.repository.assets.push({
+      id: 'foreign-image',
+      taskId: 'other',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'other.png',
+      mimeType: 'image/png',
+      size: 1,
+      storageKey: 'other',
+      durationSeconds: null,
+      createdAt: new Date(),
+    })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '参考', referenceImageIds: ['foreign-image'] }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"error"')
+    expect(harness.agent.proposeConfirmation).not.toHaveBeenCalled()
+  })
+
   it('executes reference image inspection only when requested and returns private bytes to the agent tool loop', async () => {
     const image: PlayableAsset = {
       id: 'image-1',
@@ -869,8 +1004,10 @@ describe('playable task API', () => {
       { type: 'tool_completed', tool: 'inspect_reference_images', message: '参考图片分析完成' },
       { type: 'tool_completed', tool: 'respond_to_user' },
     ])
-    expect(JSON.stringify(events)).not.toContain('image-1')
-    expect(JSON.stringify(events)).not.toContain('private-name.png')
+    expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain('image-1')
+    expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain(
+      'private-name.png',
+    )
     expect(JSON.stringify(events)).not.toContain('private-image-key')
   })
 
@@ -1861,6 +1998,212 @@ describe('playable task API', () => {
     expect(task.phase).toBe('ready')
     expect(task.pendingRevision).toBeNull()
     expect(harness.repository.builds.filter((build) => build.status === 'succeeded')).toHaveLength(2)
+  })
+
+  it.each([null, 5])(
+    'locks a manually selected v2 regardless of the model base %s or regeneration strategy',
+    async (modelVersion) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'ready'
+      task.confirmation = confirmation
+      const historical = { ...confirmation, copy: { ...confirmation.copy, title: 'Original v2' } }
+      for (let version = 1; version <= 5; version++) {
+        const artifactKey = `manual/build-${version}/playable.html`
+        harness.repository.builds.push({
+          id: `build-${version}`,
+          taskId: 'owned',
+          status: 'succeeded',
+          confirmation: version === 2 ? historical : confirmation,
+          artifactKey,
+          createdAt: new Date(version),
+          completedAt: new Date(version),
+        })
+        harness.artifacts.set(artifactKey, new TextEncoder().encode(`<html>version ${version}</html>`))
+        task.latestArtifactKey = artifactKey
+      }
+      vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (input) => {
+        expect(input.lockedRevisionBase).toMatchObject({
+          buildId: 'build-2',
+          version: 2,
+          html: '<html>version 2</html>',
+        })
+        expect(input.confirmation).toEqual(historical)
+        return {
+          kind: 'revision',
+          message: '修改',
+          reasoning: '修改',
+          confirmation: historical,
+          revision: { ...patchRevision, requestedBaseVersion: modelVersion, strategy: 'regenerate' },
+        }
+      })
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '基于 v5 修改',
+          baseBuildId: 'build-2',
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(await response.text()).toContain('"type":"revision"')
+      expect(task.pendingRevision).toMatchObject({
+        baseSelection: 'manual',
+        baseBuildId: 'build-2',
+        baseVersion: 2,
+        targetVersion: 6,
+        strategy: 'patch',
+      })
+      const confirmed = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', {
+          revisionId: task.pendingRevision!.id,
+          confirmation: historical,
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(confirmed.status).toBe(202)
+      await harness.scheduled.at(-1)!()
+      expect(harness.agent.build).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          baseHtml: '<html>version 2</html>',
+          baseConfirmation: historical,
+          revision: expect.objectContaining({ baseBuildId: 'build-2', strategy: 'patch' }),
+        }),
+      )
+    },
+  )
+
+  it.each(['missing', 'foreign', 'failed', 'artifact-missing'])(
+    'rejects an unusable manual base before calling the model: %s',
+    async (kind) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'ready'
+      task.latestArtifactKey = 'latest/playable.html'
+      if (kind !== 'missing')
+        harness.repository.builds.push({
+          id: 'selected',
+          taskId: kind === 'foreign' ? 'other' : 'owned',
+          status: kind === 'failed' ? 'failed' : 'succeeded',
+          confirmation,
+          artifactKey: 'missing/playable.html',
+          createdAt: new Date(1),
+        })
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', {
+          message: '修改',
+          baseBuildId: 'selected',
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(response.status).toBe(409)
+      expect(harness.agent.proposeConfirmation).not.toHaveBeenCalled()
+      expect(task.phase).toBe('ready')
+    },
+  )
+
+  it.each([false, true])(
+    'uses requested v2 and never falls back to v5 when its artifact disappears: %s',
+    async (removeBase) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'ready'
+      task.confirmation = confirmation
+      for (let version = 1; version <= 5; version++) {
+        const artifactKey = `users/user-1/tasks/owned/build-${version}/playable.html`
+        harness.repository.builds.push({
+          id: `build-${version}`,
+          taskId: 'owned',
+          status: 'succeeded',
+          confirmation,
+          artifactKey,
+          createdAt: new Date(version),
+          completedAt: new Date(version),
+        })
+        harness.artifacts.set(artifactKey, new TextEncoder().encode(`<html>version ${version}</html>`))
+        task.latestArtifactKey = artifactKey
+      }
+      vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (input, options) => {
+        expect(input.versions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ version: 2, buildId: 'build-2', isLatest: false })]),
+        )
+        const result = await options!.executeTool!({
+          name: 'read_playable_version',
+          version: 2,
+          assetIds: [],
+          assetId: null,
+        })
+        expect(result).toMatchObject({ status: 'completed', version: 2, html: '<html>version 2</html>', confirmation })
+        const missing = await options!.executeTool!({
+          name: 'read_playable_version',
+          version: 99,
+          assetIds: [],
+          assetId: null,
+        })
+        expect(missing).toMatchObject({ status: 'unavailable' })
+        return {
+          kind: 'revision',
+          message: '基于 v2 修改',
+          reasoning: '只修改多余行',
+          revision: { ...patchRevision, requestedBaseVersion: 2 },
+          confirmation,
+        }
+      })
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '基于 v2 修改' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(await response.text()).toContain('"type":"revision"')
+      expect(task.pendingRevision).toMatchObject({ baseBuildId: 'build-2', baseVersion: 2, targetVersion: 6 })
+      const confirmed = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', {
+          revisionId: task.pendingRevision!.id,
+          confirmation,
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(confirmed.status).toBe(202)
+      if (removeBase) harness.artifacts.delete('users/user-1/tasks/owned/build-2/playable.html')
+      await harness.scheduled.at(-1)!()
+      if (removeBase) {
+        expect(harness.agent.build).not.toHaveBeenCalled()
+        expect(task.phase).toBe('failed')
+        expect(task.latestArtifactKey).toBe('users/user-1/tasks/owned/build-5/playable.html')
+        return
+      }
+      expect(harness.agent.build).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          baseHtml: '<html>version 2</html>',
+          baseConfirmation: confirmation,
+          revision: expect.objectContaining({ baseBuildId: 'build-2', baseVersion: 2 }),
+        }),
+      )
+    },
+  )
+
+  it('rejects an unavailable requested base version without using the latest build', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = confirmation
+    task.latestArtifactKey = 'latest/playable.html'
+    harness.repository.builds.push({
+      id: 'build-1',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation,
+      artifactKey: task.latestArtifactKey,
+      createdAt: new Date(1),
+      completedAt: new Date(2),
+    })
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'revision',
+      message: '修改',
+      reasoning: '修改',
+      revision: { ...patchRevision, requestedBaseVersion: 99 },
+      confirmation,
+    })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '基于 v99 修改' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).not.toContain('"type":"revision"')
+    expect(task.phase).toBe('ready')
+    expect(harness.agent.build).not.toHaveBeenCalled()
   })
 
   it('keeps an ambiguous theme in draft and streams a clarification with full conversation context', async () => {
@@ -3541,7 +3884,7 @@ describe('PrivateVercelArtifactStore', () => {
   })
 })
 
-it('publishes preview independently, retains it on acceptance failure, and blocks preview downloads', async () => {
+it('immediately saves a numbered preview and retains download and revision access after acceptance failure', async () => {
   const h = createHarness()
   const task = h.repository.tasks.get('owned')!
   task.phase = 'awaiting_confirmation'
@@ -3550,10 +3893,10 @@ it('publishes preview independently, retains it on acceptance failure, and block
   vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
     await input.onPreview!('<html>provisional</html>')
     expect(task.phase).toBe('building')
-    expect(task.latestArtifactKey).toBeNull()
+    expect(task.latestArtifactKey).toContain('/preview-build/preview.html')
     const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
     const response = await h.handlers.events(request('/api/playable-tasks/owned/events'), ctx)
-    expect((await response.json()).task.previewVersion).toBe('preview-build')
+    expect((await response.json()).task).toMatchObject({ previewVersion: null, hasArtifact: true })
     const inline = await h.handlers.artifact(
       request('/api/playable-tasks/owned/artifact?kind=playable&preview=preview-build'),
       ctx,
@@ -3588,7 +3931,123 @@ it('publishes preview independently, retains it on acceptance failure, and block
     artifactStore: h.artifactStore,
   })
   expect(task.phase).toBe('failed')
-  expect(task.latestArtifactKey).toBeNull()
+  expect(task.latestArtifactKey).toContain('/preview-build/preview.html')
   expect([...h.artifacts.keys()].some((key) => key.endsWith('/preview.html'))).toBe(true)
   expect([...h.artifacts.keys()].some((key) => key.endsWith('/playable.html'))).toBe(false)
+  const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+  const versions = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), ctx)
+  expect((await versions.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'preview-build',
+      version: 1,
+      status: 'failed',
+      validation: expect.objectContaining({ buildPassed: false }),
+    }),
+  ])
+  const download = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=playable&version=preview-build&download=1'),
+    ctx,
+  )
+  expect(download.status).toBe(200)
+  expect(download.headers.get('content-disposition')).toContain('attachment')
+  expect(await download.text()).toBe('<html>provisional</html>')
+  const report = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=validation&version=preview-build&download=1'),
+    ctx,
+  )
+  expect((await report.json()).buildPassed).toBe(false)
+  vi.mocked(h.agent.proposeConfirmation).mockResolvedValueOnce({
+    kind: 'revision',
+    message: '修复',
+    reasoning: '继续修改',
+    revision: patchRevision,
+    confirmation,
+  })
+  const message = await h.handlers.message(
+    request('/api/playable-tasks/owned/messages', 'POST', { message: '继续修复', baseBuildId: 'preview-build' }),
+    ctx,
+  )
+  expect(await message.text()).toContain('"type":"revision"')
+  expect(task.pendingRevision).toMatchObject({ baseBuildId: 'preview-build', baseVersion: 1, targetVersion: 2 })
+})
+
+it('recovers a previously unregistered failed preview without another build', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'failed'
+  task.confirmation = confirmation
+  h.repository.builds.push({
+    id: 'legacy',
+    taskId: 'owned',
+    status: 'failed',
+    confirmation,
+    artifactKey: null,
+    createdAt: new Date(1),
+  })
+  const key = 'users/user-1/tasks/owned/legacy/preview.html'
+  h.artifacts.set(key, new TextEncoder().encode('<html>recoverable</html>'))
+  await h.repository.appendEvent({
+    taskId: 'owned',
+    type: 'build_preview_ready',
+    message: JSON.stringify({ buildId: 'legacy' }),
+  })
+  const ctx = { params: Promise.resolve({ taskId: 'owned' }) }
+  const response = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), ctx)
+  expect((await response.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'legacy',
+      version: 1,
+      status: 'failed',
+      current: true,
+      validation: expect.objectContaining({ buildPassed: false }),
+    }),
+  ])
+  expect(task.latestArtifactKey).toBe(key)
+  const file = await h.handlers.artifact(
+    request('/api/playable-tasks/owned/artifact?kind=playable&version=legacy&download=1'),
+    ctx,
+  )
+  expect(await file.text()).toBe('<html>recoverable</html>')
+  expect(h.agent.build).not.toHaveBeenCalled()
+})
+
+it('upgrades a saved preview to accepted output without creating a second version', async () => {
+  const h = createHarness()
+  const task = h.repository.tasks.get('owned')!
+  task.phase = 'awaiting_confirmation'
+  task.confirmation = confirmation
+  await h.repository.claimBuild(task.id, task.userId, confirmation, 'one-build')
+  vi.mocked(h.agent.build).mockImplementationOnce(async (input) => {
+    await input.onPreview!('<html>preview</html>')
+    return {
+      html: '<html>accepted</html>',
+      validation: createValidationReport({ bytes: 21, offlineResources: true, responsiveViewport: true }),
+    }
+  })
+  await runConfirmedBuild({
+    task,
+    apiKey: 'sk-test-secret',
+    buildId: 'one-build',
+    repository: h.repository,
+    agent: h.agent,
+    artifactStore: h.artifactStore,
+  })
+  expect(task.phase).toBe('ready')
+  const response = await h.handlers.versions(request('/api/playable-tasks/owned/versions'), {
+    params: Promise.resolve({ taskId: 'owned' }),
+  })
+  expect((await response.json()).builds).toEqual([
+    expect.objectContaining({
+      id: 'one-build',
+      version: 1,
+      status: 'succeeded',
+      validation: expect.objectContaining({ buildPassed: true }),
+    }),
+  ])
+  expect(task.latestArtifactKey).toContain('/one-build/playable.html')
+  expect(h.repository.builds).toHaveLength(1)
+  const previewReport = h.artifacts.get('users/user-1/tasks/owned/one-build/preview-validation-report.json')!
+  const fullReport = h.artifacts.get('users/user-1/tasks/owned/one-build/validation-report.json')!
+  expect(JSON.parse(new TextDecoder().decode(previewReport)).buildPassed).toBe(false)
+  expect(JSON.parse(new TextDecoder().decode(fullReport)).buildPassed).toBe(true)
 })

@@ -62,6 +62,15 @@ const report: MarketResearchReport = {
           observedAt: '2026-09-10T01:00:00.000Z',
           strength: 'moderate',
         },
+        {
+          type: 'public_trend',
+          label: '广告体验格式说明',
+          value: '官方页面说明互动广告体验。',
+          sourceUrl: 'https://www.applovin.com/en/ad-experience',
+          sourceTitle: 'AppLovin Ads | The ads experience',
+          observedAt: '2026-09-10T01:00:00.000Z',
+          strength: 'strong',
+        },
       ],
       confidence: 0.8,
       limitations: ['无内部指标'],
@@ -159,7 +168,7 @@ it('streams and persists market research without changing task phase or brief', 
   const events = (await response.text())
     .trim()
     .split('\n')
-    .map((line) => JSON.parse(line) as { type: string; stage?: string })
+    .map((line) => JSON.parse(line) as { type: string; stage?: string; message?: string })
 
   expect(events.filter(({ type }) => type === 'research_progress').map(({ stage }) => stage)).toEqual([
     'searching',
@@ -167,11 +176,106 @@ it('streams and persists market research without changing task phase or brief', 
     'analyzing',
     'summarizing',
   ])
-  expect(events.at(-1)?.type).toBe('research')
+  expect(events.at(-1)).toMatchObject({
+    type: 'research',
+    message: [
+      '研究完成。',
+      '',
+      '来源：',
+      '- TikTok Creative Center：https://ads.tiktok.com/example',
+      '- AppLovin Ads | The ads experience：https://www.applovin.com/en/ad-experience',
+    ].join('\n'),
+  })
   expect(createResearchRun).toHaveBeenCalledOnce()
   expect(completeResearchRun).toHaveBeenCalledOnce()
   expect(updateRequirementBrief).not.toHaveBeenCalled()
   expect(appendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'research_completed' }))
+})
+
+it('streams an agent research summary without presenting directions or changing the requirement brief', async () => {
+  const updateRequirementBrief = vi.fn()
+  const appendEvent = vi.fn(async () => undefined)
+  const repository = {
+    findOwnedTask: async () => ({
+      id: 'task-1',
+      userId: 'user-1',
+      prompt: '制作试玩',
+      phase: 'draft' as const,
+      requirementBrief: null,
+      confirmation: null,
+      latestArtifactKey: null,
+    }),
+    listMessages: async () => [],
+    listAssets: async () => [],
+    findLatestVideoAnalysis: async () => undefined,
+    listBuilds: async () => [],
+    appendMessage: async () => undefined,
+    updateRequirementBrief,
+    appendEvent,
+    createResearchRun: async () => ({}) as never,
+    updateResearchRunStatus: async () => true,
+    findReusableResearchReport: async () => undefined,
+    completeResearchRun: async () => report,
+    failResearchRun: async () => undefined,
+  } as unknown as PlayableTaskRepository
+  const marketResearchAgent: MarketResearchAgent = {
+    search: vi.fn(async () => report),
+  }
+  const agent: PlayableAgentAdapter = {
+    proposeConfirmation: async (_input, options) => {
+      await options?.executeTool?.({
+        name: 'search_market_references',
+        assetIds: [],
+        assetId: null,
+        searchBrief: brief,
+      })
+      return {
+        kind: 'informational',
+        message: '公开资料显示，同类试玩近期更快进入首次交互。',
+        reasoning: '搜索结果适合直接总结，不需要用户选择方向。',
+      }
+    },
+    build: async () => {
+      throw new Error('not used')
+    },
+    cancel: async () => undefined,
+  }
+  const handlers = createPlayableTaskHandlers({
+    authenticate: async () => 'user-1',
+    readApiKey: async () => 'test-key',
+    repository,
+    agent,
+    marketResearchAgent,
+    artifactStore: { put: async () => undefined, get: async () => undefined, delete: async () => undefined },
+    schedule: () => undefined,
+    generateId: () => 'run-1',
+  })
+
+  const response = await handlers.message(
+    new NextRequest('https://app.example/api/playable-tasks/task-1/messages', {
+      method: 'POST',
+      body: JSON.stringify({ message: '帮我研究一下近期公开玩法趋势' }),
+    }),
+    { params: Promise.resolve({ taskId: 'task-1' }) },
+  )
+  const events = (await response.text())
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as { type: string; message?: string })
+
+  expect(events.at(-1)).toMatchObject({
+    type: 'informational',
+    message: [
+      '公开资料显示，同类试玩近期更快进入首次交互。',
+      '',
+      '来源：',
+      '- TikTok Creative Center：https://ads.tiktok.com/example',
+      '- AppLovin Ads | The ads experience：https://www.applovin.com/en/ad-experience',
+    ].join('\n'),
+  })
+  expect(events.some(({ type }) => type === 'research')).toBe(false)
+  expect(appendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'research_completed' }))
+  expect(updateRequirementBrief).not.toHaveBeenCalled()
 })
 
 it('resolves an adopted selection from persisted candidates before running the requirement agent', async () => {

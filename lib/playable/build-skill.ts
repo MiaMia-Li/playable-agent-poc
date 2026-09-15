@@ -1,3 +1,4 @@
+import { nativeTemplateUiPolicy } from './native-template-ui'
 import path from 'node:path'
 import { readdir, readFile } from 'node:fs/promises'
 import type { ConfirmationProposal } from './schemas'
@@ -97,6 +98,13 @@ export async function readBuildSkillFiles(
   const files = (await Promise.all(buildSkillRoots(confirmation, customRoot).map((root) => readSkillFiles(root))))
     .flat()
     .filter((file) => includeBuildSkillFile(file.relativePath, confirmation))
+  // 由服务端选定模板策略，供本地与云端构建共同读取，避免只依赖对话中的口头要求。
+  const nativeUi = nativeTemplateUiPolicy(confirmation.sourceTemplateId)
+  if (nativeUi)
+    files.push({
+      relativePath: 'template-ui-policy.json',
+      content: new TextEncoder().encode(JSON.stringify(nativeUi, null, 2)),
+    })
   if (new Set(files.map((file) => file.relativePath)).size !== files.length)
     throw new Error('Duplicate Skill workspace file')
   return files

@@ -11,6 +11,24 @@ Read this with the reference selected by `confirmed-config.json.sourceTemplateId
 
 The initial source has already been copied into `output.html` for non-patch builds. Its existence is not evidence of completed work. Keep all master template files unchanged.
 
+## Reuse native CTA and ending
+
+When `template-ui-policy.json` is present, preserve the template's existing CTA and ending.
+The supported flows include 金龙麻将转轴 You Win, 金龙转盘集奖 reward/claim,
+宙斯 Scatter Mega Win/Collect, and 彩球转盘消除 EndCard/DownloadButton.
+Do not append a generic CTA button, HTML overlay, end-card stage or duplicate ending.
+For revisions, remove any previously added duplicate conversion UI. Explicit copy,
+artwork and store URL changes belong in the existing native controls and handlers.
+A default end-card resource means the original template ending; an empty CTA means
+preserve its original text/artwork. If a campaign field has no native counterpart,
+do not invent visible UI to bind it; omit the campaign binding contract instead.
+
+During acceptance, reach the native ending via real gameplay, verify that no duplicate
+CTA/ending appears, and check the native CTA destination without navigating to it.
+Do not require generic DOM selectors for engine-rendered controls. Add
+`playable-native-ui-preserved-v1` only after verifying and fixing duplicate UI;
+this marker permits future copy-only updates to reuse the accepted native layout.
+
 ## Validate the requested behavior
 
 Run `node assets/starter/work/test-freeform-playable.mjs output.html` for structural compatibility. This script checks strings only; it does not exercise the engine, confirm mute behavior, or validate a spin, reward, or stage sequence.

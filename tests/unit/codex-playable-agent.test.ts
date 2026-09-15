@@ -442,6 +442,8 @@ describe('CodexPlayableAgent', () => {
     expect(settings.model).toBe(responseMocks.model)
     expect(settings.instructions).toContain('domain tools')
     expect(settings.instructions).toContain('respond_to_user')
+    expect(settings.instructions).toContain('present_market_research')
+    expect(settings.instructions).toContain('not from keywords or fixed query categories')
     expect(settings.instructions).toContain('update_requirement_brief')
     expect(settings.instructions).toContain('validate_implementation_route')
     expect(settings.instructions).toContain('freeform')
@@ -512,26 +514,51 @@ describe('CodexPlayableAgent', () => {
     expect(onProgress).toHaveBeenCalledWith({ type: 'tool_completed', toolCall })
   })
 
-  it('returns a trusted research report without asking the model to rewrite it', async () => {
+  it('lets the agent summarize successful market research without presenting selectable directions', async () => {
     const searchBrief = researchReport.brief
-    responseMocks.streamText.mockReturnValueOnce({
-      fullStream: (async function* () {})(),
-      partialOutputStream: (async function* () {})(),
-      output: Promise.resolve({
-        kind: 'tool_calls',
-        message: null,
-        reasoning: '用户明确要求搜索。',
-        toolCalls: [
-          {
-            name: 'search_market_references',
-            assetIds: [],
-            assetId: null,
-            searchBrief,
+    responseMocks.streamText
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'tool_calls',
+          message: null,
+          reasoning: '用户的问题需要公开市场资料。',
+          toolCalls: [
+            {
+              name: 'search_market_references',
+              assetIds: [],
+              assetId: null,
+              searchBrief,
+            },
+          ],
+          plan: null,
+        }),
+      } as never)
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'terminal',
+          message: null,
+          reasoning: '用户当前只需要研究结论，无需选择构建方向。',
+          toolCalls: [],
+          plan: {
+            message: '公开案例显示，近期同类试玩更强调快速进入首次交互。',
+            reasoning: '根据搜索结果直接回答用户。',
+            calls: [
+              {
+                name: 'respond_to_user',
+                brief: null,
+                annotations: null,
+                request: null,
+                confirmation: null,
+                revision: null,
+              },
+            ],
           },
-        ],
-        plan: null,
-      }),
-    } as never)
+        }),
+      } as never)
     const executeTool = vi.fn(async () => researchReport)
 
     await expect(
@@ -539,9 +566,73 @@ describe('CodexPlayableAgent', () => {
         { taskId: 'task-research', prompt: '搜索同类试玩', apiKey: 'sk-unit-test-only' },
         { executeTool },
       ),
-    ).resolves.toMatchObject({ kind: 'research', research: researchReport })
+    ).resolves.toMatchObject({
+      kind: 'informational',
+      message: '公开案例显示，近期同类试玩更强调快速进入首次交互。',
+    })
     expect(executeTool).toHaveBeenCalledOnce()
-    expect(responseMocks.streamText).toHaveBeenCalledOnce()
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
+    const secondPrompt = (responseMocks.streamText.mock.calls[1][0] as { prompt: string }).prompt
+    expect(secondPrompt).toContain('"tool":"search_market_references"')
+    expect(secondPrompt).toContain('"runId":"research-run-1"')
+  })
+
+  it('presents selectable directions only when the agent explicitly chooses that response', async () => {
+    const searchToolCall = {
+      name: 'search_market_references' as const,
+      assetIds: [],
+      assetId: null,
+      searchBrief: researchReport.brief,
+    }
+    responseMocks.streamText
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'tool_calls',
+          message: null,
+          reasoning: '先检索公开资料。',
+          toolCalls: [searchToolCall],
+          plan: null,
+        }),
+      } as never)
+      .mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve({
+          kind: 'terminal',
+          message: null,
+          reasoning: '用户准备制作试玩，选择一个方向有助于确定需求。',
+          toolCalls: [],
+          plan: {
+            message: '我整理了几个可采纳的方向，你可以选择一个并组合亮点。',
+            reasoning: '搜索结果包含可用于下一步需求决策的方向。',
+            calls: [
+              {
+                name: 'present_market_research',
+                brief: null,
+                annotations: null,
+                request: null,
+                confirmation: null,
+                revision: null,
+              },
+            ],
+          },
+        }),
+      } as never)
+    const executeTool = vi.fn(async () => researchReport)
+
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'task-research-directions', prompt: '帮我找些参考并决定做什么', apiKey: 'sk-unit-test-only' },
+        { executeTool },
+      ),
+    ).resolves.toMatchObject({
+      kind: 'research',
+      message: '我整理了几个可采纳的方向，你可以选择一个并组合亮点。',
+      research: researchReport,
+    })
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
   })
 
   it('fails analysis requests safely when no tool executor is available', async () => {

@@ -1,3 +1,5 @@
+import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
+import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
@@ -174,6 +176,7 @@ async function createProposal(
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
     attachedAssetIds: input.attachedAssetIds ?? [],
+    referenceImages: input.referenceImages ?? [],
     gameplayBlueprint: input.gameplayBlueprint ?? null,
     // Supplied on its own because the blueprint document only exists once an
     // analysis has succeeded, and the agent resends the whole list: without
@@ -181,6 +184,8 @@ async function createProposal(
     gameplayAnnotations: input.annotations ?? [],
     currentArtifact: {
       hasArtifact: Boolean(input.hasArtifact),
+      versions: input.versions ?? [],
+      lockedRevisionBase: input.lockedRevisionBase ?? null,
       pendingRevision: input.pendingRevision ?? null,
     },
     capabilities: playableCapabilitiesForAgent(),
@@ -258,25 +263,18 @@ async function createProposal(
           cache: toolCache,
         })
         toolResults.push(...executed)
-        const research = executed.find(
-          (entry) => entry.tool === 'search_market_references' && entry.status === 'completed',
-        )
-        if (research) {
-          return {
-            kind: 'research',
-            message: '已整理同类试玩广告的公开趋势和候选方向，请选择一个主参考并按需添加其他亮点。',
-            reasoning: '研究结果仅作为候选参考，采用后才会进入需求方案。',
-            research: marketResearchReportSchema.parse(research.result),
-          }
-        }
         continue
       }
+      const latestResearch = [...toolResults]
+        .reverse()
+        .find((entry) => entry.tool === 'search_market_references' && entry.status === 'completed')
       return executeRequirementToolPlan({
         plan: step.plan,
         currentBrief: input.brief,
         prompt: input.prompt,
         assets: input.assets,
         hasArtifact: input.hasArtifact,
+        marketResearch: latestResearch ? marketResearchReportSchema.parse(latestResearch.result) : undefined,
       }).reply
     } catch (error) {
       if (error instanceof PlayableAgentError) throw error
@@ -328,6 +326,8 @@ export async function executeBuildAgent(
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
           PLAYABLE_TOOLS_PROMPT,
+          NATIVE_TEMPLATE_UI_PROMPT,
+          REFERENCE_IMAGES_BUILD_PROMPT,
           input.phase === 'preview'
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'acceptance'
