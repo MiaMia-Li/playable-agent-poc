@@ -38,6 +38,8 @@ import {
   type RevisionProposal,
   type VideoAnalysisStatus,
 } from './schemas'
+import { readPlayableUserTurn } from './reference-images'
+import type { ReferenceImageEvidence } from './schemas'
 import { redactSecrets } from './redact'
 import { safeAsset, type PlayableAsset } from './task-assets'
 import { generatePlayableMediaAssets } from './media-generation'
@@ -742,7 +744,7 @@ function resolveRevisionProposal(input: {
 
 function conversationContent(message: PlayableTaskMessageRecord, secrets: readonly string[]): string {
   const safeContent = safeString(message.content, secrets)
-  if (message.role === 'user') return safeContent
+  if (message.role === 'user') return readPlayableUserTurn(safeContent).text
   try {
     const parsed = playableAgentReplySchema.safeParse(JSON.parse(safeContent))
     return parsed.success ? parsed.data.message : safeContent
@@ -1132,6 +1134,16 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           confirmation: sanitizedConfirmation,
         })
       : []
+    // 只传递确认方案选中的截图，不把任务累计上传的历史图片全部送入构建。
+    const referenceImages = await Promise.all(
+      (sanitizedConfirmation.referenceImages ?? []).map(async (reference) => {
+        const asset = storedAssets.find((asset) => asset.id === reference.assetId && asset.slot === 'referenceImage')
+        if (!asset) throw new Error('Selected screenshot unavailable')
+        const stream = await artifactStore.get(asset.storageKey)
+        if (!stream) throw new Error('Selected screenshot unavailable')
+        return { ...reference, mimeType: asset.mimeType, bytes: await readAll(stream) }
+      }),
+    )
     const assets = [...uploadedAssets, ...generatedAssets]
     stage = 'agent'
     const result = await agent.build({
@@ -1176,6 +1188,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
+      ...(referenceImages.length ? { referenceImages } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
@@ -1456,6 +1469,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
 
   const executeRequirementAnalysisTool = async (input: {
     call: RequirementAnalysisToolCall
+    prompt?: string
+    referenceImages?: ReferenceImageEvidence[]
     task: PlayableTaskRecord
     userId: string
     apiKey: string
@@ -1599,7 +1614,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       const analysis = await dependencies.imageAnalyst.analyze({
         taskId: input.task.id,
         apiKey: input.apiKey,
-        prompt: input.task.prompt,
+        prompt: [input.prompt ?? input.task.prompt, JSON.stringify(input.referenceImages ?? [])].join('\n'),
         images,
         abortSignal: input.abortSignal,
       })
@@ -1750,6 +1765,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             attachmentIds?: unknown
             referenceSelection?: unknown
             baseBuildId?: unknown
+            referenceImageIds?: unknown
+            screenshotBuildId?: unknown
+            screenshotPurpose?: unknown
           }
         | undefined
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
@@ -1761,6 +1779,21 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       ) {
         return jsonError(400, 'Invalid request')
       }
+      if (
+        body.referenceImageIds !== undefined &&
+        (!Array.isArray(body.referenceImageIds) ||
+          body.referenceImageIds.length > 10 ||
+          body.referenceImageIds.some((id) => typeof id !== 'string'))
+      )
+        return jsonError(400, 'Invalid screenshot selection')
+      if (
+        body.screenshotBuildId !== undefined &&
+        body.screenshotBuildId !== null &&
+        typeof body.screenshotBuildId !== 'string'
+      )
+        return jsonError(400, 'Invalid screenshot version')
+      if (body.screenshotPurpose !== undefined && !['problem', 'target'].includes(body.screenshotPurpose as string))
+        return jsonError(400, 'Invalid screenshot purpose')
       const attachedAssetIds = [...new Set((body.attachmentIds ?? []) as string[])]
       const attachedAssets = await Promise.all(
         attachedAssetIds.map((assetId) =>
@@ -1861,7 +1894,88 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 dependencies.repository.listBuilds(access.task.id),
               ])
               stage = 'user_message_store'
-              await dependencies.repository.appendMessage(access.task.id, 'user', prompt)
+              const previousTurns = history
+                .filter((turn) => turn.role === 'user')
+                .map((turn) => readPlayableUserTurn(turn.content))
+              const previousEvidence = new Map(
+                previousTurns.flatMap((turn) => turn.referenceImages).map((ref) => [ref.assetId, ref]),
+              )
+              const newImages = attachedAssets.filter((asset) => asset?.slot === 'referenceImage')
+              const lastReferences = previousTurns.at(-1)?.referenceImages ?? []
+              // 切换基线时仅沿用来源匹配的截图，避免把其他版本的问题带入本轮。
+              const inherited = lockedRevisionBase
+                ? lastReferences.filter((ref) => ref.sourceBuildId === lockedRevisionBase.buildId)
+                : lastReferences
+              // 显式选择（含空数组）优先；否则新图替换旧图，没有新图才沿用上一轮。
+              const selectedImageIds = [
+                ...new Set(
+                  body.referenceImageIds !== undefined
+                    ? (body.referenceImageIds as string[])
+                    : newImages.length
+                      ? newImages.map((asset) => asset!.id)
+                      : inherited.map((ref) => ref.assetId),
+                ),
+              ]
+              const successfulBuilds = builds.filter((build) => Boolean(build.artifactKey))
+              const screenshotIndex =
+                body.screenshotBuildId === null
+                  ? -1
+                  : successfulBuilds.findIndex((build) =>
+                      body.screenshotBuildId !== undefined
+                        ? build.id === body.screenshotBuildId
+                        : build.artifactKey === access.task.latestArtifactKey,
+                    )
+              if (typeof body.screenshotBuildId === 'string' && screenshotIndex < 0)
+                throw new Error('Screenshot source version unavailable')
+              const referenceImages: ReferenceImageEvidence[] = selectedImageIds.map((id) => {
+                const asset = assets.find((asset) => asset.id === id && asset.slot === 'referenceImage')
+                if (!asset) throw new Error('Selected screenshot unavailable')
+                const previous = previousEvidence.get(id)
+                if (previous && !newImages.some((image) => image?.id === id)) return previous
+                return {
+                  assetId: id,
+                  filename: safeString(asset.filename, [apiKey]),
+                  sourceBuildId:
+                    screenshotIndex < 0 || !newImages.some((image) => image?.id === id)
+                      ? null
+                      : successfulBuilds[screenshotIndex].id,
+                  sourceVersion:
+                    screenshotIndex < 0 || !newImages.some((image) => image?.id === id) ? null : screenshotIndex + 1,
+                  purpose:
+                    body.screenshotPurpose === 'target' ||
+                    (body.screenshotPurpose === undefined && !access.task.latestArtifactKey)
+                      ? 'target'
+                      : 'problem',
+                  description: prompt.slice(0, 4000),
+                }
+              })
+              const effectiveAttachedAssetIds = [
+                ...new Set([
+                  ...attachedAssetIds.filter(
+                    (id) => assets.find((asset) => asset.id === id)?.slot !== 'referenceImage',
+                  ),
+                  ...selectedImageIds,
+                ]),
+              ]
+              await dependencies.repository.appendMessage(
+                access.task.id,
+                'user',
+                attachedAssets.length ||
+                  referenceImages.length ||
+                  previousTurns.some((turn) => turn.referenceImages.length)
+                  ? JSON.stringify({
+                      kind: 'playable-user-turn',
+                      text: prompt,
+                      attachments: attachedAssets.flatMap((asset) =>
+                        asset
+                          ? [{ id: asset.id, filename: safeString(asset.filename, [apiKey]), mimeType: asset.mimeType }]
+                          : [],
+                      ),
+                      referenceImages,
+                    })
+                  : prompt,
+              )
+              enqueue({ type: 'reference_images', referenceImages })
               stage = 'agent_reply'
               const referenceToolCache = new Map<string, unknown>()
               // Only the image tool is budgeted. Reading a stored blueprint
@@ -1887,7 +2001,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     ? sanitizeRequirementBrief(access.task.requirementBrief, [apiKey])
                     : null,
                   assets: assets.map(safeAsset),
-                  attachedAssetIds,
+                  attachedAssetIds: effectiveAttachedAssetIds,
+                  referenceImages,
                   hasArtifact: Boolean(access.task.latestArtifactKey),
                   versions: builds
                     .filter((build) => Boolean(build.artifactKey))
@@ -1923,10 +2038,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   executeTool: (call, toolOptions) =>
                     executeRequirementAnalysisTool({
                       call,
+                      prompt,
+                      referenceImages,
                       task: access.task,
                       userId: access.userId,
                       apiKey,
-                      allowedAssetIds: new Set(attachedAssetIds),
+                      allowedAssetIds: new Set(effectiveAttachedAssetIds),
                       cache: referenceToolCache,
                       budget: referenceToolBudget,
                       abortSignal: toolOptions?.abortSignal,
@@ -1995,7 +2112,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 if (!enqueue({ type: 'tool_completed', tool })) return
               }
               if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
-                validatedReply.confirmation = bindSourceTemplate(validatedReply.confirmation, templateId)
+                validatedReply.confirmation = {
+                  ...bindSourceTemplate(validatedReply.confirmation, templateId),
+                  referenceImages: referenceImages.length ? referenceImages : undefined,
+                }
               }
               const serialized = JSON.stringify(validatedReply)
               stage = 'agent_message_store'
@@ -2282,7 +2402,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       try {
         sanitized = sanitizeConfirmation(
           bindSourceTemplate(
-            parsed.data,
+            { ...parsed.data, referenceImages: access.task.confirmation?.referenceImages },
             parsed.data.sourceTemplateId !== undefined
               ? parsed.data.sourceTemplateId
               : selectedSourceTemplate(access.task),

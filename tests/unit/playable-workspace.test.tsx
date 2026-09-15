@@ -100,7 +100,7 @@ describe('PlayableWorkspace', () => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/playable-tasks/task-7/messages',
         expect.objectContaining({
-          body: JSON.stringify({ message: '只删掉多余一行', baseBuildId: 'build-2' }),
+          body: JSON.stringify({ message: '只删掉多余一行', referenceImageIds: [], baseBuildId: 'build-2' }),
         }),
       ),
     )
@@ -112,7 +112,7 @@ describe('PlayableWorkspace', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/playable-tasks/task-7/messages',
-        expect.objectContaining({ body: JSON.stringify({ message: '调整标题' }) }),
+        expect.objectContaining({ body: JSON.stringify({ message: '调整标题', referenceImageIds: [] }) }),
       ),
     )
   })
@@ -1186,6 +1186,24 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace
         taskId="task-7"
         phase="draft"
+        initialConversation={[
+          {
+            id: 'old-turn',
+            role: 'user',
+            status: 'sent',
+            content: '上一轮截图',
+            referenceImages: [
+              {
+                assetId: 'old-image',
+                filename: 'old.png',
+                sourceBuildId: null,
+                sourceVersion: null,
+                purpose: 'target',
+                description: '旧参考',
+              },
+            ],
+          },
+        ]}
         onProposal={vi.fn()}
         onPhase={vi.fn()}
         onRequireApiKey={vi.fn()}
@@ -1205,6 +1223,7 @@ describe('PlayableWorkspace', () => {
     expect(await screen.findByText('board.png')).toBeInTheDocument()
     expect(await screen.findByText('gameplay.mp4')).toBeInTheDocument()
     expect(screen.getAllByText('待上传')).toHaveLength(2)
+    expect(screen.queryByLabelText('本轮参考截图')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '参考这些素材制作' } })
@@ -1222,7 +1241,12 @@ describe('PlayableWorkspace', () => {
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/playable-tasks/task-7/messages',
       expect.objectContaining({
-        body: JSON.stringify({ message: '参考这些素材制作', attachmentIds: ['image-1', 'video-1'] }),
+        body: JSON.stringify({
+          message: '参考这些素材制作',
+          referenceImageIds: ['image-1'],
+          screenshotPurpose: 'target',
+          attachmentIds: ['image-1', 'video-1'],
+        }),
       }),
     )
     expect(onAssetsChange).toHaveBeenLastCalledWith(uploadedAssets)
@@ -1295,7 +1319,12 @@ describe('PlayableWorkspace', () => {
     expect(fetchMock).toHaveBeenLastCalledWith(
       '/api/playable-tasks/task-7/messages',
       expect.objectContaining({
-        body: JSON.stringify({ message: '带附件重试', attachmentIds: ['image-success', 'video-retry'] }),
+        body: JSON.stringify({
+          message: '带附件重试',
+          referenceImageIds: ['image-success'],
+          screenshotPurpose: 'target',
+          attachmentIds: ['image-success', 'video-retry'],
+        }),
       }),
     )
   })

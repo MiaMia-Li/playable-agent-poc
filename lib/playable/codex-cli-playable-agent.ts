@@ -1,4 +1,5 @@
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
+import { referenceImageWorkspaceFiles, REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { readBuildSkillFiles } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT, supportsFastPreview } from './preview-build'
 import { usesPerspectiveTemplate, buildValidationCommand } from './build-template-policy'
@@ -194,6 +195,7 @@ export function createRequirementAgentPrompt(
       requirementBrief: input.brief ?? null,
       uploadedAssets: input.assets ?? [],
       attachedAssetIds: input.attachedAssetIds ?? [],
+      referenceImages: input.referenceImages ?? [],
       gameplayBlueprint: input.gameplayBlueprint ?? null,
       gameplayAnnotations: input.annotations ?? [],
       currentArtifact: {
@@ -241,6 +243,12 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     )
   }
 
+  // 与云端共用截图打包规则，避免运行模式切换后参考图丢失或语义不一致。
+  for (const file of referenceImageWorkspaceFiles(input.referenceImages)) {
+    const target = path.join(workspace, file.path)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.bytes)
+  }
   const manifest = {
     assets: [] as Array<Record<string, unknown>>,
     entrypoint: 'playable.html' as const,
@@ -373,6 +381,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               schema: codexOutputSchema(completionSchema),
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
+                REFERENCE_IMAGES_BUILD_PROMPT,
                 NATIVE_TEMPLATE_UI_PROMPT,
                 phase === 'preview' ? PREVIEW_BUILD_PROMPT : FULL_ACCEPTANCE_PROMPT,
                 'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
@@ -424,6 +433,8 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         schema: codexOutputSchema(completionSchema),
         prompt:
           NATIVE_TEMPLATE_UI_PROMPT +
+          '\n' +
+          REFERENCE_IMAGES_BUILD_PROMPT +
           '\n' +
           (input.confirmation.sourceTemplateId
             ? sourceTemplateBuildPrompt(input.revision?.strategy)

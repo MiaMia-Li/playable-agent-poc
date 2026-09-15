@@ -164,6 +164,20 @@ export function ConfirmationTable({
           <p className="text-muted-foreground text-sm">{description}</p>
         </div>
       )}
+      {Boolean(proposal.referenceImages?.length) && (
+        <section aria-label="本次构建参考截图" className="rounded-xl border p-3 text-sm">
+          <h3 className="font-medium">本次构建参考截图</h3>
+          <ul className="mt-1 space-y-1">
+            {proposal.referenceImages?.map((ref) => (
+              <li key={ref.assetId}>
+                {ref.filename} · {ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} ·{' '}
+                {ref.purpose === 'problem' ? '问题截图' : '目标效果'}
+                <p className="text-muted-foreground whitespace-pre-wrap text-xs">{ref.description}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div className="overflow-hidden rounded-xl border">
         <table className="w-full text-left text-sm">
           <tbody className="divide-y">

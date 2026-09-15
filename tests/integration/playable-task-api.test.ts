@@ -835,6 +835,119 @@ describe('playable task API', () => {
     )
   })
 
+  it('replaces screenshot batches, inherits a follow-up, reuses selected history and freezes the build snapshot', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = confirmation
+    task.latestArtifactKey = 'base/playable.html'
+    harness.repository.builds.push({
+      id: 'base',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation,
+      artifactKey: task.latestArtifactKey,
+      createdAt: new Date(1),
+    })
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>base</html>'))
+    for (const id of ['a', 'b', 'c']) {
+      harness.repository.assets.push({
+        id,
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'referenceImage',
+        filename: `${id}.png`,
+        mimeType: 'image/png',
+        size: 1,
+        storageKey: `images/${id}`,
+        durationSeconds: null,
+        createdAt: new Date(),
+      })
+      harness.artifacts.set(`images/${id}`, new Uint8Array([id.charCodeAt(0)]))
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValue({
+      kind: 'revision',
+      message: '修改',
+      reasoning: '修复截图问题',
+      revision: patchRevision,
+      confirmation,
+    })
+    const send = async (body: Record<string, unknown>) => {
+      const result = await harness.handlers.message(request('/api/playable-tasks/owned/messages', 'POST', body), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(await result.text()).toContain('"type":"revision"')
+    }
+    await send({ message: '最底部多出红中', attachmentIds: ['a', 'b'] })
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b'])
+    await send({ message: '看新的顶部问题', attachmentIds: ['c'] })
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['c'])
+    await send({ message: '这个问题仍在' })
+    expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        attachedAssetIds: ['c'],
+        referenceImages: [
+          expect.objectContaining({
+            assetId: 'c',
+            sourceVersion: 1,
+            purpose: 'problem',
+            description: '看新的顶部问题',
+          }),
+        ],
+      }),
+      expect.anything(),
+    )
+    await send({ message: '再对照第一张', referenceImageIds: ['a', 'c'] })
+    const frozen = task.confirmation!.referenceImages!
+    expect(frozen.map((ref) => ref.assetId)).toEqual(['a', 'c'])
+    expect(frozen[0].description).toBe('最底部多出红中')
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        revisionId: task.pendingRevision!.id,
+        confirmation: { ...confirmation, referenceImages: [] },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(confirmed.status).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        referenceImages: [
+          expect.objectContaining({ assetId: 'a', bytes: new Uint8Array([97]) }),
+          expect.objectContaining({ assetId: 'c', bytes: new Uint8Array([99]) }),
+        ],
+        assets: [],
+      }),
+    )
+    expect(
+      harness.repository.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => JSON.parse(message.content).referenceImages.map((ref: { assetId: string }) => ref.assetId)),
+    ).toEqual([['a', 'b'], ['c'], ['c'], ['a', 'c']])
+    await send({ message: '新的修改不参考截图', referenceImageIds: [] })
+    expect(task.confirmation!.referenceImages).toBeUndefined()
+  })
+
+  it('rejects a reference screenshot owned by a different task', async () => {
+    harness.repository.assets.push({
+      id: 'foreign-image',
+      taskId: 'other',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'other.png',
+      mimeType: 'image/png',
+      size: 1,
+      storageKey: 'other',
+      durationSeconds: null,
+      createdAt: new Date(),
+    })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '参考', referenceImageIds: ['foreign-image'] }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"error"')
+    expect(harness.agent.proposeConfirmation).not.toHaveBeenCalled()
+  })
+
   it('executes reference image inspection only when requested and returns private bytes to the agent tool loop', async () => {
     const image: PlayableAsset = {
       id: 'image-1',
@@ -889,8 +1002,10 @@ describe('playable task API', () => {
       { type: 'tool_completed', tool: 'inspect_reference_images', message: '参考图片分析完成' },
       { type: 'tool_completed', tool: 'respond_to_user' },
     ])
-    expect(JSON.stringify(events)).not.toContain('image-1')
-    expect(JSON.stringify(events)).not.toContain('private-name.png')
+    expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain('image-1')
+    expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain(
+      'private-name.png',
+    )
     expect(JSON.stringify(events)).not.toContain('private-image-key')
   })
 

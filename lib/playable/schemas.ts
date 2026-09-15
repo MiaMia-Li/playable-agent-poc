@@ -277,8 +277,20 @@ function validateConfirmationPresentation(
   }
 }
 
+// 截图来源与修改基线独立：跨版本图片可作对照，但不能自动成为构建起点。
+export const referenceImageEvidenceSchema = z.strictObject({
+  assetId: z.string().min(1),
+  filename: z.string(),
+  sourceBuildId: z.string().nullable(),
+  sourceVersion: z.number().int().positive().nullable(),
+  purpose: z.enum(['problem', 'target']),
+  description: z.string().max(4000),
+})
+export type ReferenceImageEvidence = z.infer<typeof referenceImageEvidenceSchema>
+
 export const confirmationProposalSchema = z
   .strictObject({
+    referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),

@@ -1,6 +1,7 @@
 import type { BuildActivityCallback } from './build-activity'
 import type {
   ConfirmationProposal,
+  ReferenceImageEvidence,
   GameplayAnnotation,
   GameplayBlueprintDocument,
   PlayableAgentReply,
@@ -82,6 +83,7 @@ export interface AgentInput {
   brief?: RequirementBrief | null
   assets?: SafePlayableAsset[]
   attachedAssetIds?: string[]
+  referenceImages?: ReferenceImageEvidence[]
   gameplayBlueprint?: GameplayBlueprintDocument
   annotations?: GameplayAnnotation[]
   hasArtifact?: boolean
@@ -162,6 +164,7 @@ export interface ConfirmedBuildInput {
   apiKey: string
   confirmation: ConfirmationProposal
   assets?: PlayableBuildAsset[]
+  referenceImages?: (ReferenceImageEvidence & { mimeType: string; bytes: Uint8Array })[]
   gameplayBlueprint?: GameplayBlueprintDocument
   revision?: RevisionProposal
   baseHtml?: string

@@ -1,4 +1,5 @@
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
+import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
 import { PREVIEW_BUILD_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
@@ -175,6 +176,7 @@ async function createProposal(
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
     attachedAssetIds: input.attachedAssetIds ?? [],
+    referenceImages: input.referenceImages ?? [],
     gameplayBlueprint: input.gameplayBlueprint ?? null,
     // Supplied on its own because the blueprint document only exists once an
     // analysis has succeeded, and the agent resends the whole list: without
@@ -332,6 +334,7 @@ export async function executeBuildAgent(
         prompt: [
           PLAYABLE_TOOLS_PROMPT,
           NATIVE_TEMPLATE_UI_PROMPT,
+          REFERENCE_IMAGES_BUILD_PROMPT,
           input.phase === 'preview'
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'acceptance'
