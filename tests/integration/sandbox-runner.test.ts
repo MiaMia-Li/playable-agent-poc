@@ -615,9 +615,12 @@ describe('runPlayableBuild', () => {
       options.command.includes('test-freeform-playable.mjs')
         ? { exitCode: 1, stdout: '', stderr: 'deterministic failure' }
         : run(options)
+    const input = buildInput('center_collision', 'sk-failure-test')
+    const onActivity = vi.fn()
+    input.onActivity = onActivity
 
     await expect(
-      runPlayableBuild(buildInput('center_collision', 'sk-failure-test'), {
+      runPlayableBuild(input, {
         createSandbox: async () => sandbox,
         executeAgent: async () => undefined,
       }),
@@ -625,6 +628,15 @@ describe('runPlayableBuild', () => {
       name: 'PlayableBuildExecutionError',
       message: 'Playable validation failed',
       stage: 'validation',
+      reason: 'validation_failed',
+    })
+    const report = onActivity.mock.calls.find(([event]) => event === 'host_check_failed')
+    expect(report?.[1]?.tool).toBe('validation_failed')
+    expect(JSON.parse(report?.[1]?.output)).toEqual({
+      stage: 'validation',
+      reason: 'validation_failed',
+      exitCode: 1,
+      output: 'deterministic failure',
     })
     expect(sandbox.destroyed).toBe(true)
   })
@@ -659,7 +671,11 @@ describe('runPlayableBuild', () => {
           })
         },
       }),
-    ).rejects.toThrow('Skill master was modified')
+    ).rejects.toMatchObject({
+      message: 'Skill master was modified',
+      stage: 'integrity',
+      reason: 'master_modified',
+    })
     expect(sandbox.destroyed).toBe(true)
   })
 
@@ -780,6 +796,32 @@ describe('runPlayableBuild', () => {
       }),
     ).rejects.toThrow('Playable artifact contains an external resource')
     expect(sandbox.destroyed).toBe(true)
+  })
+
+  it('reports which kind of external reference blocked the artifact without echoing it', async () => {
+    const sandbox = await createLocalSandbox()
+    replaceArtifactCommands(
+      sandbox,
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><script src="https://cdn.example/three.js"></script><script>window.__PLAYABLE__={}</script>',
+    )
+    const input = buildInput('center_collision', 'sk-offline-report')
+    const onActivity = vi.fn()
+    input.onActivity = onActivity
+
+    await expect(
+      runPlayableBuild(input, {
+        createSandbox: async () => sandbox,
+        executeAgent: async () => undefined,
+      }),
+    ).rejects.toMatchObject({ stage: 'artifact_check', reason: 'external_resource' })
+    const report = onActivity.mock.calls.find(([event]) => event === 'host_check_failed')
+    expect(JSON.parse(report?.[1]?.output)).toEqual({
+      stage: 'artifact_check',
+      reason: 'external_resource',
+      element: 'script',
+      target: 'absolute_url',
+    })
+    expect(report?.[1]?.output).not.toContain('cdn.example')
   })
 
   it('blocks relative resource references before an artifact can be published', async () => {

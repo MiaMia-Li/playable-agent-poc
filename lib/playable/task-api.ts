@@ -3,6 +3,7 @@ import { mergeReasoning } from './reasoning-history'
 import { sanitizeBuildActivityDetail } from './build-activity-detail'
 import { buildActivityLabels, type BuildActivityCallback } from './build-activity'
 import { createBuildTimingReporter } from './build-timing'
+import type { HostCheckReason } from './host-check-error'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sourceTemplateIds } from './types'
@@ -892,6 +893,31 @@ function externalResponseStatus(error: unknown): number | undefined {
   }
 }
 
+const HOST_CHECK_FAILURE_MESSAGES: Record<HostCheckReason, string> = {
+  artifact_missing: '构建未生成试玩文件，请重试。',
+  contract_missing: '试玩产物缺少 window.__PLAYABLE__ 状态接口，请重试。',
+  template_contract_missing: '试玩产物缺少所选模板的必需标记，请重试。',
+  credential: '试玩产物中检测到疑似密钥内容，已阻止发布，请调整修改要求后重试。',
+  external_resource: '试玩产物引用了未内嵌的外部资源（脚本、图片、字体或 CSS），请重试。',
+  viewport_missing: '试玩产物缺少响应式 viewport 声明，请重试。',
+  canvas_missing: '试玩产物缺少 Canvas 游戏画布，请重试。',
+  master_modified: '试玩 Skill 完整性检查失败，请重试。',
+  validation_failed: '试玩行为校验失败，请查看构建步骤中的“平台产物检查未通过”详情后重试。',
+}
+
+// reason 是代码内固定的枚举值，不含用户数据，可以写进服务端日志。
+const HOST_CHECK_LOG_MESSAGES: Record<HostCheckReason, string> = {
+  artifact_missing: 'Playable build failed host check: artifact missing',
+  contract_missing: 'Playable build failed host check: playable contract missing',
+  template_contract_missing: 'Playable build failed host check: template contract missing',
+  credential: 'Playable build failed host check: credential-shaped content',
+  external_resource: 'Playable build failed host check: external resource reference',
+  viewport_missing: 'Playable build failed host check: responsive viewport missing',
+  canvas_missing: 'Playable build failed host check: canvas missing',
+  master_modified: 'Playable build failed host check: Skill master modified',
+  validation_failed: 'Playable build failed host check: validation command failed',
+}
+
 function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string {
   if (stage !== 'agent' || !(cause instanceof Error)) return DEFAULT_BUILD_FAILURE_MESSAGE
   const message = externalErrorText(cause)
@@ -938,7 +964,8 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
     if (cause.stage === 'preview_check') return '预览交互检查失败，请查看构建步骤中的验收诊断。'
     if (cause.stage === 'integrity') return '试玩 Skill 完整性检查失败，请重试。'
     if (cause.stage === 'artifact_build') return '试玩产物构建失败，请调整修改要求后重试。'
-    if (cause.stage === 'validation') return '试玩行为校验失败，请调整修改要求后重试。'
+    if (cause.stage === 'validation') return '试玩行为校验失败，请查看构建步骤中的“平台产物检查未通过”详情后重试。'
+    if (cause.reason) return HOST_CHECK_FAILURE_MESSAGES[cause.reason]
     return '试玩产物安全检查失败，请调整修改要求后重试。'
   }
   return DEFAULT_BUILD_FAILURE_MESSAGE
@@ -1048,6 +1075,11 @@ function logConfirmedBuildFailure(stage: ConfirmedBuildStage, cause: unknown): v
     console.error('Playable build failed while creating Vercel Sandbox: payment required')
   } else if (stage === 'agent' && cause instanceof PlayableBuildExecutionError && cause.stage === 'preview_check') {
     console.error('Playable build failed during preview interaction checking')
+  } else if (stage === 'agent' && cause instanceof PlayableBuildExecutionError && cause.reason) {
+    console.error(HOST_CHECK_LOG_MESSAGES[cause.reason])
+  } else if (stage === 'agent' && cause instanceof PlayableBuildExecutionError) {
+    // stage 是固定枚举，用来区分沙箱创建、工作区准备与 Agent 执行本身。
+    console.error('Playable build failed in Sandbox stage:', cause.stage)
   } else if (stage === 'agent') console.error('Playable build failed during Sandbox agent execution')
   else if (stage === 'validation') console.error('Playable build failed during validation')
   else if (stage === 'artifact_store') console.error('Playable build failed while storing artifacts')

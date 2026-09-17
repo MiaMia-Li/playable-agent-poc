@@ -34,6 +34,7 @@ import {
 import { createRequirementBrief } from '@/lib/playable/requirement-tools'
 import type { ReferenceImageAnalysis } from '@/lib/playable/reference-image-analyst'
 import { PlayableBuildExecutionError } from '@/lib/playable/sandbox-runner'
+import { PlayableHostCheckError } from '@/lib/playable/host-check-error'
 import { VIDEO_ANALYSIS_PIPELINE_VERSION } from '@/lib/playable/video-gameplay-analyst'
 
 const confirmation: ConfirmationProposal = {
@@ -3652,9 +3653,64 @@ describe('playable task API', () => {
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: '试玩行为校验失败，请调整修改要求后重试。',
+      message: '试玩行为校验失败，请查看构建步骤中的“平台产物检查未通过”详情后重试。',
     })
     expect(JSON.stringify(harness.repository.events)).not.toContain('private validation details')
+  })
+
+  it('names the failed host check instead of the generic safety message', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError(
+        'artifact_check',
+        new PlayableHostCheckError('private host check details', 'external_resource'),
+      ),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'host-check-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: 'build_failed',
+      phase: 'failed',
+      message: '试玩产物引用了未内嵌的外部资源（脚本、图片、字体或 CSS），请重试。',
+    })
+    expect(errorSpy).toHaveBeenCalledWith('Playable build failed host check: external resource reference')
+    expect(JSON.stringify(harness.repository.events)).not.toContain('private host check details')
+  })
+
+  it('logs the fixed Sandbox stage for unclassified execution failures', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError('artifact_check', new Error('private read failure')),
+    )
+
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'unclassified-sandbox-failure-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      message: '试玩产物安全检查失败，请调整修改要求后重试。',
+    })
+    expect(errorSpy).toHaveBeenCalledWith('Playable build failed in Sandbox stage:', 'artifact_check')
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('private read failure')
   })
 
   it('rejects credential-bearing build output before writing any artifact', async () => {

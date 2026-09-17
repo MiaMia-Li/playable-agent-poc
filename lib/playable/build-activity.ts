@@ -10,6 +10,7 @@ export const buildActivityLabels = {
   preview_check_failed: '预览交互检查失败',
   preview_repair_started: '正在定向修复预览（仅一次）',
   preview_repair_unchanged: '未产生有效修改，停止重试',
+  host_check_failed: '平台产物检查未通过',
   parameters_applied: '已应用模板参数，跳过模型修改',
   agent_message: 'Agent 说明',
   reasoning_summary: '思考摘要',

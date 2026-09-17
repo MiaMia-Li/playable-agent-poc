@@ -1,5 +1,6 @@
 import { gzipSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
+import { PlayableHostCheckError } from './host-check-error'
 import type { PlayableSandbox } from './sandbox-runner'
 
 export interface WorkspaceFile {
@@ -58,5 +59,5 @@ for(const [name,digest] of JSON.parse(Buffer.from(process.env.PLAYABLE_MASTER_HA
     env: { PLAYABLE_MASTER_HASHES: expected },
     abortSignal,
   })
-  if (result.exitCode !== 0) throw new Error('Skill master was modified')
+  if (result.exitCode !== 0) throw new PlayableHostCheckError('Skill master was modified', 'master_modified')
 }

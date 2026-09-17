@@ -19,6 +19,7 @@ import type {
   TimelineCorrection,
   VideoAnalysisStatus,
 } from '@/lib/playable/schemas'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
@@ -633,6 +634,11 @@ export function PlayableHome({
   const [creatingTemplate, setCreatingTemplate] = useState<PlayableTemplateId>()
   const [previewMode, setPreviewMode] = useState<PlayableTemplateId>()
   const [error, setError] = useState('')
+  const [draggingFiles, setDraggingFiles] = useState(false)
+  // dragenter/dragleave also fire for every child crossed, so only the outermost
+  // pair toggles the drop highlight.
+  const dragDepth = useRef(0)
+  const canDropAttachments = Boolean(user) && !creating && !creatingTemplate
 
   useEffect(
     () => () => {
@@ -806,10 +812,40 @@ export function PlayableHome({
         <p className="text-muted-foreground mt-3 text-sm sm:text-base">
           说说你的玩法想法，或上传参考素材，我们从这里开始。
         </p>
-        <div className="bg-background mt-6 rounded-2xl border p-2.5 text-left">
+        <div
+          className={cn(
+            'bg-background mt-6 rounded-2xl border p-2.5 text-left transition-colors',
+            draggingFiles && 'border-primary bg-primary/5 ring-primary/30 ring-2',
+          )}
+          data-dragging={draggingFiles || undefined}
+          onDragEnter={(event) => {
+            if (!event.dataTransfer.types.includes('Files')) return
+            event.preventDefault()
+            dragDepth.current += 1
+            if (canDropAttachments) setDraggingFiles(true)
+          }}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes('Files')) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = canDropAttachments ? 'copy' : 'none'
+          }}
+          onDragLeave={(event) => {
+            if (!event.dataTransfer.types.includes('Files')) return
+            dragDepth.current = Math.max(0, dragDepth.current - 1)
+            if (dragDepth.current === 0) setDraggingFiles(false)
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.types.includes('Files')) return
+            event.preventDefault()
+            dragDepth.current = 0
+            setDraggingFiles(false)
+            if (!canDropAttachments) return
+            addAttachments(event.dataTransfer.files)
+          }}
+        >
           <Textarea
             aria-label="新试玩需求"
-            placeholder="描述玩法、视觉方向，或上传参考素材…"
+            placeholder="描述玩法、视觉方向，或上传／拖入参考素材…"
             className="min-h-20 resize-none border-0 px-2.5 py-2 text-base shadow-none focus-visible:ring-0"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
