@@ -119,7 +119,9 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
                 }
                 // 生命周期汇总在外层标题中，避免把准备、开始和结束重复列成一排。
                 if (
-                  !/build_activity_(command_|tool_|file_changed|preview_check_failed|preview_repair_)/.test(event.type)
+                  !/build_activity_(command_|tool_|file_changed|preview_check_failed|preview_repair_|host_check_failed)/.test(
+                    event.type,
+                  )
                 )
                   return null
                 const Icon = event.type === 'build_activity_file_changed' ? FilePenLine : Terminal

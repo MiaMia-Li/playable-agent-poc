@@ -23,6 +23,7 @@ import { OPENROUTER_BASE_URL } from './shared-ai-key'
 import { MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
 import { PLAYABLE_SANDBOX_TOOLS_VERSION, PLAYABLE_TOOLS_CHECK } from './sandbox-tools'
 import { isPlayableSandboxValidationEnabled } from './validation-policy'
+import { PlayableHostCheckError, type HostCheckReason } from './host-check-error'
 
 interface SandboxCommandOptions {
   command: string
@@ -80,38 +81,66 @@ export type PlayableBuildExecutionStage =
   | 'artifact_check'
 
 export class PlayableBuildExecutionError extends Error {
+  readonly reason?: HostCheckReason
+
   constructor(
     readonly stage: PlayableBuildExecutionStage,
     cause: unknown,
   ) {
     super(cause instanceof Error ? cause.message : 'Playable build execution failed', { cause })
     this.name = 'PlayableBuildExecutionError'
+    if (cause instanceof PlayableHostCheckError) this.reason = cause.reason
   }
 }
+
+const VALIDATION_OUTPUT_TAIL_CHARS = 2000
 
 function safeWorkspaceFilename(id: string, filename: string): string {
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'asset'
   return `${id}-${safeName}`
 }
 
-function hasExternalResourceReference(html: string): boolean {
+/** 只归纳引用的类别，不回传 URL 或路径本身；与 test-freeform-playable.mjs 的检查保持一致。 */
+function findExternalResourceReference(html: string): { element: string; target: string } | undefined {
   const isEmbeddedReference = (value: string) => /^(?:data:|blob:|#)/i.test(value.trim())
+  const targetKind = (value: string) =>
+    /^[a-z][a-z0-9+.-]*:/i.test(value.trim())
+      ? 'absolute_url'
+      : value.trim().startsWith('//')
+        ? 'protocol_relative_url'
+        : 'relative_path'
   const resourceAttributes =
-    /<(?:img|audio|video|source|script|link|iframe|object)\b[^>]*\b(?:src|href|poster|data|srcset)\s*=\s*["']([^"']+)["']/gi
+    /<(img|audio|video|source|script|link|iframe|object)\b[^>]*\b(?:src|href|poster|data|srcset)\s*=\s*["']([^"']+)["']/gi
   for (const match of html.matchAll(resourceAttributes)) {
-    if (!isEmbeddedReference(match[1])) return true
+    if (!isEmbeddedReference(match[2])) return { element: match[1].toLowerCase(), target: targetKind(match[2]) }
   }
 
   const htmlWithoutScripts = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
   const cssResources = /url\(\s*["']?([^"')]+)["']?\s*\)/gi
   for (const match of htmlWithoutScripts.matchAll(cssResources)) {
-    if (!isEmbeddedReference(match[1])) return true
+    if (!isEmbeddedReference(match[1])) return { element: 'css_url', target: targetKind(match[1]) }
   }
-  return false
+  return undefined
 }
 
-function hasResponsiveViewport(html: string): boolean {
-  return /<meta\s+name=["']viewport["'][^>]*width=device-width/i.test(html) && /<canvas\b/i.test(html)
+function assertOfflineArtifact(html: string, message: string): void {
+  const reference = findExternalResourceReference(html)
+  if (reference) throw new PlayableHostCheckError(message, 'external_resource', reference)
+}
+
+function assertCredentialFree(html: string, apiKey: string, message: string): void {
+  if (html.includes(apiKey) || redactSecrets(html) !== html) throw new PlayableHostCheckError(message, 'credential')
+}
+
+function assertResponsiveViewport(html: string, message: string): void {
+  if (!/<meta\s+name=["']viewport["'][^>]*width=device-width/i.test(html))
+    throw new PlayableHostCheckError(message, 'viewport_missing')
+  if (!/<canvas\b/i.test(html)) throw new PlayableHostCheckError(message, 'canvas_missing')
+}
+
+function outputTail(result: SandboxCommandResult): string {
+  const output = [result.stdout, result.stderr].filter((part) => part?.trim()).join('\n')
+  return output.length > VALIDATION_OUTPUT_TAIL_CHARS ? output.slice(-VALIDATION_OUTPUT_TAIL_CHARS) : output
 }
 
 function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['confirmation'], html: string): void {
@@ -124,7 +153,7 @@ function assertRegisteredTemplateContract(confirmation: ConfirmedBuildInput['con
     'LAYERS=8',
   ]
   if (requiredTokens.some((token) => !html.includes(token))) {
-    throw new Error('Perspective 3D template contract is missing')
+    throw new PlayableHostCheckError('Perspective 3D template contract is missing', 'template_contract_missing')
   }
 }
 
@@ -399,6 +428,7 @@ export async function runPlayableBuild(
       const checkSignal = dependencies.abortSignal
       for (let attempt = 0; attempt < 2; attempt++) {
         // 预览同样使用不可修改的验收入口，工作区里的场景仅描述实际交互。
+        stage = 'integrity'
         await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
         // Save the safe artifact before browser acceptance so failed checks still
         // leave a numbered, explicitly unaccepted version for the user.
@@ -409,14 +439,11 @@ export async function runPlayableBuild(
         })
         const preview =
           originalPreview && applyTemplateBrowserCompatibility(originalPreview, confirmation.sourceTemplateId)
-        if (
-          !preview ||
-          !hasResponsiveViewport(preview) ||
-          hasExternalResourceReference(preview) ||
-          preview.includes(input.apiKey) ||
-          redactSecrets(preview) !== preview
-        )
-          throw new Error('Preview artifact check failed')
+        const previewCheckMessage = 'Preview artifact check failed'
+        if (!preview) throw new PlayableHostCheckError(previewCheckMessage, 'artifact_missing')
+        assertResponsiveViewport(preview, previewCheckMessage)
+        assertOfflineArtifact(preview, previewCheckMessage)
+        assertCredentialFree(preview, input.apiKey, previewCheckMessage)
         if (preview !== originalPreview) {
           await sandbox.writeTextFile({
             path: path.join(workspace, 'output.html'),
@@ -590,19 +617,20 @@ export async function runPlayableBuild(
       stage = 'validation'
       input.onActivity?.('validating')
       await dependencies.logger?.info('Validating playable behavior')
-      await requireSuccessfulCommand(
-        sandbox,
-        {
-          command: buildValidationCommand(confirmation),
-          workingDirectory: workspace,
-          env: {
-            PLAYABLE_MODE: confirmation.mode,
-            PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
-          },
-          abortSignal: dependencies.abortSignal,
+      const validation = await sandbox.run({
+        command: buildValidationCommand(confirmation),
+        workingDirectory: workspace,
+        env: {
+          PLAYABLE_MODE: confirmation.mode,
+          PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
         },
-        'Playable validation failed',
-      )
+        abortSignal: dependencies.abortSignal,
+      })
+      if (validation.exitCode !== 0)
+        throw new PlayableHostCheckError('Playable validation failed', 'validation_failed', {
+          exitCode: validation.exitCode,
+          output: outputTail(validation),
+        })
     }
 
     stage = 'artifact_check'
@@ -610,17 +638,19 @@ export async function runPlayableBuild(
       path: path.join(workspace, 'output.html'),
       abortSignal: dependencies.abortSignal,
     })
-    if (artifact === null) throw new Error('Playable artifact is missing')
+    if (artifact === null) throw new PlayableHostCheckError('Playable artifact is missing', 'artifact_missing')
 
     const html = new TextDecoder().decode(artifact)
     assertRegisteredTemplateContract(confirmation, html)
-    if (!html.includes('window.__PLAYABLE__')) throw new Error('Playable artifact contract is missing')
-    if (html.includes(input.apiKey)) throw new Error('Playable artifact contains a credential')
-    if (redactSecrets(html) !== html) throw new Error('Playable artifact contains a credential')
-    if (hasExternalResourceReference(html)) throw new Error('Playable artifact contains an external resource')
-    if (!hasResponsiveViewport(html)) throw new Error('Playable artifact is missing responsive viewport support')
+    if (!html.includes('window.__PLAYABLE__'))
+      throw new PlayableHostCheckError('Playable artifact contract is missing', 'contract_missing')
+    assertCredentialFree(html, input.apiKey, 'Playable artifact contains a credential')
+    assertOfflineArtifact(html, 'Playable artifact contains an external resource')
+    assertResponsiveViewport(html, 'Playable artifact is missing responsive viewport support')
 
+    stage = 'integrity'
     await verifyWorkspaceMaster(sandbox, skillFiles, dependencies.abortSignal)
+    stage = 'artifact_check'
     const previewScenario = await sandbox.readTextFile({
       path: path.join(workspace, 'work/preview-scenario.mjs'),
       abortSignal: dependencies.abortSignal,
@@ -653,6 +683,13 @@ export async function runPlayableBuild(
     }
   } catch (error) {
     operationError = error
+    if (error instanceof PlayableHostCheckError) {
+      // 平台检查在 Agent 之外执行，失败原因只能由宿主记录，否则步骤流里看不到任何线索。
+      input.onActivity?.('host_check_failed', {
+        tool: error.reason,
+        output: JSON.stringify({ stage, reason: error.reason, ...error.detail }, null, 2),
+      })
+    }
     throw error instanceof PlayableBuildExecutionError ? error : new PlayableBuildExecutionError(stage, error)
   } finally {
     if (sandbox) {
