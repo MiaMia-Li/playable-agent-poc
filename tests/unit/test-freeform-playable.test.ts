@@ -35,6 +35,20 @@ describe('test-freeform-playable.mjs', () => {
   })
 
   it.each([
+    ["Object.defineProperty(window,'__PLAYABLE__',{value:{}})"],
+    ["window['__PLAYABLE__']={}"],
+    ['globalThis.__PLAYABLE__={}'],
+  ])('accepts the playable contract written as %s', async (contract) => {
+    const html = validHtml().replace('window.__PLAYABLE__={};', `${contract};`)
+    await expect(check(html)).resolves.toMatchObject({ stdout: expect.stringContaining('PASS') })
+  })
+
+  it('rejects an artifact that only mentions the contract name', async () => {
+    const html = validHtml().replace('window.__PLAYABLE__={};', "const note='__PLAYABLE__';")
+    await expect(check(html)).rejects.toMatchObject({ stderr: expect.stringContaining('playable contract is missing') })
+  })
+
+  it.each([
     ['a CDN script', '<script src="https://cdn.example/three.js"></script>', 'external resource in <script>'],
     ['an uploaded asset path', '<img src="user-assets/bg.png">', 'external resource in <img>'],
     ['a CSS url outside scripts', '<style>body{background:url(user-assets/bg.png)}</style>', 'external CSS url'],

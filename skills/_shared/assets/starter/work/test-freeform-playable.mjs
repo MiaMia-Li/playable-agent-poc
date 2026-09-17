@@ -10,7 +10,12 @@ if (!/<meta\s+name=["']viewport["'][^>]*width=device-width/i.test(html)) {
 }
 if (!/<canvas\b/i.test(html)) throw new Error("game canvas is missing");
 if (!/<script\b[^>]*>([\s\S]*?)<\/script>/i.test(html)) throw new Error("embedded game script is missing");
-if (!/window\.__PLAYABLE__/i.test(html)) throw new Error("playable contract is missing");
+// Same pattern as the platform's publish check: assignment, bracket access or defineProperty.
+const playableContract =
+  /\b(?:window|globalThis|self)\s*(?:\.\s*__PLAYABLE__\b|\[\s*["'`]__PLAYABLE__["'`]\s*\])|\bdefineProperty\s*\(\s*(?:window|globalThis|self)\s*,\s*["'`]__PLAYABLE__["'`]/;
+if (!playableContract.test(html)) {
+  throw new Error("playable contract is missing: assign window.__PLAYABLE__ in an inline script");
+}
 if (!/playable:set-muted/i.test(html)) throw new Error("mute message protocol is missing");
 if (!/(?:pointerdown|click|touchstart)/i.test(html)) throw new Error("gameplay interaction is missing");
 if (!/(?:mraid\.open|window\.open)/i.test(html)) throw new Error("store navigation is missing");

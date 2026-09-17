@@ -94,6 +94,10 @@ export class PlayableBuildExecutionError extends Error {
 }
 
 const VALIDATION_OUTPUT_TAIL_CHARS = 2000
+// 静态检查只确认产物声明了状态接口；运行时是否可读由浏览器验收负责。
+// 与 test-freeform-playable.mjs 保持一致，接受赋值、下标和 defineProperty 等等价写法。
+const PLAYABLE_CONTRACT_PATTERN =
+  /\b(?:window|globalThis|self)\s*(?:\.\s*__PLAYABLE__\b|\[\s*["'`]__PLAYABLE__["'`]\s*\])|\bdefineProperty\s*\(\s*(?:window|globalThis|self)\s*,\s*["'`]__PLAYABLE__["'`]/
 
 function safeWorkspaceFilename(id: string, filename: string): string {
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180) || 'asset'
@@ -642,7 +646,7 @@ export async function runPlayableBuild(
 
     const html = new TextDecoder().decode(artifact)
     assertRegisteredTemplateContract(confirmation, html)
-    if (!html.includes('window.__PLAYABLE__'))
+    if (!PLAYABLE_CONTRACT_PATTERN.test(html))
       throw new PlayableHostCheckError('Playable artifact contract is missing', 'contract_missing')
     assertCredentialFree(html, input.apiKey, 'Playable artifact contains a credential')
     assertOfflineArtifact(html, 'Playable artifact contains an external resource')
