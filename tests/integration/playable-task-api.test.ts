@@ -7,6 +7,7 @@ import { NextRequest } from 'next/server'
 import {
   createPlayableTaskHandlers,
   runConfirmedBuild,
+  safeValidationSummary,
   type BackgroundScheduler,
   type PlayableBuildRecord,
   type PlayableTaskRecord,
@@ -56,7 +57,7 @@ const confirmation: ConfirmationProposal = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 }
 
@@ -2971,7 +2972,7 @@ describe('playable task API', () => {
       },
     }
     task.latestValidation = createValidationReport({
-      bytes: 5242881,
+      bytes: 10485761,
       offlineResources: true,
       responsiveViewport: true,
       delivery: confirmation.delivery,
@@ -2983,7 +2984,27 @@ describe('playable task API', () => {
 
     expect((await response.json()).task.latestValidation).toMatchObject({
       deliveryCompliant: false,
-      delivery: { profileId: 'applovin', maxBytes: 5242880 },
+      delivery: { profileId: 'applovin', maxBytes: 10485760 },
+    })
+  })
+
+  it('rechecks an older AppLovin build against the current size limit', () => {
+    expect(
+      safeValidationSummary(
+        {
+          bytes: 6 * 1024 * 1024,
+          buildPassed: true,
+          deliveryCompliant: false,
+          gates: { packageSize: 'failed' },
+          delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5_242_880 },
+        },
+        confirmation.delivery,
+      ),
+    ).toEqual({
+      bytes: 6 * 1024 * 1024,
+      buildPassed: true,
+      deliveryCompliant: true,
+      delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 10_485_760 },
     })
   })
 
@@ -3277,7 +3298,7 @@ describe('playable task API', () => {
     vi.mocked(harness.agent.build).mockResolvedValueOnce({
       html: '<script>window.__PLAYABLE__={}</script>',
       validation: createValidationReport({
-        bytes: 5242881,
+        bytes: 10485761,
         offlineResources: true,
         responsiveViewport: true,
         delivery: confirmation.delivery,
@@ -3959,7 +3980,7 @@ describe('playable task API', () => {
         confirmation,
         artifactKey: task.latestArtifactKey,
         validation: createValidationReport({
-          bytes: 5242881,
+          bytes: 10485761,
           offlineResources: true,
           responsiveViewport: true,
           delivery: confirmation.delivery,
@@ -3986,7 +4007,7 @@ describe('playable task API', () => {
           status: 'succeeded',
           version: 2,
           current: true,
-          validation: expect.objectContaining({ bytes: 5242881, deliveryCompliant: false }),
+          validation: expect.objectContaining({ bytes: 10485761, deliveryCompliant: false }),
         }),
       ],
     })

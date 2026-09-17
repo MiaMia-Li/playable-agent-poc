@@ -388,12 +388,23 @@ function validateDeliveryProfileSnapshot(
   }
 }
 
-const persistedDeliverySchema = z
-  .strictObject({
-    profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
-    ...deliverySnapshotShape,
-  })
-  .superRefine(validateDeliveryProfileSnapshot)
+const persistedDeliverySchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+    const delivery = value as Record<string, unknown>
+    // 旧任务的 JSONB 快照仍写着 5 MiB；读取时升级到当前渠道标准。
+    if (delivery.network === 'applovin' && delivery.maxBytes === 5_242_880) {
+      return { ...delivery, maxBytes: APPLOVIN_MAX_BYTES }
+    }
+    return value
+  },
+  z
+    .strictObject({
+      profileId: z.enum(DELIVERY_PROFILE_IDS).optional(),
+      ...deliverySnapshotShape,
+    })
+    .superRefine(validateDeliveryProfileSnapshot),
+)
 
 const generatedDeliverySchema = z
   .strictObject({

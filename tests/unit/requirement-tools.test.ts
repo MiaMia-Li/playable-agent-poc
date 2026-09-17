@@ -67,7 +67,7 @@ function confirmation(brief: RequirementBrief): ConfirmationProposal {
       logicalWidth: 360,
       logicalHeight: 640,
       output: 'single-html',
-      maxBytes: 5242880,
+      maxBytes: 10485760,
     },
   }
 }
@@ -603,7 +603,7 @@ describe('requirement domain tools', () => {
     expect(capabilities.confirmationDefaults.delivery).toMatchObject({
       profileId: 'applovin',
       network: 'applovin',
-      maxBytes: 5242880,
+      maxBytes: 10485760,
     })
   })
 })

@@ -3,6 +3,7 @@ import {
   confirmationProposalSchema,
   defaultConfirmationPresentation,
   gameplayAnnotationSchema,
+  generatedConfirmationProposalSchema,
   parsePlayableAgentOutput,
   playableAgentReplySchema,
   playableTaskPhases,
@@ -58,7 +59,7 @@ const validProposal = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 } as const
 
@@ -105,6 +106,23 @@ describe('confirmation proposal schema', () => {
 
     expect(confirmationProposalSchema.parse({ ...validProposal, delivery: legacyDelivery }).delivery).toEqual(
       legacyDelivery,
+    )
+  })
+
+  it('upgrades stored AppLovin 5 MiB snapshots to the current 10 MiB limit', () => {
+    const legacyDelivery = { ...validProposal.delivery, maxBytes: 5_242_880 }
+
+    expect(confirmationProposalSchema.parse({ ...validProposal, delivery: legacyDelivery }).delivery.maxBytes).toBe(
+      10_485_760,
+    )
+    expect(
+      confirmationProposalSchema.parse({
+        ...validProposal,
+        delivery: { ...legacyDelivery, profileId: undefined },
+      }).delivery.maxBytes,
+    ).toBe(10_485_760)
+    expect(generatedConfirmationProposalSchema.safeParse({ ...validProposal, delivery: legacyDelivery }).success).toBe(
+      false,
     )
   })
 
@@ -200,7 +218,7 @@ describe('confirmation proposal schema', () => {
     ['logicalWidth', 720],
     ['logicalHeight', 1280],
     ['output', 'zip'],
-    ['maxBytes', 5242881],
+    ['maxBytes', 10485761],
   ] as const)('rejects an invalid delivery %s', (field, value) => {
     const proposal = {
       ...validProposal,

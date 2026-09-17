@@ -27,6 +27,7 @@ import type {
 } from './schemas'
 import type { PlayableAsset } from './task-assets'
 import { createAssetSourceManifest, createValidationReport } from './production-contract'
+import { deliveryProfileSnapshot } from './delivery-standards'
 import type {
   PlayableBuildRecord,
   PlayableEventRecord,
@@ -227,13 +228,7 @@ function createProposal(
       locale: 'zh-CN',
     },
     storeUrl: 'https://example.com/app',
-    delivery: {
-      network: 'applovin',
-      logicalWidth: 360,
-      logicalHeight: 640,
-      output: 'single-html',
-      maxBytes: 5242880,
-    },
+    delivery: deliveryProfileSnapshot('applovin'),
   }
 }
 

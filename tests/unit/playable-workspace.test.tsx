@@ -36,7 +36,7 @@ const proposal: ConfirmationProposal = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 }
 
@@ -608,6 +608,10 @@ describe('PlayableWorkspace', () => {
     const historyDetails = historySummary.closest('details')
 
     expect(historyDetails).not.toBeNull()
+    expect(historyDetails).toHaveAttribute('open')
+
+    fireEvent.click(historySummary)
+
     expect(historyDetails).not.toHaveAttribute('open')
 
     fireEvent.click(historySummary)
@@ -665,7 +669,7 @@ describe('PlayableWorkspace', () => {
 
     const deliveryRow = screen.getByRole('row', { name: /交付与跳转/ })
     expect(within(deliveryRow).getByLabelText('交付标准')).toHaveTextContent('AppLovin')
-    expect(within(deliveryRow).getByText(/360.*640.*单 HTML.*5 MiB/)).toBeInTheDocument()
+    expect(within(deliveryRow).getByText(/360.*640.*单 HTML.*10 MiB/)).toBeInTheDocument()
     expect(within(deliveryRow).getByLabelText('商店跳转链接（HTTPS）')).toBeInTheDocument()
     expect(screen.queryByText('交付与跳转设置')).not.toBeInTheDocument()
   })
@@ -878,8 +882,8 @@ describe('PlayableWorkspace', () => {
         initialValidation={{
           buildPassed: true,
           deliveryCompliant: false,
-          bytes: 6 * 1024 * 1024,
-          delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+          bytes: 11 * 1024 * 1024,
+          delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 10 * 1024 * 1024 },
         }}
       />,
     )
@@ -1630,8 +1634,8 @@ describe('PlayableWorkspace', () => {
               validation: {
                 buildPassed: true,
                 deliveryCompliant: false,
-                bytes: 6 * 1024 * 1024,
-                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+                bytes: 11 * 1024 * 1024,
+                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 10 * 1024 * 1024 },
               },
               createdAt: new Date(3).toISOString(),
               completedAt: new Date(4).toISOString(),
@@ -1715,8 +1719,8 @@ describe('PlayableWorkspace', () => {
               validation: {
                 buildPassed: true,
                 deliveryCompliant: false,
-                bytes: 6 * 1024 * 1024,
-                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 5 * 1024 * 1024 },
+                bytes: 11 * 1024 * 1024,
+                delivery: { profileId: 'applovin', label: 'AppLovin', maxBytes: 10 * 1024 * 1024 },
               },
               createdAt: new Date(1).toISOString(),
               completedAt: new Date(2).toISOString(),
@@ -1729,7 +1733,7 @@ describe('PlayableWorkspace', () => {
     render(<PlayablePreview taskId="task-7" phase="ready" hasArtifact artifactVersion="oversized-build" />)
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      '产物已成功生成，但不符合 AppLovin 体积要求。当前大小 6.0 MiB，上限 5.0 MiB。',
+      '产物已成功生成，但不符合 AppLovin 体积要求。当前大小 11.0 MiB，上限 10.0 MiB。',
     )
     expect(screen.getByTitle('Playable preview')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载交付物' })).toBeEnabled()
@@ -1851,7 +1855,7 @@ it('shows a saved failed-acceptance version with download controls and honest st
     buildPassed: false,
     deliveryCompliant: true,
     bytes: 100,
-    delivery: { profileId: 'applovin' as const, label: 'AppLovin', maxBytes: 5242880 },
+    delivery: { profileId: 'applovin' as const, label: 'AppLovin', maxBytes: 10485760 },
   }
   vi.stubGlobal(
     'fetch',

@@ -13,7 +13,7 @@
   "delivery": {
     "networks": ["applovin"],
     "entrypoint": "playable.html",
-    "maxBytes": 5242880
+    "maxBytes": 10485760
   },
   "commands": {
     "build": "node assets/starter/build-playable.mjs \"$PLAYABLE_MODE\" output.html \"$PLAYABLE_STORE_URL\"",

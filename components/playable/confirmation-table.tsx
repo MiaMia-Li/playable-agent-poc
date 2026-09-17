@@ -199,9 +199,6 @@ export function ConfirmationTable({
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">路由</th>
               <td className="px-3 py-2">
                 <span>{routingLabels[proposal.routing.match]}</span>
-                <span className="text-muted-foreground ml-2">
-                  置信度 {Math.round(proposal.routing.confidence * 100)}%
-                </span>
                 {proposal.routing.differences.length > 0 && (
                   <ul className="text-muted-foreground mt-1 list-disc pl-5">
                     {proposal.routing.differences.map((difference) => (
