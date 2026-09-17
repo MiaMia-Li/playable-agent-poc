@@ -156,6 +156,47 @@ describe('PlayableHome reference uploads', () => {
     )
   })
 
+  it('stages a video dropped onto the composer without opening the file picker', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    const composer = screen.getByLabelText('新试玩需求').parentElement as HTMLElement
+    const video = new File(['video'], 'dropped.mp4', { type: 'video/mp4' })
+    const dataTransfer = { types: ['Files'], files: [video], dropEffect: 'none' }
+
+    fireEvent.dragEnter(composer, { dataTransfer })
+    expect(composer).toHaveAttribute('data-dragging', 'true')
+    fireEvent.dragOver(composer, { dataTransfer })
+    expect(dataTransfer.dropEffect).toBe('copy')
+    fireEvent.drop(composer, { dataTransfer })
+
+    expect(composer).not.toHaveAttribute('data-dragging')
+    expect(screen.getByRole('list', { name: '已选择的参考素材' })).toHaveTextContent('dropped.mp4')
+    expect(screen.getByRole('button', { name: '新建试玩' })).toBeEnabled()
+  })
+
+  it('ignores drags that carry no files', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+
+    const composer = screen.getByLabelText('新试玩需求').parentElement as HTMLElement
+    const dataTransfer = { types: ['text/plain'], files: [] }
+    fireEvent.dragEnter(composer, { dataTransfer })
+    expect(composer).not.toHaveAttribute('data-dragging')
+    fireEvent.drop(composer, { dataTransfer })
+    expect(screen.queryByRole('list', { name: '已选择的参考素材' })).not.toBeInTheDocument()
+  })
+
   it('rejects unsupported and oversized references before creating a task', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ tasks: [] }))
     vi.stubGlobal('fetch', fetchMock)
