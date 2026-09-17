@@ -126,3 +126,8 @@ Shared dependency: the platform merges `skills/_shared/` into this Skill workspa
 for `assets/starter/work/browser-acceptance.mjs` and `test-freeform-playable.mjs`.
 When packaging this Skill outside the application, include those shared tools at
 the same workspace paths.
+
+For confirmed adaptations that need custom 3D rendering beyond the selected template,
+read `references/3d-runtime.md`. The shared bundler can embed Three.js and optional
+physics without tying them to a specific gameplay. Preserve existing template behavior
+and renderer for revisions unless the confirmed change requires replacing them.

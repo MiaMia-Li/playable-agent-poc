@@ -89,6 +89,7 @@ export function createAssetSourceManifest(
 }
 
 export function createValidationReport(input: {
+  rendering?: PlayableValidationReport['rendering']
   bytes: number
   offlineResources: boolean
   responsiveViewport: boolean
@@ -100,6 +101,7 @@ export function createValidationReport(input: {
   const buildPassed = input.offlineResources && input.responsiveViewport
   return {
     passed: buildPassed,
+    ...(input.rendering ? { rendering: input.rendering } : {}),
     buildPassed,
     deliveryCompliant: packageSizePassed,
     behavior: 'passed',

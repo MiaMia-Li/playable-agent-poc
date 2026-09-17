@@ -1,3 +1,4 @@
+import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { referenceVisualsBuildPrompt } from './reference-keyframes-build'
@@ -332,6 +333,7 @@ export async function executeBuildAgent(
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
           PLAYABLE_TOOLS_PROMPT,
+          ...(sourceTemplateId ? [] : [RENDERING_BUILD_PROMPT]),
           NATIVE_TEMPLATE_UI_PROMPT,
           REFERENCE_IMAGES_BUILD_PROMPT,
           visualPrompt,
@@ -444,7 +446,7 @@ export function createCodexBuildPrompt(
       ...(revision ? ['Read revision-plan.json and implement the confirmed regeneration plan.'] : []),
       'The confirmed route is freeform because no registered template can express the requested core gameplay.',
       'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
-      'Produce one offline responsive Canvas HTML with no external resources and optimize it for the confirmed delivery profile.',
+      'Follow rendering-plan.json when present; only choose Canvas 2D or Three.js/WebGL yourself for a legacy confirmation without a rendering decision. For 3D, read references/3d-runtime.md and use assets/starter/work/bundle-playable.mjs to inline the bundle into output.html with the host-prepared dependencies. Implement the confirmed physics choice. Produce one offline responsive HTML with no external resources and optimize it for the confirmed delivery profile.',
       'Return an otherwise valid artifact even when it misses a soft channel size rule so compliance can be reported.',
       'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
       ...finalInstructions,
@@ -513,6 +515,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
   }
 
   async build(input: ConfirmedBuildInput): Promise<BuildResult> {
+    input = applyRenderingBuildPolicy(input)
     if (!input.apiKey.trim()) throw new Error('API key is required')
     confirmationProposalSchema.parse(input.confirmation)
     const controller = new AbortController()

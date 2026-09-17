@@ -3323,6 +3323,66 @@ describe('playable task API', () => {
     expect(harness.repository.builds.at(-1)).toMatchObject({ id: 'oversized-build', status: 'succeeded' })
   })
 
+  it('does not publish a confirmed 3D build without matching runtime acceptance', async () => {
+    vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '1')
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = {
+      ...confirmation,
+      rendering: { renderer: 'threejs', physics: 'rapier', reason: 'Physical collapse' },
+    }
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({
+        bytes: 1024,
+        offlineResources: true,
+        responsiveViewport: true,
+        delivery: confirmation.delivery,
+      }),
+    })
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'missing-runtime-check',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    expect(task.phase).toBe('failed')
+    expect(task.latestArtifactKey).toBeNull()
+  })
+
+  it('publishes diagnostic 3D builds as not verified without a runtime report', async () => {
+    vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = {
+      ...confirmation,
+      rendering: { renderer: 'threejs', physics: 'rapier', reason: 'Spatial physics' },
+    }
+    vi.mocked(harness.agent.build).mockResolvedValueOnce({
+      html: '<script>window.__PLAYABLE__={}</script>',
+      validation: createValidationReport({
+        bytes: 1024,
+        offlineResources: true,
+        responsiveViewport: true,
+        delivery: confirmation.delivery,
+      }),
+    })
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'unverified-rendering',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    expect(task.phase).toBe('ready')
+    expect(task.latestValidation).toMatchObject({
+      rendering: { renderer: 'threejs', physics: 'rapier', passed: null, status: 'not_run' },
+    })
+  })
+
   it('still rejects an artifact that fails a hard validation gate', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'

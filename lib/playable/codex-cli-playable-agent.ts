@@ -1,3 +1,4 @@
+import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy, renderingPreparationCommand } from './rendering-policy'
 import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { referenceImageWorkspaceFiles, REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
@@ -18,7 +19,8 @@ import { usesPerspectiveTemplate, buildValidationCommand } from './build-templat
 import { reportCliBuildActivity } from './build-activity-detail'
 import { sourceTemplateBuildPrompt } from './source-template'
 import { codexValidationInstructions, isPlayableSandboxValidationEnabled } from './validation-policy'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -279,6 +281,17 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     manifest.assets.push({ ...metadata, workspacePath })
   }
   await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')
+  if (input.confirmation.rendering) {
+    await writeFile(path.join(workspace, 'rendering-plan.json'), JSON.stringify(input.confirmation.rendering))
+    const command = renderingPreparationCommand(input.confirmation)
+    if (command) {
+      try {
+        await promisify(execFile)(process.execPath, command.split(' ').slice(1), { cwd: workspace, timeout: 180000 })
+      } catch {
+        throw new Error('Rendering dependencies could not be prepared')
+      }
+    }
+  }
   return workspace
 }
 
@@ -365,6 +378,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
   }
 
   async build(input: ConfirmedBuildInput): Promise<BuildResult> {
+    input = applyRenderingBuildPolicy(input)
     confirmationProposalSchema.parse(input.confirmation)
     const validationEnabled = isPlayableSandboxValidationEnabled()
     const controller = new AbortController()
@@ -387,6 +401,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               'work/preview-repair.json',
               'work/preview-failure-report.json',
               'work/acceptance-handoff.json',
+              'work/browser-acceptance/report.json',
             ]) {
               const content = await sandbox.readTextFile({ path: path.join(remoteWorkspace, file), abortSignal })
               if (content) {
@@ -404,6 +419,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
                 PLAYABLE_TOOLS_PROMPT,
+                ...(input.confirmation.sourceTemplateId ? [] : [RENDERING_BUILD_PROMPT]),
                 REFERENCE_IMAGES_BUILD_PROMPT,
                 NATIVE_TEMPLATE_UI_PROMPT,
                 phase === 'preview'
@@ -476,6 +492,10 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         abortSignal: controller.signal,
         schema: codexOutputSchema(completionSchema),
         prompt:
+          (input.confirmation.sourceTemplateId ? '' : RENDERING_BUILD_PROMPT + '\n') +
+          (validationEnabled && input.confirmation.rendering?.renderer === 'threejs'
+            ? 'CLI transport: write work/scenario.mjs; the host runs browser acceptance once in the cloud sandbox after this call. Do not run local browser acceptance.\n'
+            : '') +
           NATIVE_TEMPLATE_UI_PROMPT +
           '\n' +
           REFERENCE_IMAGES_BUILD_PROMPT +
@@ -510,7 +530,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                       'Read SKILL.md, confirmed-config.json, asset-manifest.json, and gameplay-blueprint.json when present.',
                       'The confirmed route is freeform because no registered template can express the requested core gameplay.',
                       'Create the requested game directly in output.html. The selected mode is only a scaffold and must not override the confirmed gameplay.',
-                      'Produce one offline responsive Canvas HTML with no external resources and optimize it for the confirmed delivery profile.',
+                      'Follow rendering-plan.json when present; only choose Canvas 2D or Three.js/WebGL yourself for a legacy confirmation without a rendering decision. For 3D, read references/3d-runtime.md and use assets/starter/work/bundle-playable.mjs to inline the bundle into output.html with the host-prepared dependencies. Implement the confirmed physics choice. Produce one offline responsive HTML with no external resources and optimize it for the confirmed delivery profile.',
                       'Return an otherwise valid artifact even when it misses a soft channel size rule so compliance can be reported.',
                       'Start muted, make the first interaction gameplay-only, support the playable:set-muted parent message, and expose window.__PLAYABLE__.',
                       'Use uploaded files only for their declared resource slots.',
@@ -555,7 +575,15 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         skillRoot: this.skillRoot,
         abortSignal: controller.signal,
         preparedArtifact,
-        executeAgent: async () => {
+        executeAgent: async ({ sandbox, workspace: remoteWorkspace }) => {
+          if (validationEnabled && input.confirmation.rendering?.renderer === 'threejs') {
+            for (const file of ['output.html', 'work/scenario.mjs'])
+              await sandbox.writeBinaryFile({
+                path: path.join(remoteWorkspace, file),
+                content: new Uint8Array(await readFile(path.join(workspace!, file))),
+                abortSignal: controller.signal,
+              })
+          }
           console.log('Confirmed configuration loaded in Vercel Sandbox')
         },
         logger: {

@@ -1,3 +1,5 @@
+import { isPlayableSandboxValidationEnabled } from './validation-policy'
+import { renderingRevision } from './rendering-policy'
 import { sourceTemplateFile } from './build-skill'
 import { mergeReasoning } from './reasoning-history'
 import { sanitizeBuildActivityDetail } from './build-activity-detail'
@@ -1324,9 +1326,23 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     })
     await activityQueue
     stage = 'validation'
+    const renderingValidationEnabled = isPlayableSandboxValidationEnabled()
+    if (!renderingValidationEnabled && sanitizedConfirmation.rendering?.renderer === 'threejs') {
+      result.validation.rendering = {
+        renderer: 'threejs',
+        physics: sanitizedConfirmation.rendering.physics === 'rapier' ? 'rapier' : 'none',
+        passed: null,
+        status: 'not_run',
+      }
+    }
     if (
       !result.validation.buildPassed ||
-      HARD_VALIDATION_GATES.some((gate) => result.validation.gates[gate] !== 'passed')
+      HARD_VALIDATION_GATES.some((gate) => result.validation.gates[gate] !== 'passed') ||
+      (renderingValidationEnabled &&
+        sanitizedConfirmation.rendering?.renderer === 'threejs' &&
+        (result.validation.rendering?.passed !== true ||
+          result.validation.rendering.renderer !== 'threejs' ||
+          result.validation.rendering.physics !== sanitizedConfirmation.rendering.physics))
     ) {
       throw new Error('Playable validation gates failed')
     }
@@ -2396,7 +2412,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               stage = 'phase_transition'
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
-                const revision = resolveRevisionProposal({
+                let revision = resolveRevisionProposal({
                   plan: lockedRevisionBase
                     ? {
                         ...validatedReply.revision,
@@ -2420,6 +2436,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 ) {
                   throw new Error('Revision base version must be read before confirmation')
                 }
+                revision =
+                  renderingRevision(
+                    validated,
+                    revision,
+                    builds.find((build) => build.id === revision.baseBuildId)?.confirmation,
+                  ) ?? revision
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
                   access.userId,
@@ -2741,6 +2763,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         }
       }
 
+      if (revision) {
+        const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
+        revision = renderingRevision(sanitized, revision, baseBuild?.confirmation)
+      }
       if (revision)
         revision = {
           ...revision,

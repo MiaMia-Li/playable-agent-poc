@@ -1274,3 +1274,73 @@ it.each(['passed', 'failed', 'unchanged', 'stale', 'launch', 'cancelled', 'unsaf
     expect(sandbox.destroyed).toBe(true)
   },
 )
+
+it.each([
+  { enabled: false, validReport: false },
+  { enabled: true, validReport: true },
+  { enabled: true, validReport: false },
+])('shares the normal rendering acceptance and honors its switch: %j', async ({ enabled, validReport }) => {
+  vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', enabled ? '1' : '0')
+  const sandbox = await createLocalSandbox()
+  const input = buildInput('perspective_3d', 'test-rendering-secret')
+  input.confirmation = {
+    ...input.confirmation,
+    routing: { match: 'freeform', confidence: 1, differences: ['3D physics'] },
+    rendering: { renderer: 'threejs', physics: 'rapier', reason: 'Spatial collision and collapse' },
+  }
+  const run = sandbox.run.bind(sandbox)
+  sandbox.run = async (options) => {
+    if (
+      options.command.includes('bundle-playable.mjs prepare') ||
+      options.command.includes('test-freeform-playable.mjs')
+    ) {
+      sandbox.commands.push(options)
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    if (options.command.includes('browser-acceptance.mjs')) throw new Error('Unexpected repeated browser acceptance')
+    return run(options)
+  }
+  const executeAgent = vi.fn(async ({ workspace }: { workspace: string }) => {
+    expect(sandbox.commands.some((call) => call.command.includes('prepare three-physics'))).toBe(true)
+    expect(JSON.parse(await readFile(path.join(workspace, 'rendering-plan.json'), 'utf8'))).toMatchObject({
+      renderer: 'threejs',
+      physics: 'rapier',
+    })
+    const html =
+      '<meta name="viewport" content="width=device-width,initial-scale=1"><canvas></canvas><script>window.__PLAYABLE__={}</script>'
+    await writeFile(path.join(workspace, 'output.html'), html)
+    if (validReport) {
+      await mkdir(path.join(workspace, 'work/browser-acceptance'), { recursive: true })
+      await writeFile(
+        path.join(workspace, 'work/browser-acceptance/report.json'),
+        JSON.stringify({
+          passed: true,
+          smoke: false,
+          sha256: createHash('sha256').update(html).digest('hex'),
+          runtime: {
+            three: true,
+            draws: 3,
+            visibleCanvas: true,
+            variedPixels: true,
+            wasm: true,
+            steps: 3,
+            inputs: 1,
+            contacts: 1,
+          },
+        }),
+      )
+    }
+  })
+  const result = runPlayableBuild(input, { createSandbox: async () => sandbox, executeAgent })
+  if (enabled && !validReport) await expect(result).rejects.toThrow('Confirmed rendering did not pass')
+  else
+    expect((await result).validation.rendering).toEqual({
+      renderer: 'threejs',
+      physics: 'rapier',
+      passed: enabled ? true : null,
+      status: enabled ? 'passed' : 'not_run',
+    })
+  expect(executeAgent).toHaveBeenCalledTimes(1)
+  expect(sandbox.commands.some((call) => call.command.includes('runtime-repair'))).toBe(false)
+  expect(sandbox.destroyed).toBe(true)
+})

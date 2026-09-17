@@ -7,8 +7,10 @@ description: Build and validate a custom playable when no registered gameplay te
 
 The platform invokes this entry after configuration approval. Read confirmed-config.json,
 asset-manifest.json, revision-plan.json and gameplay-blueprint.json when present.
-Implement confirmed input, state transitions and ending directly in output.html.
-For patches, preserve current-playable.html as the baseline. A legacy Mahjong mode
+Implement confirmed input, state transitions and ending in output.html, either directly
+or by bundling source modules with the shared build tool.
+For patches, preserve current-playable.html as the baseline. A confirmed rendering or physics
+upgrade permits replacing the old implementation while retaining confirmed content. A legacy Mahjong mode
 is scaffold metadata, not the requested gameplay. Do not run the Mahjong builder.
 
 Use approved uploads and bundled defaults; AI media generation is disabled. Treat
@@ -17,14 +19,19 @@ and follow confirmed configuration when evidence conflicts. Keep credentials out
 
 The blueprint is gameplay evidence. When confirmed-config.json sets visualDirection to
 match_reference it is also the visual target: reproduce the layout regions, palette,
-UI component shapes and effect timing in its visualSpec with Canvas drawing, and check
+UI component shapes and effect timing in its visualSpec with the chosen renderer, and check
 them against reference-keyframes.json when present. Uploaded assets override the parts
 they cover. Keyframes are evidence, never assets: never embed or trace them. Each
 moment lists frames cut at and just after its labelled second; use the one that shows
 what it describes, and trust the images over the text when they disagree. With
 visualDirection custom, take no appearance from visualSpec.
 
-Deliver one offline responsive Canvas HTML, initially muted. The first tap must stay
+Follow rendering-plan.json when present; otherwise choose Canvas 2D or Three.js/WebGL according to the confirmed gameplay and appearance;
+3D is not restricted to a registered template. For 3D or module bundling, read
+`references/3d-runtime.md` and use `assets/starter/work/bundle-playable.mjs` to prepare
+pinned dependencies and embed the implementation. Add physics only when needed.
+
+Deliver one offline responsive HTML with a 2D or WebGL canvas, initially muted. The first tap must stay
 inside gameplay. Support parent playable:set-muted messages, expose read-only real
 engine state through `window.__PLAYABLE__`, and keep the CTA destination without opening
 it during tests. Soft size limits are warnings; functional failures block completion.
