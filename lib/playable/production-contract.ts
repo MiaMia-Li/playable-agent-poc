@@ -12,6 +12,7 @@ export interface PlayableProductionConfig {
     sourceTemplateId?: NonNullable<ConfirmationProposal['sourceTemplateId']>
     gameplay: string
     routing: ConfirmationProposal['routing']
+    rendering?: ConfirmationProposal['rendering']
   }
   theme: {
     direction: string
@@ -45,6 +46,7 @@ export function createProductionConfig(confirmation: ConfirmationProposal): Play
       ...(confirmation.sourceTemplateId ? { sourceTemplateId: confirmation.sourceTemplateId } : {}),
       gameplay: confirmation.gameplay,
       routing: confirmation.routing,
+      ...(confirmation.rendering ? { rendering: confirmation.rendering } : {}),
     },
     theme: {
       direction: Object.values(confirmation.resources)
