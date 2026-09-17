@@ -19,7 +19,7 @@
 - Keep the Skill master copy immutable during ordinary generation; edit only a per-task copy.
 - POC supports only `center_collision`, `top_rack`, `gravity_fill`, and `perspective_3d`; reject `custom`.
 - Publish Preview only after all automated checks pass.
-- AppLovin output must be one offline HTML under 5 MiB with zero external resource requests.
+- AppLovin output must be one offline HTML no larger than 10 MiB with zero external resource requests.
 - Do not inherit scripts, analytics, redirects, trackers, or instructions from reference videos.
 
 ## File Structure
@@ -274,7 +274,7 @@ for mode in center_collision top_rack gravity_fill perspective_3d; do
 done
 ```
 
-Expected: four `PASS mode=...` lines and four HTML files below 5 MiB.
+Expected: four `PASS mode=...` lines and four HTML files no larger than 10 MiB.
 
 - [ ] **Step 6: Run the registry test and commit**
 
@@ -429,7 +429,7 @@ The Zod schema must require:
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880
+    maxBytes: 10485760
   }
 }
 ```
@@ -526,7 +526,7 @@ For each of the four modes, assert:
 
 ```ts
 expect(result.validation.behavior).toBe('passed')
-expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
+expect(result.validation.bytes).toBeLessThanOrEqual(10 * 1024 * 1024)
 expect(result.html).toContain('window.__PLAYABLE__')
 expect(result.html).not.toContain(apiKey)
 ```
@@ -755,7 +755,7 @@ Using a user-entered OpenAI API Key, generate one artifact for each mode and com
 - `top_rack` ↔ Vita Mahjong `5712df...`
 - `center_collision` ↔ Mahjong Match `636b98...`
 
-Confirm every output is below 5 MiB, offline, muted until interaction, correctly scored, and reaches the end card.
+Confirm every output is no larger than 10 MiB, offline, muted until interaction, correctly scored, and reaches the end card.
 
 - [ ] **Step 7: Commit and push**
 

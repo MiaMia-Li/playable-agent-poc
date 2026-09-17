@@ -82,7 +82,7 @@ For a `freeform` route, the output must still be one offline responsive Canvas H
 
 When the platform is AppLovin:
 
-- Report a delivery warning if the single HTML exceeds 5 MiB; do not discard an otherwise valid artifact.
+- Report a delivery warning if the single HTML exceeds 10 MiB; do not discard an otherwise valid artifact.
 - Embed every image, audio file, font, script, and stylesheet. Allow zero external resource requests.
 - Verify portrait and landscape.
 - Use MRAID 2.0 for production store navigation.
