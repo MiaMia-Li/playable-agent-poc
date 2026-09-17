@@ -644,6 +644,13 @@ const ARTIFACT_CSP =
 // the opaque-origin sandbox, without same-origin access or network connections.
 const PREVIEW_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+// Three.js loaders fetch embedded GLB buffers. Permit embedded fetches only;
+// external network access and same-origin iframe access remain unavailable.
+function previewCsp(confirmation?: ConfirmationProposal | null) {
+  return confirmation?.rendering?.renderer === 'threejs'
+    ? PREVIEW_CSP.replace("connect-src 'none'", 'connect-src data: blob:')
+    : PREVIEW_CSP
+}
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
@@ -2920,7 +2927,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return new Response(artifact, {
           headers: {
             'Content-Type': 'text/html; charset=utf-8',
-            'Content-Security-Policy': PREVIEW_CSP,
+            'Content-Security-Policy': previewCsp(build.confirmation),
             'X-Content-Type-Options': 'nosniff',
             'Cache-Control': 'private, no-store',
           },
@@ -2928,10 +2935,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       const versionId = url.searchParams.get('version')
       let artifactKey = access.task.latestArtifactKey
+      let artifactConfirmation = access.task.confirmation
       if (versionId) {
         const build = await dependencies.repository.findBuild(access.task.id, versionId)
         if (!build || !build.artifactKey) return jsonError(404, 'Not found')
         artifactKey = build.artifactKey
+        artifactConfirmation = build.confirmation
       }
       if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
@@ -2978,7 +2987,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           'Content-Type': descriptor.contentType,
           'Content-Disposition': `${disposition}; filename="${descriptor.filename}"`,
           ...(kind === 'playable'
-            ? { 'Content-Security-Policy': disposition === 'inline' ? PREVIEW_CSP : ARTIFACT_CSP }
+            ? { 'Content-Security-Policy': disposition === 'inline' ? previewCsp(artifactConfirmation) : ARTIFACT_CSP }
             : {}),
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store',

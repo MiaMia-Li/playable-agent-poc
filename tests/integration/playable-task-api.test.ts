@@ -3982,6 +3982,25 @@ describe('playable task API', () => {
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
   })
 
+  it('allows embedded 3D model fetches in the opaque preview without enabling external network access', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = {
+      ...confirmation,
+      rendering: { renderer: 'threejs', physics: 'rapier', reason: 'Spatial collision' },
+    }
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build/playable.html'
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>3d</html>'))
+    const response = await harness.handlers.artifact(request('/api/playable-tasks/owned/artifact?kind=playable'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    const csp = response.headers.get('content-security-policy')!
+    expect(csp).toContain('connect-src data: blob:;')
+    expect(csp).toContain('sandbox allow-scripts;')
+    expect(csp).not.toContain('allow-same-origin')
+    expect(csp).not.toContain('https:')
+  })
+
   it('exposes the complete delivery set immediately after a successful build', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'ready'
