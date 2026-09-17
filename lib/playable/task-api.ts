@@ -1,3 +1,5 @@
+import { isPlayableSandboxValidationEnabled } from './validation-policy'
+import { renderingRevision } from './rendering-policy'
 import { sourceTemplateFile } from './build-skill'
 import { mergeReasoning } from './reasoning-history'
 import { sanitizeBuildActivityDetail } from './build-activity-detail'
@@ -642,6 +644,13 @@ const ARTIFACT_CSP =
 // the opaque-origin sandbox, without same-origin access or network connections.
 const PREVIEW_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+// Three.js loaders fetch embedded GLB buffers. Permit embedded fetches only;
+// external network access and same-origin iframe access remain unavailable.
+function previewCsp(confirmation?: ConfirmationProposal | null) {
+  return confirmation?.rendering?.renderer === 'threejs'
+    ? PREVIEW_CSP.replace("connect-src 'none'", 'connect-src data: blob:')
+    : PREVIEW_CSP
+}
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
@@ -1324,9 +1333,23 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     })
     await activityQueue
     stage = 'validation'
+    const renderingValidationEnabled = isPlayableSandboxValidationEnabled()
+    if (!renderingValidationEnabled && sanitizedConfirmation.rendering?.renderer === 'threejs') {
+      result.validation.rendering = {
+        renderer: 'threejs',
+        physics: sanitizedConfirmation.rendering.physics === 'rapier' ? 'rapier' : 'none',
+        passed: null,
+        status: 'not_run',
+      }
+    }
     if (
       !result.validation.buildPassed ||
-      HARD_VALIDATION_GATES.some((gate) => result.validation.gates[gate] !== 'passed')
+      HARD_VALIDATION_GATES.some((gate) => result.validation.gates[gate] !== 'passed') ||
+      (renderingValidationEnabled &&
+        sanitizedConfirmation.rendering?.renderer === 'threejs' &&
+        (result.validation.rendering?.passed !== true ||
+          result.validation.rendering.renderer !== 'threejs' ||
+          result.validation.rendering.physics !== sanitizedConfirmation.rendering.physics))
     ) {
       throw new Error('Playable validation gates failed')
     }
@@ -2396,7 +2419,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               stage = 'phase_transition'
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
-                const revision = resolveRevisionProposal({
+                let revision = resolveRevisionProposal({
                   plan: lockedRevisionBase
                     ? {
                         ...validatedReply.revision,
@@ -2420,6 +2443,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 ) {
                   throw new Error('Revision base version must be read before confirmation')
                 }
+                revision =
+                  renderingRevision(
+                    validated,
+                    revision,
+                    builds.find((build) => build.id === revision.baseBuildId)?.confirmation,
+                  ) ?? revision
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
                   access.userId,
@@ -2741,6 +2770,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         }
       }
 
+      if (revision) {
+        const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
+        revision = renderingRevision(sanitized, revision, baseBuild?.confirmation)
+      }
       if (revision)
         revision = {
           ...revision,
@@ -2894,7 +2927,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return new Response(artifact, {
           headers: {
             'Content-Type': 'text/html; charset=utf-8',
-            'Content-Security-Policy': PREVIEW_CSP,
+            'Content-Security-Policy': previewCsp(build.confirmation),
             'X-Content-Type-Options': 'nosniff',
             'Cache-Control': 'private, no-store',
           },
@@ -2902,10 +2935,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       const versionId = url.searchParams.get('version')
       let artifactKey = access.task.latestArtifactKey
+      let artifactConfirmation = access.task.confirmation
       if (versionId) {
         const build = await dependencies.repository.findBuild(access.task.id, versionId)
         if (!build || !build.artifactKey) return jsonError(404, 'Not found')
         artifactKey = build.artifactKey
+        artifactConfirmation = build.confirmation
       }
       if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
@@ -2952,7 +2987,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           'Content-Type': descriptor.contentType,
           'Content-Disposition': `${disposition}; filename="${descriptor.filename}"`,
           ...(kind === 'playable'
-            ? { 'Content-Security-Policy': disposition === 'inline' ? PREVIEW_CSP : ARTIFACT_CSP }
+            ? { 'Content-Security-Policy': disposition === 'inline' ? previewCsp(artifactConfirmation) : ARTIFACT_CSP }
             : {}),
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store',

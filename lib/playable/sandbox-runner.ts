@@ -1,3 +1,4 @@
+import { applyRenderingBuildPolicy, renderingPreparationCommand } from './rendering-policy'
 import { referenceImageWorkspaceFiles } from './reference-images'
 import {
   parseVisualComparison,
@@ -227,6 +228,7 @@ export async function runPlayableBuild(
   input: ConfirmedBuildInput,
   dependencies: RunPlayableBuildDependencies,
 ): Promise<BuildResult> {
+  input = applyRenderingBuildPolicy(input)
   const previewDeadline = Date.now() + PREVIEW_TARGET_MS
   if (typeof dependencies?.executeAgent !== 'function') throw new Error('Agent executor is required')
   if (!input.apiKey.trim()) throw new Error('API key is required')
@@ -276,6 +278,24 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
+    if (confirmation.rendering) {
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'rendering-plan.json'),
+        content: JSON.stringify(confirmation.rendering),
+        abortSignal: dependencies.abortSignal,
+      })
+      const preparation = renderingPreparationCommand(confirmation)
+      if (preparation && !dependencies.preparedArtifact)
+        await requireSuccessfulCommand(
+          sandbox,
+          {
+            command: preparation.replace('node assets/', 'node ../skill-master/assets/'),
+            workingDirectory: workspace,
+            abortSignal: dependencies.abortSignal,
+          },
+          'Rendering dependencies could not be prepared',
+        )
+    }
     await requireSuccessfulCommand(
       sandbox,
       {
@@ -637,6 +657,45 @@ export async function runPlayableBuild(
         })
     }
 
+    // Rendering evidence belongs to the normal browser acceptance report. Reuse it
+    // instead of replaying a successful scenario or starting a separate repair loop.
+    if (sandboxValidationEnabled && confirmation.rendering?.renderer === 'threejs') {
+      stage = 'validation'
+      if (dependencies.preparedArtifact) {
+        // CLI artifacts are checked in the host browser once, alongside gameplay.
+        const checked = await sandbox.run({
+          command: 'node ../skill-master/assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs',
+          workingDirectory: workspace,
+          env: { PLAYABLE_RENDERER: 'threejs', PLAYABLE_PHYSICS: confirmation.rendering.physics },
+          abortSignal: dependencies.abortSignal,
+        })
+        if (checked.exitCode !== 0)
+          throw new PlayableHostCheckError('Browser acceptance did not pass', 'validation_failed')
+      }
+      const reportText = await sandbox.readTextFile({
+        path: path.join(workspace, 'work/browser-acceptance/report.json'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const checkedArtifact = await sandbox.readBinaryFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: dependencies.abortSignal,
+      })
+      const report = reportText ? JSON.parse(reportText) : null
+      const runtime = report?.runtime
+      if (
+        !checkedArtifact ||
+        report?.passed !== true ||
+        report?.smoke !== false ||
+        report.sha256 !== createHash('sha256').update(checkedArtifact).digest('hex') ||
+        !runtime?.three ||
+        !(runtime.draws > 0) ||
+        !runtime.visibleCanvas ||
+        !runtime.variedPixels ||
+        (confirmation.rendering.physics === 'rapier' &&
+          (!runtime.wasm || !(runtime.steps > 1) || !(runtime.inputs > 0) || !(runtime.contacts > 0)))
+      )
+        throw new PlayableHostCheckError('Confirmed rendering did not pass browser acceptance', 'validation_failed')
+    }
     stage = 'artifact_check'
     const artifact = await sandbox.readBinaryFile({
       path: path.join(workspace, 'output.html'),
@@ -679,6 +738,16 @@ export async function runPlayableBuild(
       html,
       assetManifest,
       validation: createValidationReport({
+        ...(confirmation.rendering?.renderer === 'threejs'
+          ? {
+              rendering: {
+                renderer: 'threejs' as const,
+                physics: confirmation.rendering.physics === 'rapier' ? ('rapier' as const) : ('none' as const),
+                passed: sandboxValidationEnabled ? (true as const) : null,
+                status: sandboxValidationEnabled ? ('passed' as const) : ('not_run' as const),
+              },
+            }
+          : {}),
         bytes: artifact.byteLength,
         offlineResources: true,
         responsiveViewport: true,

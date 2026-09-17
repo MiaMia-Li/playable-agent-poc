@@ -5,6 +5,71 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { BuildTimeline } from '@/components/playable/build-timeline'
 
 afterEach(cleanup)
+it.each([
+  ['build_failed', '构建成功'],
+  ['build_succeeded', '构建完成'],
+  ['build_preview_ready', '预览已保存'],
+])('没有实际验收记录时不显示验收文案：%s', (terminalType, label) => {
+  render(
+    <BuildTimeline
+      running={false}
+      events={[
+        { id: 'start', type: 'build_started' },
+        {
+          id: 'model',
+          type: 'build_activity_stage_completed',
+          message: JSON.stringify({ version: 1, detail: { timing: { stage: 'model', at: 1000, durationMs: 1000 } } }),
+        },
+        { id: 'preview', type: 'build_preview_ready' },
+        { id: 'end', type: terminalType },
+      ]}
+    />,
+  )
+  expect(screen.getByRole('status')).toHaveTextContent(label)
+  expect(screen.getByLabelText('构建执行记录')).not.toHaveTextContent('验收')
+})
+
+it('真实浏览器验收阶段保留耗时和失败状态', () => {
+  render(
+    <BuildTimeline
+      running={false}
+      events={[
+        { id: 'start', type: 'build_started' },
+        { id: 'preview', type: 'build_preview_ready' },
+        {
+          id: 'browser',
+          type: 'build_activity_stage_completed',
+          message: JSON.stringify({ version: 1, detail: { timing: { stage: 'browser', at: 3000, durationMs: 3000 } } }),
+        },
+        { id: 'end', type: 'build_failed' },
+      ]}
+    />,
+  )
+  expect(screen.getByRole('status')).toHaveTextContent('构建成功，验收失败')
+  expect(screen.getByLabelText('构建阶段耗时')).toHaveTextContent('浏览器验收0分3秒')
+})
+
+it('本次已保存产物时显示验收失败，下一次构建不沿用旧产物状态', () => {
+  render(
+    <BuildTimeline
+      running={false}
+      events={[
+        { id: 'first-start', type: 'build_started' },
+        { id: 'preview', type: 'build_preview_ready' },
+        { id: 'checking', type: 'build_activity_preview_checking' },
+        { id: 'first-failed', type: 'build_failed' },
+        { id: 'second-start', type: 'build_started' },
+        { id: 'second-failed', type: 'build_failed' },
+      ]}
+    />,
+  )
+  const statuses = screen.getAllByRole('status')
+  expect(statuses[0]).toHaveTextContent('构建成功，验收失败')
+  expect(statuses[0]).not.toHaveTextContent('构建失败')
+  expect(statuses[1]).toHaveTextContent('构建失败')
+  expect(screen.queryByText(/试玩已生成，可以开始体验/)).not.toBeInTheDocument()
+})
+
 it('运行时持续计时，结束后保留累计阶段耗时且不虚构浏览器验收', () => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date('2026-09-14T00:00:00Z'))
@@ -44,7 +109,7 @@ it('运行时持续计时，结束后保留累计阶段耗时且不虚构浏览�
     act(() => {
       vi.advanceTimersByTime(2000)
     })
-    expect(screen.getByLabelText('构建阶段耗时')).toHaveTextContent('浏览器验收未记录')
+    expect(screen.getByLabelText('构建阶段耗时')).not.toHaveTextContent('浏览器验收')
     expect(screen.getByRole('status')).toHaveTextContent('已工作 3 秒')
     view.unmount()
   } finally {

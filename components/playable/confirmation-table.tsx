@@ -162,6 +162,7 @@ export function ConfirmationTable({
       sourceTemplateId: sourceTemplateIds.includes(value as SourceTemplateId) ? (value as SourceTemplateId) : null,
       gameplay: nextTemplate.description,
       routing: { match: 'exact', confidence: 1, differences: [] },
+      rendering: { renderer: 'template', physics: 'template', reason: '沿用所选模板的渲染与运动实现' },
     })
   }
 
@@ -245,6 +246,27 @@ export function ConfirmationTable({
                 )}
               </td>
             </tr>
+            {proposal.rendering && (
+              <tr>
+                <th className="bg-muted/40 w-28 px-3 py-2 font-medium">画面与运动</th>
+                <td className="space-y-1 px-3 py-2">
+                  <p>
+                    {proposal.rendering.renderer === 'threejs'
+                      ? '真实 3D 场景'
+                      : proposal.rendering.renderer === 'canvas2d'
+                        ? '2D 画面'
+                        : '沿用模板画面'}{' '}
+                    ·{' '}
+                    {proposal.rendering.physics === 'rapier'
+                      ? '真实物理碰撞'
+                      : proposal.rendering.physics === 'template'
+                        ? '沿用模板运动'
+                        : '按玩法规则控制运动'}
+                  </p>
+                  <p className="text-muted-foreground text-xs">{proposal.rendering.reason}</p>
+                </td>
+              </tr>
+            )}
             <tr>
               <th className="bg-muted/40 w-28 px-3 py-2 font-medium">玩法方案</th>
               <td className="px-3 py-2">

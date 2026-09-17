@@ -56,6 +56,7 @@ export interface PlayableValidationSummary {
 }
 
 export interface PlayableValidationReport extends PlayableValidationSummary {
+  rendering?: { renderer: 'threejs'; physics: 'none' | 'rapier'; passed: true | null; status?: 'passed' | 'not_run' }
   passed: boolean
   behavior: 'passed'
   plugin: {

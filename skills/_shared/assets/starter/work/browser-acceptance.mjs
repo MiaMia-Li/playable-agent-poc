@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createTemplateProbe } from './template-probe.mjs'
+import { installRuntimeEvidence, runtimeEvidenceChecks } from './runtime-evidence.mjs'
 
 // 通用验收入口：环境、监听、截图和证据只维护一份；玩法断言由本次场景模块补充。
 const require = createRequire(import.meta.url)
@@ -27,6 +28,10 @@ try {
     }
   })()
   const config = JSON.parse(await readFile('confirmed-config.json', 'utf8').catch(() => '{}'))
+  const rendering = process.env.PLAYABLE_RENDERER
+    ? { renderer: process.env.PLAYABLE_RENDERER, physics: process.env.PLAYABLE_PHYSICS }
+    : config.rendering
+  const evidenceKey = `__runtime_${createHash('sha256').update(String(Math.random())).digest('hex')}`
   const run = (await import(pathToFileURL(path.resolve(scenario)).href)).default
   if (typeof run !== 'function') throw new Error('Scenario must export an acceptance function')
   await mkdir(evidenceDir, { recursive: true })
@@ -35,6 +40,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 360, height: 640 } })
   context.setDefaultTimeout(10000)
   const page = await context.newPage()
+  if (rendering?.renderer === 'threejs') await page.addInitScript(installRuntimeEvidence, evidenceKey)
   // 允许单文件内嵌资源，拦截外部资源和弹窗，避免自动验收触发商店导航。
   await context.route(/https?:\/\//, route => { report.requests.push(route.request().url()); return route.abort() })
   context.on('page', popup => { if (popup !== page) { report.errors.push('Unexpected popup'); void popup.close() } })
@@ -76,6 +82,12 @@ try {
       await page.setViewportSize({ width: 640, height: 360 })
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       await capture('landscape')
+      }
+      stage = 'network'
+      if (rendering?.renderer === 'threejs') {
+        stage = 'rendering'
+        report.runtime = await page.evaluate(key => globalThis[key](), evidenceKey)
+        for (const [name, passed] of runtimeEvidenceChecks(rendering, report.runtime)) check(name, passed)
       }
       stage = 'network'
       check('No external requests', report.requests.length === 0)

@@ -58,5 +58,5 @@ it.each(
   const selection = { mode: test.mode, routing: { match: test.match, confidence: 1, differences: [] } }
   const prompt = createCodexBuildPrompt(test.match, revisions(test.strategy), undefined, test.mode)
   expect(prompt).toContain(buildValidationCommand(selection))
-  expect(prompt.includes('Three.js')).toBe(usesPerspectiveTemplate(selection))
+  expect(prompt.includes('Preserve its Three.js/WebGL gameplay skeleton')).toBe(usesPerspectiveTemplate(selection))
 })

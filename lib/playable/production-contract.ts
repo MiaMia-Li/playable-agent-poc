@@ -12,6 +12,7 @@ export interface PlayableProductionConfig {
     sourceTemplateId?: NonNullable<ConfirmationProposal['sourceTemplateId']>
     gameplay: string
     routing: ConfirmationProposal['routing']
+    rendering?: ConfirmationProposal['rendering']
   }
   theme: {
     direction: string
@@ -45,6 +46,7 @@ export function createProductionConfig(confirmation: ConfirmationProposal): Play
       ...(confirmation.sourceTemplateId ? { sourceTemplateId: confirmation.sourceTemplateId } : {}),
       gameplay: confirmation.gameplay,
       routing: confirmation.routing,
+      ...(confirmation.rendering ? { rendering: confirmation.rendering } : {}),
     },
     theme: {
       direction: Object.values(confirmation.resources)
@@ -87,6 +89,7 @@ export function createAssetSourceManifest(
 }
 
 export function createValidationReport(input: {
+  rendering?: PlayableValidationReport['rendering']
   bytes: number
   offlineResources: boolean
   responsiveViewport: boolean
@@ -98,6 +101,7 @@ export function createValidationReport(input: {
   const buildPassed = input.offlineResources && input.responsiveViewport
   return {
     passed: buildPassed,
+    ...(input.rendering ? { rendering: input.rendering } : {}),
     buildPassed,
     deliveryCompliant: packageSizePassed,
     behavior: 'passed',

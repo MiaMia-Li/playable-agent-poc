@@ -48,6 +48,24 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
   const current = events.slice(Math.max(0, start))
   const rows = compactSteps(current)
   const latest = rows.at(-1)
+  // 根据本次执行记录判断是否实际验收，避免环境开关变化影响历史构建的展示。
+  const hasAcceptance = current.some(
+    (event) =>
+      event.type === 'build_activity_preview_checking' ||
+      event.type === 'build_activity_preview_check_failed' ||
+      (/^build_activity_stage_(started|completed)$/.test(event.type) &&
+        readBuildActivityDetail(event.message)?.timing?.stage === 'browser'),
+  )
+  const latestLabel =
+    latest?.type === 'build_failed' && current.some((event) => event.type === 'build_preview_ready')
+      ? hasAcceptance
+        ? '构建成功，验收失败'
+        : '构建成功'
+      : latest?.type === 'build_preview_ready' && !hasAcceptance
+        ? '预览已保存'
+        : latest
+          ? buildEventLabel(latest.type)
+          : '准备构建'
   const [selection, setSelection] = useState<{ key: string; value: string }>()
   const selectionKey = `${events[start]?.id ?? 'pending'}:${running}`
   // 构建结束自动收起，展开偏好仅影响当前构建，不改变持久化记录。
@@ -86,7 +104,7 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
           <AccordionTrigger className="text-muted-foreground justify-start gap-2 py-1 text-xs font-normal hover:no-underline [&>svg]:size-3">
             <span role="status" className="truncate">
               {running ? `正在构建 ${duration}` : `已工作 ${duration}`} ·{' '}
-              {running && active ? buildStageLabels[active.stage] : latest ? buildEventLabel(latest.type) : '准备构建'}
+              {running && active ? buildStageLabels[active.stage] : latestLabel}
             </span>
           </AccordionTrigger>
           <AccordionContent className="pb-1">
@@ -164,19 +182,21 @@ function BuildRun({ events, running }: { events: BuildTimelineEvent[]; running: 
         </AccordionItem>
         {Object.keys(totals).length > 0 && (
           <dl aria-label="构建阶段耗时" className="text-muted-foreground mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-            {Object.entries(buildStageLabels).map(([stage, label]) => (
-              <div key={stage} className="flex gap-1">
-                <dt>{label}</dt>
-                <dd>
-                  {totals[stage as BuildStage] === undefined
-                    ? stage === 'browser' && !running
-                      ? '未记录'
-                      : '待开始'
-                    : `${Math.floor(totals[stage as BuildStage]! / 60000)}分${Math.floor(totals[stage as BuildStage]! / 1000) % 60}秒`}
-                  {running && active?.stage === stage ? ' · 进行中' : ''}
-                </dd>
-              </div>
-            ))}
+            {Object.entries(buildStageLabels)
+              .filter(([stage]) => stage !== 'browser' || hasAcceptance)
+              .map(([stage, label]) => (
+                <div key={stage} className="flex gap-1">
+                  <dt>{label}</dt>
+                  <dd>
+                    {totals[stage as BuildStage] === undefined
+                      ? stage === 'browser' && !running
+                        ? '未记录'
+                        : '待开始'
+                      : `${Math.floor(totals[stage as BuildStage]! / 60000)}分${Math.floor(totals[stage as BuildStage]! / 1000) % 60}秒`}
+                    {running && active?.stage === stage ? ' · 进行中' : ''}
+                  </dd>
+                </div>
+              ))}
           </dl>
         )}
         {/* 完成文案只认应用发布成功，不能根据 Agent 返回的 completed 提前宣告产物可用。 */}

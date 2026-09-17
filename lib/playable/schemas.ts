@@ -515,8 +515,37 @@ export const referenceImageEvidenceSchema = z.strictObject({
 })
 export type ReferenceImageEvidence = z.infer<typeof referenceImageEvidenceSchema>
 
+export const renderingDecisionSchema = z.strictObject({
+  renderer: z.enum(['canvas2d', 'threejs', 'template']),
+  physics: z.enum(['none', 'rapier', 'template']),
+  reason: z.string().trim().min(1).max(600),
+})
+
+function validateRenderingDecision(
+  proposal: { rendering?: z.infer<typeof renderingDecisionSchema>; routing: z.infer<typeof routingDecisionSchema> },
+  context: z.RefinementCtx,
+) {
+  const decision = proposal.rendering
+  if (!decision) return // Historical confirmations keep their original implementation.
+  if (decision.physics === 'rapier' && decision.renderer !== 'threejs')
+    context.addIssue({ code: 'custom', path: ['rendering'], message: 'Rapier requires Three.js rendering' })
+  if (decision.physics === 'template' && decision.renderer !== 'template')
+    context.addIssue({
+      code: 'custom',
+      path: ['rendering'],
+      message: 'Template physics requires the template renderer',
+    })
+  if (decision.renderer === 'template' && proposal.routing.match === 'freeform')
+    context.addIssue({
+      code: 'custom',
+      path: ['rendering'],
+      message: 'Freeform builds must choose a concrete renderer',
+    })
+}
+
 export const confirmationProposalSchema = z
   .strictObject({
+    rendering: renderingDecisionSchema.optional(),
     referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
@@ -526,12 +555,14 @@ export const confirmationProposalSchema = z
     ...confirmationProposalShape,
   })
   .superRefine((proposal, context) => {
+    validateRenderingDecision(proposal, context)
     if (proposal.presentation)
       validateConfirmationPresentation({ ...proposal, presentation: proposal.presentation }, context)
   })
 
 export const generatedConfirmationProposalSchema = z
   .strictObject({
+    rendering: renderingDecisionSchema.optional(),
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,
     visualDirection: z.enum(visualDirections),
@@ -539,6 +570,7 @@ export const generatedConfirmationProposalSchema = z
     delivery: generatedDeliverySchema,
   })
   .superRefine(validateConfirmationPresentation)
+  .superRefine(validateRenderingDecision)
 
 export const revisionStrategies = ['patch', 'regenerate'] as const
 

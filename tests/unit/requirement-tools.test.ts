@@ -653,3 +653,37 @@ it('parses historical version reads and rejects missing version numbers', () => 
   expect(parseRequirementAgentStep(step)).toMatchObject({ toolCalls: [{ name: 'read_playable_version', version: 2 }] })
   expect(() => parseRequirementAgentStep({ ...step, toolCalls: [{ ...step.toolCalls[0], version: null }] })).toThrow()
 })
+
+it('requires an explicit rendering decision in new model output while accepting historical confirmations', () => {
+  const brief = routedBrief('freeform')
+  const legacy = confirmation(brief)
+  const output = (value: unknown) => ({
+    kind: 'terminal',
+    message: '确认方案',
+    reasoning: '需求已完整',
+    toolCalls: [],
+    plan: {
+      message: '确认方案',
+      reasoning: '需求已完整',
+      calls: [
+        {
+          name: 'submit_confirmation',
+          brief: null,
+          annotations: null,
+          request: null,
+          confirmation: value,
+          revision: null,
+        },
+      ],
+    },
+  })
+  expect(requirementAgentStepOutputSchema.safeParse(output(legacy)).success).toBe(false)
+  expect(
+    requirementAgentStepOutputSchema.safeParse(
+      output({
+        ...legacy,
+        rendering: { renderer: 'threejs', physics: 'rapier', reason: '独立积木需要空间碰撞和坍塌' },
+      }),
+    ).success,
+  ).toBe(true)
+})
