@@ -739,6 +739,20 @@ describe('runPlayableBuild', () => {
     expect(sandbox.destroyed).toBe(true)
   })
 
+  it('accepts the playable contract defined through Object.defineProperty', async () => {
+    const sandbox = await createLocalSandbox()
+    const html =
+      '<meta name="viewport" content="width=device-width"><canvas></canvas><script>Object.defineProperty(window,\'__PLAYABLE__\',{value:Object.freeze({})})</script>'
+    replaceArtifactCommands(sandbox, html)
+
+    const result = await runPlayableBuild(buildInput('center_collision', 'sk-define-property-test'), {
+      createSandbox: async () => sandbox,
+      executeAgent: async () => undefined,
+    })
+
+    expect(result.html).toBe(html)
+  })
+
   it('rejects an API key written and returned by a fake agent in HTML and destroys the sandbox', async () => {
     const apiKey = 'sk-agent-leak-test'
     const sandbox = await createLocalSandbox()
