@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
+  BookOpen,
   Clock3,
   Ellipsis,
   Home,
@@ -46,7 +47,7 @@ import { StudioAccount } from './studio-account'
 
 export type { PlayableTaskSummary } from './recent-tasks-context'
 
-type StudioSection = 'home' | 'best-practices' | 'versions'
+type StudioSection = 'home' | 'best-practices' | 'versions' | 'guide'
 
 interface PlayableStudioShellProps {
   activeSection?: StudioSection
@@ -113,11 +114,13 @@ function SidebarContent({
     activeSection ??
     (pathname === '/best-practices'
       ? 'best-practices'
-      : pathname === '/versions'
-        ? 'versions'
-        : pathname === '/'
-          ? 'home'
-          : undefined)
+      : pathname === '/guide'
+        ? 'guide'
+        : pathname === '/versions'
+          ? 'versions'
+          : pathname === '/'
+            ? 'home'
+            : undefined)
   const [searchQuery, setSearchQuery] = useState('')
   const [renameTarget, setRenameTarget] = useState<PlayableTaskSummary | null>(null)
   const [renameTitle, setRenameTitle] = useState('')
@@ -391,18 +394,44 @@ function SidebarContent({
         )}
 
         <div className={cn('border-t py-2', collapsed ? 'px-2' : 'px-3')}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div>
-                <StudioAccount accountLabel={accountLabel} publicAccess={publicAccess} compact={collapsed} />
-              </div>
-            </TooltipTrigger>
-            {collapsed && (
-              <TooltipContent side="right" sideOffset={8}>
-                {publicAccess ? '公开体验' : accountLabel}
-              </TooltipContent>
-            )}
-          </Tooltip>
+          <div className={cn('flex gap-1', collapsed ? 'flex-col items-center' : 'items-center')}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className={collapsed ? undefined : 'min-w-0 flex-1'}>
+                  <StudioAccount accountLabel={accountLabel} publicAccess={publicAccess} compact={collapsed} />
+                </div>
+              </TooltipTrigger>
+              {collapsed && (
+                <TooltipContent side="right" sideOffset={8}>
+                  {publicAccess ? '公开体验' : accountLabel}
+                </TooltipContent>
+              )}
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link
+                  href="/guide"
+                  onClick={onNavigate}
+                  aria-label="使用指南"
+                  aria-current={currentSection === 'guide' ? 'page' : undefined}
+                  className={cn(
+                    'flex shrink-0 items-center justify-center transition-colors',
+                    collapsed ? 'size-9 rounded-lg' : 'mr-2 h-7 rounded-full px-2 text-xs',
+                    currentSection === 'guide'
+                      ? 'bg-foreground/[0.12] text-foreground'
+                      : 'bg-foreground/[0.06] text-muted-foreground hover:bg-foreground/[0.1] hover:text-foreground',
+                  )}
+                >
+                  {collapsed ? <BookOpen className="size-4" aria-hidden="true" /> : '使用指南'}
+                </Link>
+              </TooltipTrigger>
+              {collapsed && (
+                <TooltipContent side="right" sideOffset={8}>
+                  使用指南
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </div>
         </div>
 
         <Dialog

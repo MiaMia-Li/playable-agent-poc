@@ -1,5 +1,5 @@
 export const DELIVERY_PROFILE_IDS = ['applovin', 'generic_single_html'] as const
-export const APPLOVIN_MAX_BYTES = 5_242_880
+export const APPLOVIN_MAX_BYTES = 10 * 1024 * 1024
 
 export type DeliveryProfileId = (typeof DELIVERY_PROFILE_IDS)[number]
 
@@ -18,7 +18,7 @@ export const DELIVERY_PROFILES = {
   applovin: {
     id: 'applovin',
     label: 'AppLovin',
-    description: '单 HTML，文件最大 5 MiB',
+    description: '单 HTML，文件最大 10 MiB',
     network: 'applovin',
     logicalWidth: 360,
     logicalHeight: 640,

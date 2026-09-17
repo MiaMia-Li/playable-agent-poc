@@ -24,7 +24,7 @@ it.each(fastPreviewTemplateIds)('safely patches campaign data for %s', (template
         { status: '内置默认', treatment: 'default' },
       ]),
     ) as ConfirmationProposal['resources'],
-    delivery: { network: 'applovin', logicalWidth: 360, logicalHeight: 640, output: 'single-html', maxBytes: 5242880 },
+    delivery: { network: 'applovin', logicalWidth: 360, logicalHeight: 640, output: 'single-html', maxBytes: 10485760 },
   } as ConfirmationProposal
   const after = { ...before, copy: { ...before.copy, title: '</script><script>alert(1)</script>' } }
   const html = `<script id="playable-campaign-config" type="application/json">${JSON.stringify(campaignParameters(before))}</script><script>/*playable-campaign-binding-v1 ${source ? NATIVE_UI_MARKER : ''}*/nativeEngine()</script>`

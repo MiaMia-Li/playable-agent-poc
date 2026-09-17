@@ -19,7 +19,7 @@ import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
 
 const execAsync = promisify(exec)
 const temporaryDirectories: string[] = []
-const MAX_PLAYABLE_BYTES = 5 * 1024 * 1024
+const MAX_PLAYABLE_BYTES = 10 * 1024 * 1024
 
 function deferred() {
   let resolve!: () => void
@@ -55,7 +55,7 @@ const baseConfirmation = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 } as const
 
@@ -296,7 +296,7 @@ describe('runPlayableBuild', () => {
       })
 
       expect(result.validation.behavior).toBe('passed')
-      expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
+      expect(result.validation.bytes).toBeLessThanOrEqual(MAX_PLAYABLE_BYTES)
       expect(result.html).toContain('window.__PLAYABLE__')
       expect(result.html).not.toContain(apiKey)
       expect(sandbox.destroyed).toBe(true)
@@ -473,7 +473,7 @@ describe('runPlayableBuild', () => {
       executeAgent: async () => undefined,
     })
 
-    expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
+    expect(result.validation.bytes).toBeLessThanOrEqual(MAX_PLAYABLE_BYTES)
     expect(result.html.match(/VU5JUVVFX1RJTEVfTUFSS0VS/g)).toHaveLength(1)
   }, 30_000)
 
@@ -679,7 +679,7 @@ describe('runPlayableBuild', () => {
     expect(sandbox.destroyed).toBe(true)
   })
 
-  it('returns an AppLovin artifact at the 5 MiB boundary as compliant', async () => {
+  it('returns an AppLovin artifact at the 10 MiB boundary as compliant', async () => {
     const sandbox = await createLocalSandbox()
     const prefix =
       '<meta name="viewport" content="width=device-width"><canvas></canvas><script>window.__PLAYABLE__={}</script>'
@@ -708,7 +708,7 @@ describe('runPlayableBuild', () => {
       ...input.confirmation,
       delivery: deliveryProfileSnapshot('generic_single_html'),
     }
-    const bytes = 6 * 1024 * 1024
+    const bytes = 11 * 1024 * 1024
     const prefix =
       '<meta name="viewport" content="width=device-width"><canvas></canvas><script>window.__PLAYABLE__={}</script>'
     replaceArtifactCommands(sandbox, `${prefix}${' '.repeat(bytes - Buffer.byteLength(prefix))}`)

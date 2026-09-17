@@ -489,8 +489,6 @@ export function safeValidationSummary(
     typeof candidate.buildPassed === 'boolean'
       ? candidate.buildPassed
       : candidate.passed === true && !hardGateKeys.some((key) => gates[key] === 'failed')
-  const deliveryCompliant =
-    typeof candidate.deliveryCompliant === 'boolean' ? candidate.deliveryCompliant : gates.packageSize !== 'failed'
   const storedDelivery =
     candidate.delivery && typeof candidate.delivery === 'object'
       ? (candidate.delivery as { profileId?: unknown })
@@ -501,7 +499,7 @@ export function safeValidationSummary(
       : getDeliveryProfile(deliveryProfileIdFor(delivery ?? deliveryProfileSnapshot('applovin')))
   return {
     buildPassed,
-    deliveryCompliant,
+    deliveryCompliant: profile.maxBytes === null || candidate.bytes <= profile.maxBytes,
     bytes: candidate.bytes,
     delivery: {
       profileId: profile.id,

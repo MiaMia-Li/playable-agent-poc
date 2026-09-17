@@ -35,7 +35,7 @@ const proposal = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 } as const
 

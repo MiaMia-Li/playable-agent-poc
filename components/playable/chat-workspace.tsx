@@ -1303,7 +1303,7 @@ export function ChatWorkspace({
                         />
                       </div>
                     ) : (
-                      <details className="mt-4">
+                      <details className="mt-4" open>
                         <summary className="cursor-pointer select-none font-semibold">历史构建方案</summary>
                         <div className="mt-4">
                           <ConfirmationTable
@@ -1439,35 +1439,6 @@ export function ChatWorkspace({
       {/* 构建和验收期间隐藏输入区，保留组件与草稿状态，结束或失败后自动恢复。 */}
       <div hidden={buildInProgress} className="bg-background shrink-0 border-t p-4">
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
-          {hasArtifact && (
-            <div className="mb-2 space-y-1 px-1">
-              <Select
-                value={baseBuildId}
-                onValueChange={(value) => {
-                  setBaseBuildId(value)
-                  setActiveReferences([])
-                  setReferencesChanged(true)
-                }}
-                disabled={!canCompose || sending || confirming}
-              >
-                <SelectTrigger aria-label="修改基准版本" className="w-full">
-                  <SelectValue placeholder="选择修改基准" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">自动：根据对话选择版本</SelectItem>
-                  {baseVersions.map((build) => (
-                    <SelectItem key={build.id} value={build.id}>
-                      基于 v{build.version}
-                      {build.current ? '（最新）' : ''}
-                      {build.status === 'failed' || build.status === 'building' ? ' · 未完整验收' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-muted-foreground text-xs">用于下一条修改需求；手动选择后将锁定该版本。</p>
-              {versionsError && <p className="text-destructive text-xs">版本列表加载失败，请刷新后重试。</p>}
-            </div>
-          )}
           {!composerHasNewImages && activeReferences.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1 px-1" aria-label="本轮参考截图">
               {(composerHasNewImages ? [] : activeReferences).map((ref) => (
@@ -1521,25 +1492,64 @@ export function ChatWorkspace({
               ))}
             </div>
           )}
-          <Textarea
-            aria-label="试玩需求"
-            placeholder={
-              canCompose
-                ? hasArtifact
-                  ? '描述你想修改的内容…'
-                  : '描述你想制作的试玩…'
-                : '当前阶段不可继续输入，请新建试玩'
-            }
-            className="min-h-20 resize-none border-0 shadow-none focus-visible:ring-0"
-            value={message}
-            disabled={!canCompose || sending}
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
-              event.preventDefault()
-              void sendMessage()
-            }}
-          />
+          <div className="flex min-w-0 items-start gap-1">
+            {hasArtifact && (
+              <Select
+                value={baseBuildId}
+                onValueChange={(value) => {
+                  setBaseBuildId(value)
+                  setActiveReferences([])
+                  setReferencesChanged(true)
+                }}
+                disabled={!canCompose || sending || confirming}
+              >
+                <SelectTrigger
+                  aria-label="修改基准版本"
+                  title="用于下一条修改需求；手动选择后将锁定该版本"
+                  size="sm"
+                  className="bg-muted/60 hover:bg-muted mt-1 h-6 w-auto max-w-[45%] shrink-0 rounded-sm px-2 text-xs! shadow-none"
+                >
+                  <SelectValue placeholder="选择修改基准">
+                    {baseBuildId === 'auto'
+                      ? '基准 · 自动'
+                      : `基准 · v${baseVersions.find((build) => build.id === baseBuildId)?.version ?? '?'}`}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">自动：根据对话选择版本</SelectItem>
+                  {baseVersions.map((build) => (
+                    <SelectItem key={build.id} value={build.id}>
+                      基于 v{build.version}
+                      {build.current ? '（最新）' : ''}
+                      {build.status === 'failed' || build.status === 'building' ? ' · 未完整验收' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Textarea
+              aria-label="试玩需求"
+              placeholder={
+                canCompose
+                  ? hasArtifact
+                    ? '描述你想修改的内容…'
+                    : '描述你想制作的试玩…'
+                  : '当前阶段不可继续输入，请新建试玩'
+              }
+              className="min-h-20 min-w-0 flex-1 resize-none border-0 shadow-none focus-visible:ring-0"
+              value={message}
+              disabled={!canCompose || sending}
+              onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
+                event.preventDefault()
+                void sendMessage()
+              }}
+            />
+          </div>
+          {hasArtifact && versionsError && (
+            <p className="text-destructive px-2 text-xs">版本列表加载失败，请刷新后重试。</p>
+          )}
           <div className="flex items-center justify-between">
             <Button
               type="button"

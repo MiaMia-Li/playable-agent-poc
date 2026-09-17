@@ -5,7 +5,7 @@ import {
   createProductionConfig,
   createValidationReport,
 } from '@/lib/playable/production-contract'
-import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
+import { APPLOVIN_MAX_BYTES, deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
 import { MAHJONG_PLAYABLE_PLUGIN } from '@/lib/playable/template-registry'
 
 const confirmation: ConfirmationProposal = {
@@ -27,7 +27,7 @@ const confirmation: ConfirmationProposal = {
     logicalWidth: 360,
     logicalHeight: 640,
     output: 'single-html',
-    maxBytes: 5242880,
+    maxBytes: 10485760,
   },
 }
 
@@ -78,7 +78,8 @@ describe('playable production contract', () => {
     })
   })
 
-  it('treats an AppLovin artifact exactly at 5 MiB as compliant', () => {
+  it('treats an AppLovin artifact exactly at 10 MiB as compliant', () => {
+    expect(MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes).toBe(APPLOVIN_MAX_BYTES)
     const report = createValidationReport({
       bytes: MAHJONG_PLAYABLE_PLUGIN.delivery.maxBytes,
       offlineResources: true,

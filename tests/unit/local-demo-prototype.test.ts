@@ -173,7 +173,7 @@ describe('local demo prototype', () => {
     })
 
     expect(result.validation.behavior).toBe('passed')
-    expect(result.validation.bytes).toBeLessThan(5 * 1024 * 1024)
+    expect(result.validation.bytes).toBeLessThanOrEqual(10 * 1024 * 1024)
     expect(result.html).toContain('window.__PLAYABLE__')
     expect(result.html).not.toContain('sk-test-local-demo')
   })

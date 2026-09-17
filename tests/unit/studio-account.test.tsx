@@ -8,12 +8,12 @@ import { StudioAccount } from '@/components/playable/studio-account'
 afterEach(cleanup)
 
 describe('StudioAccount', () => {
-  it('renders the shared public experience UI independently of the account label', () => {
+  it('renders the public experience account without a separate shared badge', () => {
     render(<StudioAccount accountLabel="公开体验" publicAccess />)
 
     const account = screen.getByLabelText('账户：公开体验，任务共享')
     expect(account).toHaveTextContent('公开体验')
-    expect(account).toHaveTextContent('共享')
+    expect(account).not.toHaveTextContent('共享')
   })
 
   it('renders a regular account label and its initial', () => {

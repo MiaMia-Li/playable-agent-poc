@@ -107,6 +107,7 @@ export function AppLayout({
   const isPlayablePath =
     pathname === '/' ||
     pathname === '/best-practices' ||
+    pathname === '/guide' ||
     pathname === '/versions' ||
     pathname === '/tasks' ||
     pathname.startsWith('/tasks/')

@@ -21,16 +21,7 @@ export function StudioAccount({ accountLabel, publicAccess = false, compact = fa
           {accountLabel.slice(0, 1).toUpperCase()}
         </span>
       )}
-      {!compact && (
-        <>
-          <span className="min-w-0 flex-1 truncate text-sm">{publicAccess ? '公开体验' : accountLabel}</span>
-          {publicAccess && (
-            <span className="text-muted-foreground bg-foreground/[0.06] rounded-full px-2 py-0.5 text-[10px]">
-              共享
-            </span>
-          )}
-        </>
-      )}
+      {!compact && <span className="min-w-0 flex-1 truncate text-sm">{publicAccess ? '公开体验' : accountLabel}</span>}
     </div>
   )
 }
