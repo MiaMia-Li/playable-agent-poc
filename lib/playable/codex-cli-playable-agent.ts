@@ -399,6 +399,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             prompt: input.prompt,
             assets: input.assets,
             hasArtifact: input.hasArtifact,
+            sourceHtmlAssetId: input.sourceHtml?.assetId,
             marketResearch: latestResearch ? marketResearchReportSchema.parse(latestResearch.result) : undefined,
           }).reply
         } catch (error) {

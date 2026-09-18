@@ -734,6 +734,85 @@ describe('CodexPlayableAgent', () => {
     expect(responseMocks.streamText).toHaveBeenCalledTimes(1)
   })
 
+  // 相同 freeform/template 输出，仅宿主加载了 HTML 时可通过，防止把例外扩展到普通新建任务。
+  it.each([false, true])(
+    'allows native freeform rendering only for a host-loaded HTML source: %s',
+    async (hasSource) => {
+      const brief = {
+        ...requirementBrief,
+        routing: { ...requirementBrief.routing, match: 'freeform' as const, differences: ['保留上传的 Cocos 引擎'] },
+      }
+      const proposed = {
+        ...validProposal,
+        routing: {
+          match: brief.routing.match,
+          confidence: brief.routing.confidence,
+          differences: brief.routing.differences,
+        },
+        rendering: { renderer: 'template', physics: 'template', reason: '保留上传 HTML 的 Cocos 引擎' },
+      }
+      const plan = {
+        ...confirmationOutput,
+        calls: [
+          { ...confirmationOutput.calls[0], brief },
+          confirmationOutput.calls[1],
+          {
+            ...confirmationOutput.calls[3],
+            name: 'submit_revision',
+            confirmation: proposed,
+            revision: {
+              requestedBaseVersion: null,
+              parameterOnly: false,
+              strategy: 'patch',
+              summary: '修复跳转',
+              changes: ['恢复原生下载跳转'],
+              preserved: ['保留 Cocos 引擎和现有玩法'],
+            },
+          },
+        ],
+      }
+      responseMocks.streamText.mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve(plan),
+      } as never)
+      const result = new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'repair-native-jump',
+        prompt: '跳转没了',
+        apiKey: 'sk-unit-only',
+        hasArtifact: true,
+        brief,
+        ...(hasSource
+          ? {
+              sourceHtml: {
+                assetId: 'host-source',
+                filename: 'source.html',
+                html: '<canvas></canvas>',
+                truncated: false,
+              },
+            }
+          : {}),
+      })
+      if (hasSource) {
+        const reply = await result
+        expect(reply).toMatchObject({
+          kind: 'revision',
+          revision: { strategy: 'patch' },
+          confirmation: { routing: { match: 'freeform' } },
+        })
+        if (reply.kind === 'revision') expect(reply.confirmation.rendering).toBeUndefined()
+      } else {
+        await expect(result).rejects.toMatchObject({
+          code: 'output_invalid',
+          diagnostic: {
+            stage: 'plan_execution',
+            issues: [{ code: 'custom', path: ['rendering'], rule: 'freeform_template_renderer' }],
+          },
+        })
+      }
+    },
+  )
+
   // 持续返回合法工具调用但不结束，也应被识别为轮数耗尽，而非字段格式错误。
   it('records step exhaustion separately from invalid output', async () => {
     responseMocks.streamText.mockImplementation(
