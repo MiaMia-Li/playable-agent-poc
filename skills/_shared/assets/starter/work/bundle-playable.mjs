@@ -1,3 +1,4 @@
+import { inspectGlb } from './glb.mjs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
@@ -58,6 +59,14 @@ export async function bundlePlayable({ entry, shell, output, root = process.cwd(
       {
         name: 'offline-imports',
         setup(builder) {
+          builder.onLoad({ filter: /\.glb$/i }, async ({ path: filename }) => {
+            const bytes = await readFile(filename)
+            inspectGlb(bytes)
+            return {
+              contents: `export default ${JSON.stringify('data:model/gltf-binary;base64,' + bytes.toString('base64'))}`,
+              loader: 'js',
+            }
+          })
           builder.onResolve({ filter: /^(?:https?:|\/\/)/ }, () => ({
             errors: [{ text: 'Remote imports are not allowed' }],
           }))

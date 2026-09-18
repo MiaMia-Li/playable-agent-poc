@@ -1,3 +1,5 @@
+import { GLB_MIME_TYPE } from './asset-policy'
+import { inspectGlb } from './glb'
 import type { ConfirmationProposal } from './schemas'
 import { deliveryProfileIdFor, deliveryProfileSnapshot, getDeliveryProfile } from './delivery-standards'
 import { getPlayableMode, MAHJONG_PLAYABLE_PLUGIN } from './template-registry'
@@ -26,7 +28,7 @@ export interface PlayableProductionConfig {
 }
 
 const sourceLabels: Record<
-  ConfirmationProposal['resources'][keyof ConfirmationProposal['resources']]['status'],
+  NonNullable<ConfirmationProposal['resources'][keyof ConfirmationProposal['resources']]>['status'],
   string
 > = {
   用户上传: 'task-upload',
@@ -77,13 +79,10 @@ export function createAssetSourceManifest(
       slot: slot as keyof ConfirmationProposal['resources'],
       status: resource.status,
       treatment: resource.treatment,
-      origin: sourceLabels[resource.status],
+      origin: slot === 'models' && resource.status === '内置默认' ? 'none' : sourceLabels[resource.status],
       files: assets.filter((asset) => asset.slot === slot).map((asset) => asset.filename),
     })),
-    assets: assets.map(({ bytes: _bytes, ...asset }) => {
-      void _bytes
-      return { ...asset, workspacePath: `user-assets/${asset.slot}/${asset.filename}` }
-    }),
+    assets: assets.map((asset) => buildAssetManifestEntry(asset, `user-assets/${asset.slot}/${asset.filename}`)),
     entrypoint: 'playable.html',
   }
 }
@@ -127,4 +126,13 @@ export function createValidationReport(input: {
       credentialScan: 'passed',
     },
   }
+}
+
+export function buildAssetManifestEntry(
+  asset: PlayableBuildAsset,
+  workspacePath: string,
+): PlayableAssetManifest['assets'][number] {
+  if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
+  const { bytes, ...metadata } = asset
+  return { ...metadata, workspacePath, ...(asset.mimeType === GLB_MIME_TYPE ? { model: inspectGlb(bytes) } : {}) }
 }

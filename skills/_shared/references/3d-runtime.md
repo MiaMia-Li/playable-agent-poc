@@ -44,6 +44,25 @@ automatically embedded. Import resource files and pass the resulting data URLs t
 loaders. Inline shell CSS and its resources yourself. Do not use CDN URLs, import maps,
 runtime bare imports or remote fonts. The bundle report is work/bundle-report.json.
 
+## Revisions and startup repairs
+
+For JavaScript changes to a bundled Three.js playable, including patch revisions,
+edit `work/game.js` and its source modules, then rerun the bundler. Treat
+`current-playable.html` as behavior and asset evidence, not editable library source.
+Do not insert handlers into the minified dependency scope or reuse its short variable
+names: a library `var` assignment can overwrite a hoisted game function with the same
+name and make `addEventListener` fail before initialization. If source modules are
+unavailable, reconstruct the game module and HTML shell with explicit dependency
+imports and preserve the confirmed behavior and assets before bundling again.
+Text-only shell changes do not require reconstructing game logic.
+
+Keep the whole-bundle DOM-ready guard. A persistent loading overlay can also mean
+an exception before the async initializer; inspect the first runtime error rather
+than removing the overlay or adding a delay. For synthesized audio, configure and
+connect each source, call `start()` before `stop()`, and use a new source for each
+playback. Check the first gameplay input as well as startup: an audio exception can
+interrupt the shot or move before the gameplay state changes.
+
 ## Implementation and acceptance
 
 Three.js supplies rendering, not game rules or rigid-body physics. Add Rapier only for
@@ -72,6 +91,58 @@ The browser scenario must verify WebGL renders a visible scene, actual gameplay 
 changes engine state, the confirmed ending, and portrait/landscape rendering. Inspect
 screenshots for camera framing and lighting. Check network and console errors, including
 model/texture/WASM initialization. A successful bundle alone is not gameplay acceptance.
+When browser acceptance is enabled, test the final bundled `output.html` after the
+last edit: loading must complete, repeated gameplay inputs must change real state,
+and drag handling (when used), mute and portrait/landscape resizing must work without
+uncaught errors. Source-only tests or checks of an earlier artifact do not verify the
+delivered bundle. When validation is disabled, report these checks as not performed.
 
 References: https://threejs.org/manual/en/installation.html,
 https://esbuild.github.io/api/, https://rapier.rs/docs/user_guides/javascript/getting_started_js/
+
+## Uploaded GLB models
+
+`asset-manifest.json` identifies approved GLB files by `mimeType: model/gltf-binary`
+and includes `model` counts (meshes, triangles, textures, animations). Match filenames
+against `sources[].treatment` for their assigned gameplay roles. These are actual
+meshes with UVs and embedded textures, not image evidence. Load the supplied models
+instead of recreating their appearance with planes or substituting generic geometry.
+
+```js
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import modelUrl from '../user-assets/models/ASSET_ID-model.glb'
+// Use the exact workspacePath from the manifest, not this example filename.
+const loader = new GLTFLoader()
+async function loadModel() {
+  const gltf = await loader.loadAsync(modelUrl)
+  scene.add(gltf.scene)
+  // Inspect bounds, center/pivot and orientation before scaling or cloning.
+}
+```
+
+Upload and packaging reject external files, Draco, Meshopt, KTX2/Basis decoders and
+sparse accessors in this initial version. Use uncompressed, self-contained GLB 2.0.
+Do not set DRACOLoader decoder paths, KTX2 transcoders or remote workers. The bundler
+validates every imported GLB and embeds it as a model/gltf-binary data URL. Never use
+literal filesystem paths at runtime. The 4 MiB upload limit applies per asset;
+base64 and engine code count toward the separate confirmed delivery size budget.
+
+For repeated static models, clone the scene and share geometries/materials. Use
+SkeletonUtils.clone for skinned models and AnimationMixer if animation is needed.
+Physics is independent of file format. Display objects, static environments and authored
+animation do not automatically need Rapier. For confirmed physics interactions, choose
+colliders from the geometry and gameplay role rather than assuming boxes or cylinders. Imported GLB does
+not automatically define Rapier bodies. Preserve original embedded material colors;
+provide scene lights and check texture orientation and camera framing visually.
+During browser acceptance, verify the loaded models are visible and that a real
+interaction moves the expected body and produces the expected collision. Verify
+there are no failed model/texture requests and all required resources work offline.
+
+
+The `models` resource slot is generic across all game types. A file may be a character,
+prop, vehicle, environment or complete scene. Inspect its actual nodes, transforms,
+bounds, skins, morph targets and animation clip names before integrating it. Retain
+hierarchy and local transforms; center via a parent group if root motion must survive.
+Never hardcode reference-game shapes, filenames, dimensions or animation names.
+Use `resources.models.treatment` / the corresponding manifest source to identify each
+file's role and desired behavior. Uploaded models in older slots remain supported.

@@ -5,6 +5,7 @@ import { useId, useRef } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
 import {
   applyVisualDirection,
+  confirmationResource,
   defaultConfirmationPresentation,
   visualDirections,
   type ConfirmationProposal,
@@ -22,7 +23,13 @@ import { sourceTemplateIds, type SourceTemplateId } from '@/lib/playable/types'
 import { PLAYABLE_TEMPLATES } from '@/lib/playable/template-catalog'
 import { isAbsoluteHttpsUrl } from '@/lib/playable/schemas'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
-import { isPlayableResourceAssetSlot, playableAssetAccept, type PlayableAssetSlot } from '@/lib/playable/asset-policy'
+import {
+  hasIncompatibleModelAssets,
+  PLAYABLE_MODEL_SLOTS,
+  isPlayableResourceAssetSlot,
+  playableAssetAccept,
+  type PlayableAssetSlot,
+} from '@/lib/playable/asset-policy'
 import {
   DELIVERY_PROFILES,
   deliveryProfileIdFor,
@@ -37,6 +44,7 @@ const defaultTreatments: Record<keyof ConfirmationProposal['resources'], string>
   animationEffects: '使用系统提供的动画与特效',
   audio: '使用系统提供的音频',
   endCard: '使用系统提供的结束卡',
+  models: '不使用额外 3D 模型',
 }
 
 const systemAssetDescription = '系统提供，无需上传，可直接构建'
@@ -47,6 +55,7 @@ const generatedTreatments: Record<keyof ConfirmationProposal['resources'], strin
   animationEffects: '生成与当前主题一致的透明消除特效素材',
   audio: '根据当前标题和 CTA 生成简短中文宣传配音',
   endCard: '生成与当前主题一致的竖屏结束卡背景，预留标题和 CTA 区域',
+  models: '3D 模型自动生成暂不支持',
 }
 
 const routingLabels: Record<ConfirmationProposal['routing']['match'], string> = {
@@ -88,14 +97,19 @@ interface ConfirmationTableProps {
   hasReferenceVisuals?: boolean
 }
 
-export function isConfirmationReady(proposal: ConfirmationProposal): boolean {
+export function isConfirmationReady(proposal: ConfirmationProposal, assets: SafePlayableAsset[] = []): boolean {
   const presentation = proposal.presentation ?? defaultConfirmationPresentation
-  const visibleResources = presentation.assetFields.map((field) => proposal.resources[field.slot])
+  const visibleResources = presentation.assetFields.map((field) => confirmationResource(proposal, field.slot))
   const hasPendingUpload = visibleResources.some((resource) => resource.status === '待上传')
   const hasUnsupportedAiGeneration =
     !MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration &&
     visibleResources.some((resource) => resource.status === '待生成')
-  return !hasPendingUpload && !hasUnsupportedAiGeneration && isAbsoluteHttpsUrl(proposal.storeUrl)
+  return (
+    !hasPendingUpload &&
+    !hasUnsupportedAiGeneration &&
+    isAbsoluteHttpsUrl(proposal.storeUrl) &&
+    !hasIncompatibleModelAssets(proposal, assets)
+  )
 }
 
 export function ConfirmationTable({
@@ -121,10 +135,13 @@ export function ConfirmationTable({
   const storeUrlId = useId()
   const nativeUi = nativeTemplateUiPolicy(proposal.sourceTemplateId)
   const presentation = proposal.presentation ?? defaultConfirmationPresentation
-  const assetFields = presentation.assetFields.filter(
-    (field, index, fields) => fields.findIndex((candidate) => candidate.slot === field.slot) === index,
-  )
-  const visibleResources = assetFields.map((field) => proposal.resources[field.slot])
+  const assetFields = [
+    ...presentation.assetFields,
+    ...(presentation.assetFields.some((field) => field.slot === 'models')
+      ? []
+      : [{ slot: 'models' as const, label: '3D 模型' }]),
+  ].filter((field, index, fields) => fields.findIndex((candidate) => candidate.slot === field.slot) === index)
+  const visibleResources = assetFields.map((field) => confirmationResource(proposal, field.slot))
   const hasPendingUpload = visibleResources.some((resource) => resource.status === '待上传')
   const aiMediaGenerationEnabled = MAHJONG_PLAYABLE_PLUGIN.capabilities.aiMediaGeneration
   const hasUnsupportedAiGeneration =
@@ -133,7 +150,8 @@ export function ConfirmationTable({
   const validStoreUrl = isAbsoluteHttpsUrl(proposal.storeUrl)
   const inProgress = Boolean(confirming || buildPhase)
   const controlsDisabled = Boolean(disabled || inProgress)
-  const canConfirm = resourcesReady && validStoreUrl && !inProgress && !disabled
+  const incompatibleModels = hasIncompatibleModelAssets(proposal, uploadedAssets)
+  const canConfirm = resourcesReady && validStoreUrl && !inProgress && !disabled && !incompatibleModels
   const mode =
     PLAYABLE_TEMPLATES.find((template) => template.id === proposal.sourceTemplateId) ?? getPlayableMode(proposal.mode)
   const deliveryProfile = getDeliveryProfile(deliveryProfileIdFor(proposal.delivery))
@@ -281,7 +299,7 @@ export function ConfirmationTable({
               </td>
             </tr>
             {assetFields.map(({ slot, label }) => {
-              const resource = proposal.resources[slot]
+              const resource = confirmationResource(proposal, slot)
               const slotAssets = uploadedAssets.filter((asset) => asset.slot === slot)
               return (
                 <tr key={slot}>
@@ -293,12 +311,38 @@ export function ConfirmationTable({
                           resource.status === '待上传' || resource.status === '待生成' ? 'destructive' : 'secondary'
                         }
                       >
-                        {resource.status === '内置默认' ? '系统素材' : resource.status}
+                        {resource.status === '内置默认'
+                          ? slot === 'models'
+                            ? '不使用额外模型'
+                            : '系统素材'
+                          : resource.status}
                       </Badge>
                       <span className="text-muted-foreground">
-                        {resource.status === '内置默认' ? systemAssetDescription : resource.treatment}
+                        {resource.status === '内置默认'
+                          ? slot === 'models'
+                            ? '无需额外模型，可继续构建'
+                            : systemAssetDescription
+                          : resource.treatment}
                       </span>
                     </div>
+                    {PLAYABLE_MODEL_SLOTS.some((modelSlot) => modelSlot === slot) && (
+                      <p className="text-muted-foreground mt-2 text-xs">
+                        {slot === 'models'
+                          ? '支持 GLB 角色、道具和场景模型（贴图内嵌）'
+                          : '支持图片和 GLB 模型（贴图内嵌）'}
+                        ，单个文件最多 4 MiB。
+                      </p>
+                    )}
+                    {resource.status === '用户上传' && (
+                      <Textarea
+                        aria-label={`${label}用途说明`}
+                        className="mt-2"
+                        value={resource.treatment}
+                        placeholder="按文件名说明模型用途、动作或动画需求，以及是否需要碰撞；例如角色、道具、场景或展示对象"
+                        disabled={controlsDisabled}
+                        onChange={(event) => updateResource(slot, { ...resource, treatment: event.target.value })}
+                      />
+                    )}
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <Button
                         type="button"
@@ -314,7 +358,7 @@ export function ConfirmationTable({
                           })
                         }
                       >
-                        使用系统素材
+                        {slot === 'models' ? '不使用模型' : '使用系统素材'}
                       </Button>
                       <Button
                         type="button"
@@ -553,6 +597,11 @@ export function ConfirmationTable({
           </tbody>
         </table>
       </div>
+      {incompatibleModels && (
+        <p className="text-destructive text-sm">
+          GLB 模型需要 Three.js 自定义构建。请在对话中说明使用模型，让 Agent 更新确认方案。
+        </p>
+      )}
       {hasPendingUpload && <p className="text-destructive text-sm">请先上传所有标记为“待上传”的素材。</p>}
       {hasUnsupportedAiGeneration && (
         <p className="text-destructive text-sm">AI 素材生成暂不支持，请改用系统素材或本地上传。</p>

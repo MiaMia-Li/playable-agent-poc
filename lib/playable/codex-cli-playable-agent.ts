@@ -1,3 +1,4 @@
+import { createAssetSourceManifest, buildAssetManifestEntry } from './production-contract'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy, renderingPreparationCommand } from './rendering-policy'
 import { PLAYABLE_TOOLS_PROMPT } from './sandbox-tools'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
@@ -267,18 +268,14 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, file.bytes)
   }
-  const manifest = {
-    assets: [] as Array<Record<string, unknown>>,
-    entrypoint: 'playable.html' as const,
-  }
+  const manifest = createAssetSourceManifest(input.confirmation, [])
   for (const asset of input.assets ?? []) {
     const workspacePath = path.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
     const absolutePath = path.join(workspace, workspacePath)
     await mkdir(path.dirname(absolutePath), { recursive: true })
     await writeFile(absolutePath, asset.bytes)
-    const { bytes: _bytes, ...metadata } = asset
-    void _bytes
-    manifest.assets.push({ ...metadata, workspacePath })
+    manifest.assets.push(buildAssetManifestEntry(asset, workspacePath))
+    manifest.sources.find((source) => source.slot === asset.slot)?.files.push(asset.filename)
   }
   await writeFile(path.join(workspace, 'asset-manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')
   if (input.confirmation.rendering) {

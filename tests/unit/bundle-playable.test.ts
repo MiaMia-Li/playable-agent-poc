@@ -1,3 +1,4 @@
+import { triangleGlb } from '../fixtures/glb'
 import { afterEach, expect, it } from 'vitest'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -90,4 +91,20 @@ it('initializes once after HUD and CTA nodes following the script marker exist',
   expect(late.window.boots).toBe(1)
   expect(late.window.document.getElementById('hud')?.textContent).toBe('ready')
   late.window.close()
+})
+
+it('embeds a real GLB with canonical MIME and rejects hidden external texture dependencies', async () => {
+  const input = await fixture("import model from './block.glb'; window.model = model")
+  const bytes = triangleGlb()
+  await writeFile(path.join(input.root, 'block.glb'), bytes)
+  await bundlePlayable(input)
+  const html = await readFile(path.join(input.root, input.output), 'utf8')
+  expect(html).toContain('data:model/gltf-binary;base64,' + Buffer.from(bytes).toString('base64'))
+  await writeFile(
+    path.join(input.root, 'block.glb'),
+    triangleGlb((d) => {
+      d.images = [{ uri: 'https://example.com/hidden.png' }]
+    }),
+  )
+  await expect(bundlePlayable(input)).rejects.toThrow('self-contained GLB')
 })

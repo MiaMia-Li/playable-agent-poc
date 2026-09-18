@@ -682,8 +682,17 @@ it('requires an explicit rendering decision in new model output while accepting 
     requirementAgentStepOutputSchema.safeParse(
       output({
         ...legacy,
+        resources: { ...legacy.resources, models: { status: '内置默认', treatment: '不使用额外 3D 模型' } },
         rendering: { renderer: 'threejs', physics: 'rapier', reason: '独立积木需要空间碰撞和坍塌' },
       }),
     ).success,
   ).toBe(true)
+})
+
+it('advertises generic models independently of template-specific asset slots', () => {
+  expect(playableCapabilitiesForAgent().modelAssets).toMatchObject({
+    slot: 'models',
+    mimeTypes: ['model/gltf-binary'],
+    preserves: expect.arrayContaining(['skins', 'morph targets', 'animation clips']),
+  })
 })

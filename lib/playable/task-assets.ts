@@ -1,3 +1,5 @@
+import { inspectGlb, GLB_UPLOAD_ERROR } from './glb'
+import { GLB_MIME_TYPE, playableFileMimeType } from './asset-policy'
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
@@ -139,12 +141,21 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     if (!(file instanceof File) || typeof slot !== 'string' || !isPlayableAssetSlot(slot)) {
       return Response.json({ error: 'Invalid request' }, { status: 400 })
     }
+    const mimeType = playableFileMimeType(file)
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(form?.get('durationSeconds')) : null
     const refusal =
-      refuseAssetContent({ slot, mimeType: file.type, size: file.size, durationSeconds }) ??
+      refuseAssetContent({ slot, mimeType, size: file.size, durationSeconds }) ??
       refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot)
     if (refusal) return refusal
 
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (mimeType === GLB_MIME_TYPE) {
+      try {
+        inspectGlb(bytes)
+      } catch {
+        return Response.json({ error: GLB_UPLOAD_ERROR }, { status: 415 })
+      }
+    }
     const id = dependencies.generateId()
     const storageKey = assetStorageKey(userId, taskId, id)
     const asset: PlayableAsset = {
@@ -152,14 +163,14 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       taskId,
       userId,
       slot,
-      filename: safeFilename(file.name),
-      mimeType: file.type,
+      filename: safeFilename(mimeType === GLB_MIME_TYPE && !/\.glb$/i.test(file.name) ? `${file.name}.glb` : file.name),
+      mimeType,
       size: file.size,
       durationSeconds,
       storageKey,
       createdAt: new Date(),
     }
-    await dependencies.store.put(storageKey, new Uint8Array(await file.arrayBuffer()), file.type)
+    await dependencies.store.put(storageKey, bytes, mimeType)
     return recordAsset(dependencies, asset)
   }
 }
@@ -272,12 +283,26 @@ export function createPlayableAssetUploadCompleteHandler(dependencies: DirectAss
       await dependencies.store.delete(storageKey)
       return refusal
     }
+    if (stored.contentType === GLB_MIME_TYPE) {
+      const stream = await dependencies.store.get(storageKey)
+      try {
+        if (!stream) throw new Error('Missing model')
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer())
+        if (bytes.byteLength !== stored.size) throw new Error('Model size mismatch')
+        inspectGlb(bytes)
+      } catch {
+        await dependencies.store.delete(storageKey)
+        return Response.json({ error: GLB_UPLOAD_ERROR }, { status: 415 })
+      }
+    }
     return recordAsset(dependencies, {
       id,
       taskId,
       userId,
       slot,
-      filename: safeFilename(filename),
+      filename: safeFilename(
+        stored.contentType === GLB_MIME_TYPE && !/\.glb$/i.test(filename) ? `${filename}.glb` : filename,
+      ),
       mimeType: stored.contentType,
       size: stored.size,
       durationSeconds,

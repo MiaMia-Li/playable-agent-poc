@@ -318,6 +318,7 @@ export const confirmationResourceSlots = [
   'animationEffects',
   'audio',
   'endCard',
+  'models',
 ] as const
 
 export const confirmationCopyFields = ['title', 'cta', 'disclaimer', 'locale'] as const
@@ -463,6 +464,7 @@ const confirmationProposalShape = {
     animationEffects: resourceSchema,
     audio: resourceSchema,
     endCard: resourceSchema,
+    models: resourceSchema.optional(),
   }),
   copy: z.strictObject({
     title: z.string(),
@@ -479,7 +481,7 @@ const confirmationProposalShape = {
 function validateConfirmationPresentation(
   proposal: {
     presentation: z.infer<typeof confirmationPresentationSchema>
-    resources: Record<(typeof confirmationResourceSlots)[number], z.infer<typeof resourceSchema>>
+    resources: Partial<Record<(typeof confirmationResourceSlots)[number], z.infer<typeof resourceSchema>>>
   },
   context: z.RefinementCtx,
 ) {
@@ -493,7 +495,7 @@ function validateConfirmationPresentation(
   }
   for (const slot of confirmationResourceSlots) {
     const hidden = !slots.includes(slot)
-    const status = proposal.resources[slot].status
+    const status = proposal.resources[slot]?.status ?? '内置默认'
     if (hidden && (status === '待上传' || status === '待生成')) {
       context.addIssue({
         code: 'custom',
@@ -625,6 +627,7 @@ export const requirementBriefSchema = z.strictObject({
   }),
   assets: z.strictObject({
     images: z.enum(['unknown', 'bundled', 'upload']),
+    models: z.enum(['unknown', 'none', 'upload']).optional(),
     audio: z.enum(['unknown', 'bundled', 'upload']),
   }),
   launch: z.strictObject({
@@ -729,3 +732,11 @@ export type RequirementBrief = z.infer<typeof requirementBriefSchema>
 export type RevisionPlan = z.infer<typeof revisionPlanSchema>
 export type RevisionProposal = z.infer<typeof revisionProposalSchema>
 export type PlayableAgentReply = z.infer<typeof playableAgentReplySchema>
+
+/** Old confirmations omit models; keep saved tasks compatible without inventing uploaded assets. */
+export function confirmationResource(
+  proposal: Pick<ConfirmationProposal, 'resources'>,
+  slot: (typeof confirmationResourceSlots)[number],
+): z.infer<typeof resourceSchema> {
+  return proposal.resources[slot] ?? { status: '内置默认', treatment: '不使用额外 3D 模型' }
+}

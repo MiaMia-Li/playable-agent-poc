@@ -1,3 +1,4 @@
+import { triangleGlb } from '../fixtures/glb'
 import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
@@ -250,6 +251,19 @@ describe('playable direct asset upload', () => {
     }
   }
 
+  it('validates actual GLB bytes on direct completion and deletes invalid uploads', async () => {
+    const bytes = triangleGlb()
+    const valid = directHarness({ stored: { size: bytes.length, contentType: 'model/gltf-binary' } })
+    valid.store.get.mockResolvedValue(new Response(bytes).body)
+    const body = { slot: 'tileFaces', pathname: key, filename: 'block.glb' }
+    expect((await valid.complete(jsonRequest('uploads/complete', body), context)).status).toBe(201)
+    const invalid = directHarness({ stored: { size: 3, contentType: 'model/gltf-binary' } })
+    invalid.store.get.mockResolvedValue(new Response('bad').body)
+    expect((await invalid.complete(jsonRequest('uploads/complete', body), context)).status).toBe(415)
+    expect(invalid.store.delete).toHaveBeenCalledWith(key)
+    expect(invalid.metadata).toEqual([])
+  })
+
   // Vercel refuses function bodies over 4.5 MB, so a video past that size
   // only ever reaches storage this way.
   it('issues a token for a large video scoped to a key the server chose', async () => {
@@ -478,5 +492,46 @@ describe('playable asset content', () => {
     expect(response.headers.get('content-disposition')).toBe(
       `inline; filename="__.png"; filename*=UTF-8''%E4%B8%AD%E6%96%87.png`,
     )
+  })
+})
+
+describe('GLB resource upload', () => {
+  it.each(['', 'application/octet-stream', 'model/gltf-binary'])(
+    'stores a validated model with canonical MIME: %s',
+    async (type) => {
+      const { handler, store, metadata } = harness()
+      const bytes = triangleGlb()
+      const response = await handler(uploadRequest(new File([bytes], 'block.glb', { type }), 'models'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(response.status).toBe(201)
+      expect(metadata).toEqual([expect.objectContaining({ mimeType: 'model/gltf-binary', slot: 'models' })])
+      expect(store.put).toHaveBeenCalledWith(expect.any(String), bytes, 'model/gltf-binary')
+    },
+  )
+  it('rejects fake GLB and external textures before saving anything', async () => {
+    for (const bytes of [
+      new Uint8Array([1, 2, 3]),
+      triangleGlb((d) => {
+        d.images = [{ uri: 'https://example.com/t.png' }]
+      }),
+    ]) {
+      const { handler, store, metadata } = harness()
+      const response = await handler(uploadRequest(new File([bytes], 'block.glb'), 'backgroundBoard'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(response.status).toBe(415)
+      expect(store.put).not.toHaveBeenCalled()
+      expect(metadata).toEqual([])
+    }
+  })
+  it('does not let model files become screenshot evidence or audio', async () => {
+    for (const slot of ['referenceImage', 'referenceVideo', 'audio', 'endCard']) {
+      const { handler } = harness()
+      const response = await handler(uploadRequest(new File([triangleGlb()], 'block.glb'), slot), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(response.status).toBe(415)
+    }
   })
 })
