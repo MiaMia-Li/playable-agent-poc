@@ -2159,69 +2159,78 @@ describe('playable task API', () => {
     expect(harness.repository.tasks.get('owned')?.confirmation).toBeNull()
   })
 
-  it('proposes and confirms a lightweight v2 patch that receives the current successful HTML', async () => {
-    const task = harness.repository.tasks.get('owned')!
-    task.phase = 'ready'
-    task.confirmation = confirmation
-    task.latestArtifactKey = 'users/user-1/tasks/owned/build-1/playable.html'
-    harness.repository.builds.push({
-      id: 'build-1',
-      taskId: 'owned',
-      status: 'succeeded',
-      confirmation,
-      artifactKey: task.latestArtifactKey,
-      createdAt: new Date(1),
-      completedAt: new Date(2),
-    })
-    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>version one</html>'))
-    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
-      kind: 'revision',
-      message: '我会移除顶部标题，其他内容保持不变。',
-      reasoning: '这是一个明确的局部修改。',
-      revision: patchRevision,
-      confirmation,
-    })
+  it.each([undefined, 1])(
+    'proposes and confirms a current-version patch with requested base %s',
+    async (requestedBaseVersion) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'ready'
+      task.confirmation = confirmation
+      task.latestArtifactKey = 'users/user-1/tasks/owned/build-1/playable.html'
+      harness.repository.builds.push({
+        id: 'build-1',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: task.latestArtifactKey,
+        createdAt: new Date(1),
+        completedAt: new Date(2),
+      })
+      harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode('<html>version one</html>'))
+      vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+        kind: 'revision',
+        message: '我会移除顶部标题，其他内容保持不变。',
+        reasoning: '这是一个明确的局部修改。',
+        revision: { ...patchRevision, requestedBaseVersion },
+        confirmation,
+      })
 
-    const messageResponse = await harness.handlers.message(
-      request('/api/playable-tasks/owned/messages', 'POST', { message: '去掉顶部 0/4 标题' }),
-      { params: Promise.resolve({ taskId: 'owned' }) },
-    )
-    const messageBody = await messageResponse.text()
+      const messageResponse = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '去掉顶部 0/4 标题' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      const messageBody = await messageResponse.text()
 
-    expect(messageBody).toContain('"type":"revision"')
-    expect(task.phase).toBe('awaiting_revision_confirmation')
-    expect(task.pendingRevision).toMatchObject({
-      baseBuildId: 'build-1',
-      baseVersion: 1,
-      targetVersion: 2,
-      strategy: 'patch',
-    })
+      expect(messageBody).toContain('"type":"revision"')
+      expect(task.phase).toBe('awaiting_revision_confirmation')
+      expect(task.pendingRevision).toMatchObject({
+        baseBuildId: 'build-1',
+        baseVersion: 1,
+        targetVersion: 2,
+        strategy: 'patch',
+      })
 
-    const editedConfirmation = {
-      ...confirmation,
-      copy: { ...confirmation.copy, title: '用户确认后的 v2 标题' },
-    }
-    const confirmResponse = await harness.handlers.confirm(
-      request('/api/playable-tasks/owned/confirm', 'POST', {
-        revisionId: task.pendingRevision?.id,
-        confirmation: editedConfirmation,
-      }),
-      { params: Promise.resolve({ taskId: 'owned' }) },
-    )
-    expect(confirmResponse.status).toBe(202)
-    await harness.scheduled.at(-1)!()
+      const savedTask = await harness.repository.findOwnedTask('owned', 'user-1')
+      expect(savedTask?.phase).toBe('awaiting_revision_confirmation')
+      expect(savedTask?.pendingRevision?.id).toBe(task.pendingRevision?.id)
+      const savedReply = (await harness.repository.listMessages('owned')).findLast((item) => item.role === 'agent')
+      expect(JSON.parse(savedReply!.content).confirmation).toEqual(confirmation)
 
-    expect(harness.agent.build).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        confirmation: editedConfirmation,
-        revision: expect.objectContaining({ strategy: 'patch', baseBuildId: 'build-1' }),
-        baseHtml: '<html>version one</html>',
-      }),
-    )
-    expect(task.phase).toBe('ready')
-    expect(task.pendingRevision).toBeNull()
-    expect(harness.repository.builds.filter((build) => build.status === 'succeeded')).toHaveLength(2)
-  })
+      const editedConfirmation = {
+        ...confirmation,
+        copy: { ...confirmation.copy, title: '用户确认后的 v2 标题' },
+      }
+      const confirmResponse = await harness.handlers.confirm(
+        request('/api/playable-tasks/owned/confirm', 'POST', {
+          revisionId: task.pendingRevision?.id,
+          confirmation: editedConfirmation,
+        }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(confirmResponse.status).toBe(202)
+      await harness.scheduled.at(-1)!()
+
+      expect(harness.agent.build).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          confirmation: editedConfirmation,
+          revision: expect.objectContaining({ strategy: 'patch', baseBuildId: 'build-1' }),
+          baseHtml: '<html>version one</html>',
+        }),
+      )
+      expect(task.phase).toBe('ready')
+      expect(task.pendingRevision).toBeNull()
+      expect(harness.repository.builds.filter((build) => build.status === 'succeeded')).toHaveLength(2)
+    },
+  )
 
   it.each([null, 5])(
     'locks a manually selected v2 regardless of the model base %s or regeneration strategy',
@@ -2399,35 +2408,51 @@ describe('playable task API', () => {
     },
   )
 
-  it('rejects an unavailable requested base version without using the latest build', async () => {
-    const task = harness.repository.tasks.get('owned')!
-    task.phase = 'ready'
-    task.confirmation = confirmation
-    task.latestArtifactKey = 'latest/playable.html'
-    harness.repository.builds.push({
-      id: 'build-1',
-      taskId: 'owned',
-      status: 'succeeded',
-      confirmation,
-      artifactKey: task.latestArtifactKey,
-      createdAt: new Date(1),
-      completedAt: new Date(2),
-    })
-    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
-      kind: 'revision',
-      message: '修改',
-      reasoning: '修改',
-      revision: { ...patchRevision, requestedBaseVersion: 99 },
-      confirmation,
-    })
-    const response = await harness.handlers.message(
-      request('/api/playable-tasks/owned/messages', 'POST', { message: '基于 v99 修改' }),
-      { params: Promise.resolve({ taskId: 'owned' }) },
-    )
-    expect(await response.text()).not.toContain('"type":"revision"')
-    expect(task.phase).toBe('ready')
-    expect(harness.agent.build).not.toHaveBeenCalled()
-  })
+  it.each([1, 99])(
+    'rejects unread historical or unavailable base %s without using the latest build',
+    async (requestedBaseVersion) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'ready'
+      task.confirmation = confirmation
+      task.latestArtifactKey = 'latest/playable.html'
+      harness.repository.builds.push({
+        id: 'build-1',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: 'historical/playable.html',
+        createdAt: new Date(1),
+        completedAt: new Date(2),
+      })
+      harness.repository.builds.push({
+        id: 'build-2',
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation,
+        artifactKey: task.latestArtifactKey,
+        createdAt: new Date(3),
+        completedAt: new Date(4),
+      })
+      vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+        kind: 'revision',
+        message: '修改',
+        reasoning: '修改',
+        revision: { ...patchRevision, requestedBaseVersion },
+        confirmation,
+      })
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '基于 v99 修改' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      const body = await response.text()
+      expect(body).not.toContain('"type":"revision"')
+      expect(body).toContain('修改基准版本未通过校验')
+      expect(body).not.toContain('任务状态已变化')
+      expect(task.pendingRevision).toBeNull()
+      expect(task.phase).toBe('ready')
+      expect(harness.agent.build).not.toHaveBeenCalled()
+    },
+  )
 
   it('keeps an ambiguous theme in draft and streams a clarification with full conversation context', async () => {
     const requirementBrief = {
