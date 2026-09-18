@@ -1,3 +1,6 @@
+import { prepareSandboxForHarness } from '@ai-sdk/harness/agent'
+import { codex } from '@ai-sdk/harness-codex'
+import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import { Sandbox, type Snapshot } from '@vercel/sandbox'
 import { config } from 'dotenv'
 import { access, readFile, writeFile } from 'node:fs/promises'
@@ -13,8 +16,10 @@ config({ path: '.env.local', quiet: true })
 const assets = path.resolve('scripts/playable-sandbox')
 // 本地只保存云端快照的 ID；该文件不会被 Next.js 自动加载，需手动配置到部署环境。
 const output = path.resolve('.env.playable-sandbox.local')
+// @ai-sdk/harness-codex 的 bootstrap 目录；安装成功后在此写入 `.bootstrap-<配方哈希>.ok` 标记。
+const CODEX_BOOTSTRAP_DIR = '.harness-bootstrap/codex'
 
-/** 一次性预装工具，验证原环境和恢复环境后，才生成可用于部署的快照配置。 */
+/** 一次性预装工具和 Codex bridge，验证原环境和恢复环境后，才生成可用于部署的快照配置。 */
 export async function preparePlayableSandbox() {
   // 避免覆盖已有部署配置，也避免重复创建不必要的云端资源。
   const exists = await access(output).then(
@@ -106,6 +111,24 @@ export async function preparePlayableSandbox() {
     console.log('Checking installed browser')
     await run('node', [`${PLAYABLE_TOOLS_ROOT}/check.cjs`, '--launch'], false, checkEnv)
     await run('rm', ['-r', '/tmp/playable-tools-bootstrap'])
+    console.log('Pre-installing Codex bridge')
+    // 构建时 HarnessAgent 会先检查 bootstrap 标记，缺失才写入 bridge 并 pnpm install。
+    // 预先在快照中执行同一份配方，恢复出的构建环境即可跳过安装，运行时也不再需要访问 npm。
+    // 配方哈希随 @ai-sdk/harness-codex 版本变化；升级该依赖后需要重新生成快照，否则会退回现场安装。
+    const setupSession = await createVercelSandbox({ sandbox }).createSession()
+    let codexRecipe: string | undefined
+    try {
+      const prepared = await prepareSandboxForHarness({ session: setupSession, harnesses: [codex] })
+      codexRecipe = prepared.recipeIdentities[codex.harnessId]
+    } catch (error) {
+      const detail = sanitizeBuildActivityDetail(
+        { input: 'prepareSandboxForHarness', output: error instanceof Error ? error.message : String(error) },
+        [token ?? '', teamId ?? '', projectId ?? ''],
+      )
+      await writeFile('.playable-sandbox-setup.log', JSON.stringify(detail, null, 2), { mode: 0o600 })
+      throw new Error('Snapshot setup command failed')
+    }
+    if (!codexRecipe) throw new Error('Codex bridge bootstrap recipe is missing')
     console.log('Saving browser tools snapshot')
     // 快照保存在 Vercel 云端且不自动过期；后续每个任务从它创建独立环境。
     snapshot = await sandbox.snapshot({ expiration: 0 })
@@ -124,6 +147,10 @@ export async function preparePlayableSandbox() {
     if (check.exitCode !== 0) throw new Error('Restored browser check failed')
     const ffmpegCheck = await restored.runCommand({ cmd: 'ffmpeg', args: ['-hide_banner', '-version'] })
     if (ffmpegCheck.exitCode !== 0) throw new Error('Restored ffmpeg check failed')
+    // 标记必须位于构建会话的默认工作目录下，HarnessAgent 才会认定 bridge 已安装。
+    const marker = path.posix.join(restored.currentSession().cwd, CODEX_BOOTSTRAP_DIR, `.bootstrap-${codexRecipe}.ok`)
+    const bridgeCheck = await restored.runCommand({ cmd: 'test', args: ['-f', marker] })
+    if (bridgeCheck.exitCode !== 0) throw new Error('Restored Codex bridge check failed')
     // wx 防止并发覆盖；只有恢复验证成功的快照才能进入部署配置。
     await writeFile(output, `PLAYABLE_SANDBOX_SNAPSHOT_ID=${snapshot.snapshotId}\n`, { flag: 'wx', mode: 0o600 })
     saved = true
