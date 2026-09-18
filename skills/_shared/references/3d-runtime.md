@@ -44,6 +44,25 @@ automatically embedded. Import resource files and pass the resulting data URLs t
 loaders. Inline shell CSS and its resources yourself. Do not use CDN URLs, import maps,
 runtime bare imports or remote fonts. The bundle report is work/bundle-report.json.
 
+## Revisions and startup repairs
+
+For JavaScript changes to a bundled Three.js playable, including patch revisions,
+edit `work/game.js` and its source modules, then rerun the bundler. Treat
+`current-playable.html` as behavior and asset evidence, not editable library source.
+Do not insert handlers into the minified dependency scope or reuse its short variable
+names: a library `var` assignment can overwrite a hoisted game function with the same
+name and make `addEventListener` fail before initialization. If source modules are
+unavailable, reconstruct the game module and HTML shell with explicit dependency
+imports and preserve the confirmed behavior and assets before bundling again.
+Text-only shell changes do not require reconstructing game logic.
+
+Keep the whole-bundle DOM-ready guard. A persistent loading overlay can also mean
+an exception before the async initializer; inspect the first runtime error rather
+than removing the overlay or adding a delay. For synthesized audio, configure and
+connect each source, call `start()` before `stop()`, and use a new source for each
+playback. Check the first gameplay input as well as startup: an audio exception can
+interrupt the shot or move before the gameplay state changes.
+
 ## Implementation and acceptance
 
 Three.js supplies rendering, not game rules or rigid-body physics. Add Rapier only for
@@ -72,6 +91,11 @@ The browser scenario must verify WebGL renders a visible scene, actual gameplay 
 changes engine state, the confirmed ending, and portrait/landscape rendering. Inspect
 screenshots for camera framing and lighting. Check network and console errors, including
 model/texture/WASM initialization. A successful bundle alone is not gameplay acceptance.
+When browser acceptance is enabled, test the final bundled `output.html` after the
+last edit: loading must complete, repeated gameplay inputs must change real state,
+and drag handling (when used), mute and portrait/landscape resizing must work without
+uncaught errors. Source-only tests or checks of an earlier artifact do not verify the
+delivered bundle. When validation is disabled, report these checks as not performed.
 
 References: https://threejs.org/manual/en/installation.html,
 https://esbuild.github.io/api/, https://rapier.rs/docs/user_guides/javascript/getting_started_js/
