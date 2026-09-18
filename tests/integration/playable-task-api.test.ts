@@ -2682,6 +2682,40 @@ describe('playable task API', () => {
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('sk-test-secret')
   })
 
+  // 同时覆盖诊断写入成功与失败：任务状态、错误响应及保密边界都不应受诊断存储影响。
+  it.each([false, true])(
+    'keeps the error response and task state when diagnostic persistence fails: %s',
+    async (storageFails) => {
+      const diagnostic = {
+        version: 1 as const,
+        stage: 'plan_execution' as const,
+        step: 1,
+        rule: 'revision_capabilities_missing',
+        issues: [],
+      }
+      vi.mocked(harness.agent.proposeConfirmation).mockRejectedValueOnce(
+        new PlayableAgentError('output_invalid', diagnostic),
+      )
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      if (storageFails)
+        vi.spyOn(harness.repository, 'appendEvent').mockRejectedValueOnce(new Error('private database detail'))
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '跳转没了' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      const body = await response.text()
+      expect(body).toContain('Agent 返回的需求方案格式无效，请重试')
+      expect(body).not.toContain('revision_capabilities_missing')
+      expect(body).not.toContain('private database detail')
+      expect(harness.repository.tasks.get('owned')?.phase).toBe('draft')
+      expect(harness.repository.messages).toHaveLength(1)
+      const event = harness.repository.events.find((event) => event.type === 'requirement_processing_failed')
+      if (storageFails) expect(event).toBeUndefined()
+      else expect(JSON.parse(event!.message!)).toEqual(diagnostic)
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('private database detail')
+    },
+  )
+
   it('cancels an in-flight message stream without writing to a closed controller or leaking a rejection', async () => {
     let resolveProposal!: (value: PlayableAgentReply) => void
     vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(

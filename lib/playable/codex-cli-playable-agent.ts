@@ -1,3 +1,4 @@
+import { requirementDiagnostic, type RequirementDiagnosticStage } from './requirement-diagnostics'
 import { attachImportedManifest } from './task-imports'
 import { importedRuntimePreparationCommand } from './imported-runtime'
 import { safeImportPath } from './asset-archive'
@@ -374,9 +375,12 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             }
           },
         })
+        // 标记失败发生在哪个处理阶段，避免所有校验问题都只留下 output_invalid。
+        let validationStage: RequirementDiagnosticStage = 'step_validation'
         try {
           const step = parseRequirementAgentStep(result)
           if (step.kind === 'tool_calls') {
+            validationStage = 'analysis_tools'
             const executed = await executeRequirementAnalysisTools({
               calls: step.toolCalls,
               options: { ...options, abortSignal: controller.signal },
@@ -385,6 +389,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             toolResults.push(...executed)
             continue
           }
+          validationStage = 'plan_execution'
           const latestResearch = [...toolResults]
             .reverse()
             .find((entry) => entry.tool === 'search_market_references' && entry.status === 'completed')
@@ -394,15 +399,24 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             prompt: input.prompt,
             assets: input.assets,
             hasArtifact: input.hasArtifact,
+            sourceHtmlAssetId: input.sourceHtml?.assetId,
             marketResearch: latestResearch ? marketResearchReportSchema.parse(latestResearch.result) : undefined,
           }).reply
         } catch (error) {
-          if (error instanceof PlayableAgentError) throw error
+          if (error instanceof PlayableAgentError && error.code !== 'output_invalid') throw error
           console.error('Codex CLI requirement plan did not pass validation')
-          throw new PlayableAgentError('output_invalid')
+          // 保留下层已识别的原因，只覆盖真实轮次；其他异常仅提取安全诊断字段。
+          const diagnostic =
+            error instanceof PlayableAgentError && error.diagnostic
+              ? { ...error.diagnostic, step: stepNumber + 1 }
+              : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
+          throw new PlayableAgentError('output_invalid', diagnostic)
         }
       }
-      throw new PlayableAgentError('output_invalid')
+      throw new PlayableAgentError(
+        'output_invalid',
+        requirementDiagnostic(undefined, 'step_limit', MAX_REQUIREMENT_AGENT_STEPS, requirementAgentStepOutputSchema),
+      )
     } finally {
       this.activeTasks.delete(input.taskId)
       await rm(workspace, { recursive: true, force: true })

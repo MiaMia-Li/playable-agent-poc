@@ -526,6 +526,8 @@ export const renderingDecisionSchema = z.strictObject({
 function validateRenderingDecision(
   proposal: { rendering?: z.infer<typeof renderingDecisionSchema>; routing: z.infer<typeof routingDecisionSchema> },
   context: z.RefinementCtx,
+  // 仅模型传输层可延后 template/freeform 组合校验；最终方案默认仍严格校验。
+  deferTemplateRoute = false,
 ) {
   const decision = proposal.rendering
   if (!decision) return // Historical confirmations keep their original implementation.
@@ -537,7 +539,7 @@ function validateRenderingDecision(
       path: ['rendering'],
       message: 'Template physics requires the template renderer',
     })
-  if (decision.renderer === 'template' && proposal.routing.match === 'freeform')
+  if (!deferTemplateRoute && decision.renderer === 'template' && proposal.routing.match === 'freeform')
     context.addIssue({
       code: 'custom',
       path: ['rendering'],
@@ -575,7 +577,9 @@ export const generatedConfirmationProposalSchema = z
     delivery: generatedDeliverySchema,
   })
   .superRefine(validateConfirmationPresentation)
-  .superRefine(validateRenderingDecision)
+  // 模型不能填写宿主管理的源码绑定；此处只延后依赖该上下文的 template/freeform 校验。
+  // executeRequirementToolPlan 根据真实源码决定是否保留原引擎，最终仍经 confirmationProposalSchema 校验。
+  .superRefine((proposal, context) => validateRenderingDecision(proposal, context, true))
 
 export const revisionStrategies = ['patch', 'regenerate'] as const
 

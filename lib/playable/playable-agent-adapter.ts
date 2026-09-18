@@ -1,3 +1,4 @@
+import type { RequirementDiagnostic } from './requirement-diagnostics'
 import type { ImportedAssetSummary } from './task-imports'
 import type { ImportedFile } from './asset-archive'
 import type { inspectGlb } from './glb'
@@ -157,7 +158,11 @@ export type PlayableAgentErrorCode =
   | 'output_invalid'
 
 export class PlayableAgentError extends Error {
-  constructor(readonly code: PlayableAgentErrorCode) {
+  constructor(
+    readonly code: PlayableAgentErrorCode,
+    /** 仅携带经过白名单筛选的诊断元数据，不附加原始异常或模型输出。 */
+    readonly diagnostic?: RequirementDiagnostic,
+  ) {
     super('Playable agent operation failed')
     this.name = 'PlayableAgentError'
   }
