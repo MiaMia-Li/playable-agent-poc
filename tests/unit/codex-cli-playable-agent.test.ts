@@ -1,3 +1,4 @@
+import { triangleGlb } from '../fixtures/glb'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -299,6 +300,14 @@ describe('CodexCliPlayableAgent', () => {
       )
       const resources = await readFile(path.join(invocation.workspace, 'asset-manifest.json'), 'utf8')
       expect(resources).not.toContain('reference-images')
+      expect(JSON.parse(resources).assets[0]).toMatchObject({
+        mimeType: 'model/gltf-binary',
+        model: { meshes: 1 },
+        workspacePath: 'user-assets/tileFaces/model-block.glb',
+      })
+      expect(await readFile(path.join(invocation.workspace, 'user-assets/tileFaces/model-block.glb'))).toEqual(
+        Buffer.from(triangleGlb()),
+      )
       expect(invocation.prompt).toContain('not game assets')
       invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
       invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
@@ -311,6 +320,16 @@ describe('CodexCliPlayableAgent', () => {
     const buildRunner = vi.fn(async () => result)
     const input: ConfirmedBuildInput = {
       taskId: 'task-cli-build',
+      assets: [
+        {
+          id: 'model',
+          slot: 'tileFaces',
+          filename: 'block.glb',
+          mimeType: 'model/gltf-binary',
+          bytes: triangleGlb(),
+          size: triangleGlb().length,
+        },
+      ],
       onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,

@@ -17,7 +17,7 @@ import path from 'node:path'
 import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import type { BuildResult, ConfirmedBuildInput, PlayableAssetManifest } from './playable-agent-adapter'
 import { createExternalErrorLoggingFetch, logExternalRequestError } from './external-request-logging'
-import { createAssetSourceManifest, createValidationReport } from './production-contract'
+import { buildAssetManifestEntry, createAssetSourceManifest, createValidationReport } from './production-contract'
 import { redactSecrets } from './redact'
 import { confirmationProposalSchema } from './schemas'
 import { OPENROUTER_BASE_URL } from './shared-ai-key'
@@ -350,9 +350,7 @@ export async function runPlayableBuild(
         content: asset.bytes,
         abortSignal: dependencies.abortSignal,
       })
-      const { bytes: _bytes, ...metadata } = asset
-      void _bytes
-      assetManifest.assets.push({ ...metadata, workspacePath })
+      assetManifest.assets.push(buildAssetManifestEntry(asset, workspacePath))
       assetManifest.sources.find((source) => source.slot === asset.slot)?.files.push(asset.filename)
     }
     await sandbox.writeTextFile({
