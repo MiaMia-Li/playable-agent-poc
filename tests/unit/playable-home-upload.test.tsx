@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest'
+import { triangleGlb } from '../fixtures/glb'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -56,7 +57,7 @@ describe('PlayableHome reference uploads', () => {
 
     const image = new File(['image'], 'style.png', { type: 'image/png' })
     const video = new File(['video'], 'motion.webm', { type: 'video/webm' })
-    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), { target: { files: [image, video] } })
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), { target: { files: [image, video] } })
 
     expect(screen.getByRole('list', { name: '已选择的参考素材' })).toHaveTextContent('style.png')
     expect(screen.getByRole('list', { name: '已选择的参考素材' })).toHaveTextContent('motion.webm')
@@ -204,7 +205,7 @@ describe('PlayableHome reference uploads', () => {
       <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
     )
 
-    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
       target: {
         files: [
           new File(['svg'], 'unsafe.svg', { type: 'image/svg+xml' }),
@@ -242,7 +243,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '原样重试' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
       target: {
         files: [
           new File(['ok'], 'success.png', { type: 'image/png' }),
@@ -282,7 +283,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '第一版' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片或视频'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
       target: { files: [new File(['x'], 'reference.png', { type: 'image/png' })] },
     })
     fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
@@ -291,4 +292,27 @@ describe('PlayableHome reference uploads', () => {
     fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
     await waitFor(() => expect(taskCount).toBe(2))
   })
+})
+
+it('uploads a GLB with missing browser MIME into game resources from the home page', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+    if (String(input).endsWith('/assets'))
+      return Response.json({ asset: { id: 'model-1', slot: 'models', mimeType: 'model/gltf-binary' } }, { status: 201 })
+    return Response.json({ task: { id: 'model-task' } }, { status: 201 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(
+    <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+  )
+  const bytes = triangleGlb()
+  const file = new File([bytes], 'block.glb')
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer })
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), { target: { files: [file] } })
+  expect(screen.getByText('block.glb')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+  await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/model-task'))
+  const form = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/assets'))![1]!.body as FormData
+  expect(form.get('slot')).toBe('models')
+  expect((form.get('file') as File).type).toBe('model/gltf-binary')
 })

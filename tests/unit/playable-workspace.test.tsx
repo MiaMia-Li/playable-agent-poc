@@ -1231,7 +1231,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片或视频'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频或 GLB 模型'), {
       target: {
         files: [
           new File(['image'], 'board.png', { type: 'image/png' }),
@@ -1311,7 +1311,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片或视频'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频或 GLB 模型'), {
       target: {
         files: [
           new File(['image'], 'success.png', { type: 'image/png' }),
@@ -1370,7 +1370,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    const input = screen.getByLabelText('选择参考图片或视频')
+    const input = screen.getByLabelText('选择参考图片、视频或 GLB 模型')
     fireEvent.change(input, {
       target: { files: [new File(['local'], 'local.png', { type: 'image/png' })] },
     })
@@ -1466,7 +1466,10 @@ describe('PlayableWorkspace', () => {
     expect(screen.getByRole('button', { name: 'AI 生成结束卡（暂不支持）' })).toBeDisabled()
 
     const backgroundInput = screen.getByLabelText('为背景与棋盘上传素材')
-    expect(backgroundInput).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp,image/gif')
+    expect(backgroundInput).toHaveAttribute(
+      'accept',
+      'image/png,image/jpeg,image/webp,image/gif,model/gltf-binary,.glb',
+    )
     fireEvent.change(backgroundInput, {
       target: { files: [new File(['image'], 'board.png', { type: 'image/png' })] },
     })
@@ -1892,4 +1895,49 @@ it.each(sourceTemplateIds)('preserves native conversion UI defaults for %s', (id
   ).toEqual(uploaded)
   render(<ConfirmationTable proposal={bound} onChange={vi.fn()} onConfirm={vi.fn()} />)
   expect(screen.getByText('复用模板原生 CTA 和结束页，不额外添加。文案与素材修改应用到原生界面。')).toBeInTheDocument()
+})
+
+it('shows model preview and role editing, and blocks confirmation until a 3D route is chosen', () => {
+  const onChange = vi.fn()
+  const ready: ConfirmationProposal = {
+    ...proposal,
+    storeUrl: 'https://example.com',
+    sourceTemplateId: null,
+    resources: {
+      ...proposal.resources,
+      tileFaces: { status: '用户上传', treatment: 'block.glb 是积木' },
+      audio: { status: '内置默认', treatment: '默认音频' },
+    },
+  }
+  const props = {
+    onChange,
+    onConfirm: vi.fn(),
+    uploadedAssets: [
+      {
+        id: 'model',
+        filename: 'block.glb',
+        mimeType: 'model/gltf-binary',
+        size: 100,
+        slot: 'tileFaces' as const,
+        durationSeconds: null,
+      },
+    ],
+    assetPreviewUrl: () => '/api/model',
+  }
+  const view = render(<ConfirmationTable {...props} proposal={ready} />)
+  expect(screen.getByRole('button', { name: '预览 3D' })).toBeVisible()
+  expect(screen.getByText(/GLB 模型需要 Three.js/)).toBeVisible()
+  fireEvent.change(screen.getByLabelText('牌面素材用途说明'), { target: { value: 'block.glb 是会倒塌的积木' } })
+  expect(onChange).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resources: expect.objectContaining({ tileFaces: { status: '用户上传', treatment: 'block.glb 是会倒塌的积木' } }),
+    }),
+  )
+  view.rerender(
+    <ConfirmationTable
+      {...props}
+      proposal={{ ...ready, rendering: { renderer: 'threejs', physics: 'rapier', reason: '立体积木碰撞' } }}
+    />,
+  )
+  expect(screen.queryByText(/GLB 模型需要 Three.js/)).not.toBeInTheDocument()
 })

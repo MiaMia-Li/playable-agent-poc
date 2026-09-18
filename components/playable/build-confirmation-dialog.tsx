@@ -1,5 +1,7 @@
 'use client'
 
+import { confirmationResource } from '@/lib/playable/schemas'
+
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -130,7 +132,7 @@ export function BuildConfirmationDialog({ buildId, confirmation }: BuildConfirma
                 </h3>
                 <div className="min-w-0 divide-y">
                   {presentation.assetFields.map(({ slot, label }) => {
-                    const resource = confirmation.resources[slot]
+                    const resource = confirmationResource(confirmation, slot)
                     return (
                       <div
                         key={slot}

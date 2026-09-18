@@ -1,3 +1,4 @@
+import { hasIncompatibleModelAssets } from './asset-policy'
 import { isPlayableSandboxValidationEnabled } from './validation-policy'
 import { renderingRevision } from './rendering-policy'
 import { sourceTemplateFile } from './build-skill'
@@ -1220,7 +1221,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         .filter(
           (asset): asset is PlayableAsset & { slot: keyof ConfirmationProposal['resources'] } =>
             isPlayableResourceAssetSlot(asset.slot) &&
-            sanitizedConfirmation.resources[asset.slot].status === '用户上传',
+            sanitizedConfirmation.resources[asset.slot]?.status === '用户上传',
         )
         .map(async (asset) => {
           const stream = await artifactStore.get(asset.storageKey)
@@ -2750,6 +2751,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.repository.listAssets(access.task.id, access.userId),
         gameplayBlueprintDocumentFor(access.task),
       ])
+      if (hasIncompatibleModelAssets(sanitized, assets)) {
+        return jsonError(400, 'GLB 模型需要 Three.js 自定义构建，请先更新确认方案的渲染方式')
+      }
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
         ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),

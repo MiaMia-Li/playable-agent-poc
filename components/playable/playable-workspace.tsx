@@ -29,9 +29,11 @@ import { PlayablePreview } from './playable-preview'
 import { AssetPreviewList } from './asset-preview-list'
 import {
   MAX_HOME_ATTACHMENTS,
-  PLAYABLE_REFERENCE_ACCEPT,
+  PLAYABLE_ATTACHMENT_ACCEPT,
   maxAssetBytesForSlot,
   referenceSlotForMimeType,
+  attachmentSlotForFile,
+  playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
@@ -686,7 +688,7 @@ export function PlayableHome({
       }
       for (const { id, file } of attachmentSnapshot) {
         if (retry.uploadedIds.has(id)) continue
-        const slot = referenceSlotForMimeType(file.type)
+        const slot = attachmentSlotForFile(file)
         if (!slot) throw new Error('参考素材格式不受支持')
         const uploadedAsset = await uploadPlayableAsset(retry.taskId, slot, file, {
           fallbackMessage: '参考素材上传失败',
@@ -752,9 +754,9 @@ export function PlayableHome({
         setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
         break
       }
-      const slot = referenceSlotForMimeType(file.type)
+      const slot = attachmentSlotForFile(file)
       if (!slot) {
-        setError('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
+        setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材')
         continue
       }
       if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
@@ -858,7 +860,7 @@ export function PlayableHome({
                 items={attachments.map(({ id, file, previewUrl }) => ({
                   id,
                   filename: file.name,
-                  mimeType: file.type,
+                  mimeType: playableFileMimeType(file),
                   size: file.size,
                   previewUrl,
                 }))}
@@ -874,7 +876,7 @@ export function PlayableHome({
               variant="ghost"
               disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
               onClick={() => attachmentInput.current?.click()}
-              aria-label="添加参考图片或视频"
+              aria-label="添加参考图片、视频或 GLB 模型"
             >
               <Paperclip aria-hidden="true" />
             </Button>
@@ -883,8 +885,8 @@ export function PlayableHome({
               className="sr-only"
               type="file"
               multiple
-              accept={PLAYABLE_REFERENCE_ACCEPT}
-              aria-label="上传参考图片或视频"
+              accept={PLAYABLE_ATTACHMENT_ACCEPT}
+              aria-label="上传参考图片、视频或 GLB 模型"
               disabled={!user || creating}
               onChange={(event) => {
                 addAttachments(event.target.files)

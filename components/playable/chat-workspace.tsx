@@ -20,6 +20,7 @@ import {
   Square,
   X,
 } from 'lucide-react'
+import { defaultConfirmationPresentation } from '@/lib/playable/schemas'
 import type {
   ClarificationOption,
   ConfirmationProposal,
@@ -39,10 +40,12 @@ import {
   MAX_ASSETS_PER_SLOT,
   MAX_HOME_ATTACHMENTS,
   MAX_TASK_ASSETS,
-  PLAYABLE_REFERENCE_ACCEPT,
+  PLAYABLE_ATTACHMENT_ACCEPT,
   maxAssetBytesForSlot,
   playableAssetAccept,
   referenceSlotForMimeType,
+  attachmentSlotForFile,
+  playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
 import type { AppliedMediaResolution } from '@/lib/playable/video-gameplay-analyst'
@@ -114,6 +117,7 @@ const defaultResourceTreatments: Record<string, string> = {
   animationEffects: '使用系统提供的动画与特效',
   audio: '使用系统提供的音频',
   endCard: '使用系统提供的结束卡',
+  models: '不使用额外 3D 模型',
 }
 
 interface ChatWorkspaceProps {
@@ -323,7 +327,7 @@ function assetsForProposal(proposal: ConfirmationProposal, assets: SafePlayableA
   return assets.filter((asset) => {
     if (!isPlayableResourceAssetSlot(asset.slot)) return true
     const resource = proposal.resources[asset.slot]
-    if (resource.status !== '用户上传') return false
+    if (resource?.status !== '用户上传') return false
     return resource.treatment
       .split('、')
       .map((filename) => filename.trim())
@@ -519,8 +523,8 @@ export function ChatWorkspace({
             items.map((item) => (item.id === attachment.id ? { ...item, status: 'uploading' } : item)),
           )
           try {
-            const slot = referenceSlotForMimeType(attachment.file.type)
-            if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材')
+            const slot = attachmentSlotForFile(attachment.file)
+            if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材')
             const uploadedAsset = await uploadPlayableAsset(taskId, slot, attachment.file, {
               fallbackMessage: '素材上传失败',
               signal: controller.signal,
@@ -819,7 +823,8 @@ export function ChatWorkspace({
     const uploaded: SafePlayableAsset[] = []
     try {
       for (const file of acceptedFiles) {
-        if (!playableAssetAccept(slot).split(',').includes(file.type)) throw new Error('素材格式不受支持')
+        if (!playableAssetAccept(slot).split(',').includes(playableFileMimeType(file)))
+          throw new Error('素材格式不受支持')
         uploaded.push(await uploadPlayableAsset(taskId, slot, file, { fallbackMessage: '素材上传失败' }))
       }
     } catch (cause) {
@@ -830,8 +835,17 @@ export function ChatWorkspace({
         updateSelectedAssets(nextAssets)
         if (isPlayableResourceAssetSlot(slot)) {
           const slotAssets = [...selectedAssets, ...uploaded].filter((asset) => asset.slot === slot)
+          const presentation = proposal.presentation ?? defaultConfirmationPresentation
           updateCurrentProposal({
             ...proposal,
+            ...(slot === 'models' && !presentation.assetFields.some((field) => field.slot === 'models')
+              ? {
+                  presentation: {
+                    ...presentation,
+                    assetFields: [...presentation.assetFields, { slot: 'models', label: '3D 模型' }],
+                  },
+                }
+              : {}),
             resources: {
               ...proposal.resources,
               [slot]: { status: '用户上传', treatment: slotAssets.map((asset) => asset.filename).join('、') },
@@ -879,9 +893,9 @@ export function ChatWorkspace({
       const staged: ComposerAttachment[] = []
       let validationError = files.length > remainingCapacity ? '部分素材超出数量上限，已自动忽略' : ''
       for (const file of files.slice(0, remainingCapacity)) {
-        const slot = referenceSlotForMimeType(file.type)
+        const slot = attachmentSlotForFile(file)
         if (!slot) {
-          validationError = '仅支持 PNG、JPEG、WebP、GIF、MP4 和 WebM 参考素材'
+          validationError = '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材'
           continue
         }
         if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
@@ -893,7 +907,7 @@ export function ChatWorkspace({
           id: `composer-attachment-${composerAttachmentSequence.current}`,
           file,
           filename: file.name,
-          mimeType: file.type,
+          mimeType: playableFileMimeType(file),
           status: 'staged',
         })
       }
@@ -973,7 +987,7 @@ export function ChatWorkspace({
     const canConfirmPhase = confirmsRevision
       ? phase === 'awaiting_revision_confirmation' || phase === 'failed'
       : phase === 'awaiting_confirmation' || phase === 'failed'
-    if (!proposal || confirming || !canConfirmPhase) return
+    if (!proposal || confirming || !canConfirmPhase || !isConfirmationReady(proposal, selectedAssets)) return
     setConfirming(true)
     setError('')
     try {
@@ -1001,7 +1015,7 @@ export function ChatWorkspace({
   )
   const showsInitialConfirmation = Boolean(proposal && !hasArtifact)
   const showsRevisionConfirmation = Boolean(proposal && hasArtifact && revision)
-  const initialConfirmationReady = proposal ? isConfirmationReady(proposal) : false
+  const initialConfirmationReady = proposal ? isConfirmationReady(proposal, selectedAssets) : false
   const buildInProgress = phase === 'building' || phase === 'validating'
   const confirmActionVisible = showsInitialConfirmation || showsRevisionConfirmation
   const confirmablePhase = showsRevisionConfirmation
@@ -1555,7 +1569,7 @@ export function ChatWorkspace({
               type="button"
               size="icon"
               variant="ghost"
-              aria-label="添加参考图片或视频"
+              aria-label="添加参考图片、视频或 GLB 模型"
               disabled={!canCompose || sending}
               onClick={() => composerAttachmentInput.current?.click()}
             >
@@ -1566,8 +1580,8 @@ export function ChatWorkspace({
               className="sr-only"
               type="file"
               multiple
-              accept={PLAYABLE_REFERENCE_ACCEPT}
-              aria-label="选择参考图片或视频"
+              accept={PLAYABLE_ATTACHMENT_ACCEPT}
+              aria-label="选择参考图片、视频或 GLB 模型"
               disabled={!canCompose || sending}
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? [])

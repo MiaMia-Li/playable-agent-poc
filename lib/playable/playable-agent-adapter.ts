@@ -1,3 +1,4 @@
+import type { inspectGlb } from './glb'
 import type { BuildActivityCallback } from './build-activity'
 import type {
   ConfirmationProposal,
@@ -35,12 +36,12 @@ export interface PlayableAssetManifest {
   }
   sources: Array<{
     slot: PlayableResourceAssetSlot
-    status: ConfirmationProposal['resources'][PlayableResourceAssetSlot]['status']
+    status: NonNullable<ConfirmationProposal['resources'][PlayableResourceAssetSlot]>['status']
     treatment: string
     origin: string
     files: string[]
   }>
-  assets: Array<Omit<PlayableBuildAsset, 'bytes'> & { workspacePath: string }>
+  assets: Array<Omit<PlayableBuildAsset, 'bytes'> & { workspacePath: string; model?: ReturnType<typeof inspectGlb> }>
   entrypoint: 'playable.html'
 }
 

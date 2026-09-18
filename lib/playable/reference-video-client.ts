@@ -1,3 +1,5 @@
+import { GLB_MIME_TYPE, playableFileMimeType } from './asset-policy'
+import { inspectGlb, GLB_UPLOAD_ERROR } from './glb'
 import { put } from '@vercel/blob/client'
 import { MAX_FORM_UPLOAD_BYTES, MAX_REFERENCE_VIDEO_SECONDS, type PlayableAssetSlot } from './asset-policy'
 import type { SafePlayableAsset } from './task-assets'
@@ -65,6 +67,7 @@ async function uploadDurationSeconds(slot: PlayableAssetSlot, file: File): Promi
 
 /** The server repeats the duration check; its refusal gets the same message. */
 async function assetUploadErrorMessage(response: Response, fallback: string): Promise<string> {
+  if (response.status === 415) return '素材格式不受支持；GLB 需包含完整网格及内嵌贴图，且不使用压缩解码器'
   if (response.status !== 413) return fallback
   const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined
   return body?.error === 'Video too long' ? REFERENCE_VIDEO_TOO_LONG_MESSAGE : fallback
@@ -128,6 +131,15 @@ export async function uploadPlayableAsset(
   file: File,
   options: { fallbackMessage: string; signal?: AbortSignal },
 ): Promise<SafePlayableAsset> {
+  const mimeType = playableFileMimeType(file)
+  if (mimeType === GLB_MIME_TYPE) {
+    try {
+      inspectGlb(new Uint8Array(await file.arrayBuffer()))
+    } catch {
+      throw new Error(GLB_UPLOAD_ERROR)
+    }
+    if (file.type !== mimeType) file = new File([file], file.name, { type: mimeType })
+  }
   const assetsUrl = `/api/playable-tasks/${encodeURIComponent(taskId)}/assets`
   const durationSeconds = await uploadDurationSeconds(slot, file)
   if (file.size > MAX_FORM_UPLOAD_BYTES) {

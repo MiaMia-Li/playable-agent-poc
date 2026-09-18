@@ -4,6 +4,7 @@ export const playableResourceAssetSlots = [
   'animationEffects',
   'audio',
   'endCard',
+  'models',
 ] as const
 
 export const playableReferenceAssetSlots = ['referenceImage', 'referenceVideo'] as const
@@ -39,10 +40,26 @@ export const PLAYABLE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp
 export const PLAYABLE_AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'] as const
 export const PLAYABLE_VIDEO_MIME_TYPES = ['video/mp4', 'video/webm'] as const
 
+export const GLB_MIME_TYPE = 'model/gltf-binary'
+export const PLAYABLE_MODEL_SLOTS = ['models', 'tileFaces', 'backgroundBoard', 'animationEffects'] as const
+
+/** Browsers often leave GLB MIME empty or report application/octet-stream. */
+export function playableFileMimeType(file: { name: string; type: string }): string {
+  if (/\.glb$/i.test(file.name) && ['', 'application/octet-stream', GLB_MIME_TYPE].includes(file.type))
+    return GLB_MIME_TYPE
+  return file.type
+}
+
+export function attachmentSlotForFile(file: { name: string; type: string }): PlayableAssetSlot | undefined {
+  const mimeType = playableFileMimeType(file)
+  return mimeType === GLB_MIME_TYPE ? 'models' : referenceSlotForMimeType(mimeType)
+}
+
 const policies: Record<PlayableAssetSlot, readonly string[]> = {
-  tileFaces: PLAYABLE_IMAGE_MIME_TYPES,
-  backgroundBoard: PLAYABLE_IMAGE_MIME_TYPES,
-  animationEffects: PLAYABLE_IMAGE_MIME_TYPES,
+  models: [GLB_MIME_TYPE],
+  tileFaces: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
+  backgroundBoard: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
+  animationEffects: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
   audio: PLAYABLE_AUDIO_MIME_TYPES,
   endCard: PLAYABLE_IMAGE_MIME_TYPES,
   referenceImage: PLAYABLE_IMAGE_MIME_TYPES,
@@ -58,7 +75,7 @@ export function isPlayableResourceAssetSlot(value: PlayableAssetSlot): value is 
 }
 
 export function playableAssetAccept(slot: PlayableAssetSlot): string {
-  return policies[slot].join(',')
+  return [...policies[slot], ...(policies[slot].includes(GLB_MIME_TYPE) ? ['.glb'] : [])].join(',')
 }
 
 export function isMimeTypeAllowedForSlot(slot: PlayableAssetSlot, mimeType: string): boolean {
@@ -79,3 +96,25 @@ export function referenceSlotForMimeType(mimeType: string): PlayableReferenceAss
 }
 
 export const PLAYABLE_REFERENCE_ACCEPT = [...PLAYABLE_IMAGE_MIME_TYPES, ...PLAYABLE_VIDEO_MIME_TYPES].join(',')
+
+export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${GLB_MIME_TYPE},.glb`
+
+/** Keep all confirmation buttons and the server gate consistent. */
+export function hasIncompatibleModelAssets(
+  confirmation: {
+    rendering?: { renderer: string }
+    sourceTemplateId?: string | null
+    resources: Partial<Record<PlayableResourceAssetSlot, { status: string }>>
+  },
+  assets: readonly { slot: PlayableAssetSlot; mimeType: string }[],
+): boolean {
+  return (
+    assets.some(
+      (asset) =>
+        asset.mimeType === GLB_MIME_TYPE &&
+        isPlayableResourceAssetSlot(asset.slot) &&
+        confirmation.resources[asset.slot]?.status === '用户上传',
+    ) &&
+    (confirmation.rendering?.renderer !== 'threejs' || Boolean(confirmation.sourceTemplateId))
+  )
+}

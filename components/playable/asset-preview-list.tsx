@@ -1,8 +1,13 @@
 'use client'
 
 import Image from 'next/image'
+import dynamic from 'next/dynamic'
+import { GLB_MIME_TYPE } from '@/lib/playable/asset-policy'
+import { Dialog, DialogContent, DialogTrigger, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { FileAudio, FileImage, FileVideo, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+
+const ModelPreview = dynamic(() => import('./model-preview'), { ssr: false })
 
 export interface PreviewAssetItem {
   id: string
@@ -32,7 +37,20 @@ export function AssetPreviewList({
       {items.map((item) => (
         <li key={item.id} className="bg-muted/40 relative min-w-0 overflow-hidden rounded-md border">
           <div className="flex min-h-20 items-center gap-2 p-2 pr-9">
-            {item.mimeType.startsWith('image/') && item.previewUrl ? (
+            {item.mimeType === GLB_MIME_TYPE && item.previewUrl ? (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" variant="outline" size="sm">
+                    预览 3D
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogTitle>{item.filename}</DialogTitle>
+                  <DialogDescription>查看模型形状与内嵌贴图</DialogDescription>
+                  <ModelPreview url={item.previewUrl} />
+                </DialogContent>
+              </Dialog>
+            ) : item.mimeType.startsWith('image/') && item.previewUrl ? (
               <Image
                 unoptimized
                 src={item.previewUrl}
