@@ -694,6 +694,74 @@ describe('CodexPlayableAgent', () => {
     ).rejects.toThrow()
   })
 
+  // 人为缺少能力检查，验证能定位流程规则，而不是静默补齐模型遗漏的步骤。
+  it('identifies the missing capabilities check in a jump-repair revision without changing the plan', async () => {
+    const plan = {
+      ...confirmationOutput,
+      calls: [
+        confirmationOutput.calls[0],
+        {
+          ...confirmationOutput.calls[3],
+          name: 'submit_revision',
+          revision: {
+            requestedBaseVersion: null,
+            parameterOnly: false,
+            strategy: 'patch',
+            summary: '修复跳转',
+            changes: ['恢复原生下载跳转'],
+            preserved: ['保留现有玩法'],
+          },
+        },
+      ],
+    }
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve(plan),
+    } as never)
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'repair-jump',
+        prompt: '跳转没了',
+        apiKey: 'sk-unit-only',
+        hasArtifact: true,
+        brief: requirementBrief,
+      }),
+    ).rejects.toMatchObject({
+      code: 'output_invalid',
+      diagnostic: { stage: 'plan_execution', step: 1, rule: 'revision_capabilities_missing', issues: [] },
+    })
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(1)
+  })
+
+  // 持续返回合法工具调用但不结束，也应被识别为轮数耗尽，而非字段格式错误。
+  it('records step exhaustion separately from invalid output', async () => {
+    responseMocks.streamText.mockImplementation(
+      () =>
+        ({
+          fullStream: (async function* () {})(),
+          partialOutputStream: (async function* () {})(),
+          output: Promise.resolve({
+            kind: 'tool_calls',
+            message: null,
+            reasoning: '查看版本',
+            plan: null,
+            toolCalls: [{ name: 'read_playable_version', version: 1, assetIds: [], assetId: null, searchBrief: null }],
+          }),
+        }) as never,
+    )
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'repair-jump', prompt: '跳转没了', apiKey: 'sk-unit-only', hasArtifact: true },
+        { executeTool: async () => ({ status: 'completed' }) },
+      ),
+    ).rejects.toMatchObject({
+      code: 'output_invalid',
+      diagnostic: { stage: 'step_limit', step: 6, rule: 'step_limit_reached' },
+    })
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(6)
+  })
+
   it('rejects an empty API key before creating an OpenAI provider', async () => {
     await expect(
       new CodexPlayableAgent().proposeConfirmation({

@@ -2571,6 +2571,19 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             } catch (cause) {
               if (cause instanceof PlayableAgentError) {
                 logRequirementFailure(cause)
+                // 安全诊断单独写入任务事件，便于按任务和时间排查；流式错误响应仍保持通用文案。
+                if (cause.diagnostic) {
+                  try {
+                    await dependencies.repository.appendEvent({
+                      taskId: access.task.id,
+                      type: 'requirement_processing_failed',
+                      message: JSON.stringify(cause.diagnostic),
+                    })
+                  } catch {
+                    // 诊断落库失败不能覆盖原始业务错误，也不能阻止前端收到失败响应。
+                    console.error('Playable requirement diagnostic could not be stored')
+                  }
+                }
                 enqueue({ type: 'error', message: requirementFailureMessage(cause) })
               } else {
                 logRequirementStageFailure(stage)

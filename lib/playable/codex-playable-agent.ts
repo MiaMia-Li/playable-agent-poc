@@ -1,3 +1,4 @@
+import { requirementDiagnostic, type RequirementDiagnosticStage } from './requirement-diagnostics'
 import { IMPORTED_ASSETS_PROMPT } from './task-imports'
 import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT } from './source-html'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
@@ -211,7 +212,10 @@ async function createProposal(
     try {
       serializedContext = JSON.stringify({ ...baseContext, toolResults })
     } catch {
-      throw new PlayableAgentError('output_invalid')
+      throw new PlayableAgentError(
+        'output_invalid',
+        requirementDiagnostic(undefined, 'context_serialization', stepNumber + 1, requirementAgentStepOutputSchema),
+      )
     }
     const safePrompt = serializedContext.split(input.apiKey).join('[REDACTED]')
     const result = streamText({
@@ -265,9 +269,14 @@ async function createProposal(
       throw new PlayableAgentError('stream_failed')
     }
 
+    // 标记失败发生在哪个处理阶段，避免所有校验问题都只留下 output_invalid。
+    let validationStage: RequirementDiagnosticStage = 'structured_output'
     try {
-      const step = parseRequirementAgentStep(await result.output)
+      const output = await result.output
+      validationStage = 'step_validation'
+      const step = parseRequirementAgentStep(output)
       if (step.kind === 'tool_calls') {
+        validationStage = 'analysis_tools'
         const executed = await executeRequirementAnalysisTools({
           calls: step.toolCalls,
           options: { ...options, abortSignal },
@@ -276,6 +285,7 @@ async function createProposal(
         toolResults.push(...executed)
         continue
       }
+      validationStage = 'plan_execution'
       const latestResearch = [...toolResults]
         .reverse()
         .find((entry) => entry.tool === 'search_market_references' && entry.status === 'completed')
@@ -288,12 +298,20 @@ async function createProposal(
         marketResearch: latestResearch ? marketResearchReportSchema.parse(latestResearch.result) : undefined,
       }).reply
     } catch (error) {
-      if (error instanceof PlayableAgentError) throw error
-      throw new PlayableAgentError('output_invalid')
+      if (error instanceof PlayableAgentError && error.code !== 'output_invalid') throw error
+      // 保留下层已识别的原因，只覆盖真实轮次；其他异常仅提取安全诊断字段。
+      const diagnostic =
+        error instanceof PlayableAgentError && error.diagnostic
+          ? { ...error.diagnostic, step: stepNumber + 1 }
+          : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
+      throw new PlayableAgentError('output_invalid', diagnostic)
     }
   }
 
-  throw new PlayableAgentError('output_invalid')
+  throw new PlayableAgentError(
+    'output_invalid',
+    requirementDiagnostic(undefined, 'step_limit', MAX_REQUIREMENT_AGENT_STEPS, requirementAgentStepOutputSchema),
+  )
 }
 
 export async function executeBuildAgent(

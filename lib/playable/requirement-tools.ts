@@ -1,3 +1,4 @@
+import { requirementDiagnostic } from './requirement-diagnostics'
 import { GLB_MIME_TYPE, MAX_ASSET_BYTES } from './asset-policy'
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from './native-template-ui'
 import { sourceTemplateIds } from './types'
@@ -179,9 +180,16 @@ function parseRequirementAnalysisToolCall(
   ) {
     return { name: value.name, assetIds: [], assetId: null, searchBrief: value.searchBrief }
   }
-  throw new PlayableAgentError('output_invalid')
+  throw new PlayableAgentError('output_invalid', {
+    version: 1,
+    stage: 'step_validation',
+    step: 1,
+    rule: 'analysis_arguments_invalid',
+    issues: [],
+  })
 }
 
+// 解析器不知道当前模型轮次，诊断先用 1 占位，由调用方补上实际轮次。
 export function parseRequirementAgentStep(value: unknown): RequirementAgentStep {
   const step = requirementAgentStepSchema.safeParse(value)
   if (step.success) {
@@ -191,12 +199,27 @@ export function parseRequirementAgentStep(value: unknown): RequirementAgentStep 
     if (step.data.kind === 'terminal' && step.data.plan !== null && step.data.toolCalls.length === 0) {
       return { kind: 'terminal', plan: step.data.plan }
     }
-    throw new PlayableAgentError('output_invalid')
+    throw new PlayableAgentError('output_invalid', {
+      version: 1,
+      stage: 'step_validation',
+      step: 1,
+      rule: 'step_shape_invalid',
+      issues: [],
+    })
   }
 
+  // 兼容旧版直接返回 plan 的协议；失败时选择对应协议的校验结果，避免报告无关的缺失字段。
   const legacyPlan = requirementAgentPlanSchema.safeParse(value)
   if (legacyPlan.success) return { kind: 'terminal', plan: legacyPlan.data }
-  throw new PlayableAgentError('output_invalid')
+  throw new PlayableAgentError(
+    'output_invalid',
+    requirementDiagnostic(
+      value && typeof value === 'object' && 'calls' in value && !('kind' in value) ? legacyPlan.error : step.error,
+      'step_validation',
+      1,
+      requirementAgentStepOutputSchema,
+    ),
+  )
 }
 
 export async function executeRequirementAnalysisTools(input: {
@@ -204,7 +227,14 @@ export async function executeRequirementAnalysisTools(input: {
   options?: AgentReplyOptions
   cache: Map<string, RequirementAnalysisToolResult>
 }): Promise<RequirementAnalysisToolResult[]> {
-  if (!input.options?.executeTool) throw new PlayableAgentError('output_invalid')
+  if (!input.options?.executeTool)
+    throw new PlayableAgentError('output_invalid', {
+      version: 1,
+      stage: 'analysis_tools',
+      step: 1,
+      rule: 'tool_executor_missing',
+      issues: [],
+    })
 
   const results: RequirementAnalysisToolResult[] = []
   for (const requestedToolCall of input.calls) {
