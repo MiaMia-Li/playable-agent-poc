@@ -1,6 +1,7 @@
 'use client'
 
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
+import { FolderUploadButton } from './folder-upload-button'
 import { BuildTimeline } from './build-timeline'
 import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
 import { AgentText, ReasoningText } from './reasoning-text'
@@ -419,6 +420,7 @@ export function ChatWorkspace({
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
+  const [packingFolder, setPackingFolder] = useState(false)
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
   const followBuild = useRef(true)
@@ -478,7 +480,8 @@ export function ChatWorkspace({
         (attachmentSnapshot.length > 0
           ? `请参考已上传素材：${attachmentSnapshot.map((attachment) => attachment.filename).join('、')}`
           : '')
-      if (!content || sending || !canCompose) return false
+      // 点击和键盘提交都经过此处，打包未完成时不能生成缺少文件夹附件的需求。
+      if (!content || sending || packingFolder || !canCompose) return false
       const id = crypto.randomUUID()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
@@ -785,6 +788,7 @@ export function ChatWorkspace({
       onVideoAnalysisToolStatus,
       onAnnotations,
       sending,
+      packingFolder,
       taskId,
       updateSelectedAssets,
       waitForVideoAnalysis,
@@ -1599,6 +1603,12 @@ export function ChatWorkspace({
                 stageComposerFiles(files)
               }}
             />
+            <FolderUploadButton
+              disabled={!canCompose || sending || confirming}
+              onFile={(file) => stageComposerFiles([file])}
+              onError={setError}
+              onBusyChange={setPackingFolder}
+            />
             {sending ? (
               <Button type="button" variant="destructive" size="sm" onClick={() => streamController.current?.abort()}>
                 <Square aria-hidden="true" />
@@ -1609,7 +1619,7 @@ export function ChatWorkspace({
                 type="button"
                 size="icon"
                 aria-label="发送需求"
-                disabled={(!message.trim() && composerAttachments.length === 0) || !canCompose}
+                disabled={(!message.trim() && composerAttachments.length === 0) || !canCompose || packingFolder}
                 onClick={() => void sendMessage()}
               >
                 <ArrowUp aria-hidden="true" />

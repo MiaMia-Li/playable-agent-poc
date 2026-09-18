@@ -26,6 +26,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ChatWorkspace } from './chat-workspace'
 import type { ConversationMessage } from './chat-workspace'
 import { PlayablePreview } from './playable-preview'
+import { FolderUploadButton } from './folder-upload-button'
 import { AssetPreviewList } from './asset-preview-list'
 import {
   MAX_HOME_ATTACHMENTS,
@@ -638,11 +639,12 @@ export function PlayableHome({
   const [creatingTemplate, setCreatingTemplate] = useState<PlayableTemplateId>()
   const [previewMode, setPreviewMode] = useState<PlayableTemplateId>()
   const [error, setError] = useState('')
+  const [packingFolder, setPackingFolder] = useState(false)
   const [draggingFiles, setDraggingFiles] = useState(false)
   // dragenter/dragleave also fire for every child crossed, so only the outermost
   // pair toggles the drop highlight.
   const dragDepth = useRef(0)
-  const canDropAttachments = Boolean(user) && !creating && !creatingTemplate
+  const canDropAttachments = Boolean(user) && !creating && !creatingTemplate && !packingFolder
 
   useEffect(
     () => () => {
@@ -654,7 +656,8 @@ export function PlayableHome({
   async function createPlayable() {
     const content = prompt.trim() || '请根据上传的参考素材制作试玩'
     const attachmentSnapshot = attachmentsRef.current
-    if ((!prompt.trim() && attachmentSnapshot.length === 0) || creatingRef.current) return
+    // 点击和键盘提交都经过此处，打包未完成时不能生成缺少文件夹附件的需求。
+    if ((!prompt.trim() && attachmentSnapshot.length === 0) || creatingRef.current || packingFolder) return
     const fingerprint = JSON.stringify({
       content,
       attachments: attachmentSnapshot.map(({ id, file }) => ({
@@ -716,7 +719,7 @@ export function PlayableHome({
   }
 
   async function createFromTemplate(mode: PlayableTemplateId) {
-    if (creatingRef.current) return
+    if (creatingRef.current || packingFolder) return
     creatingRef.current = true
     setCreatingTemplate(mode)
     setError('')
@@ -747,7 +750,7 @@ export function PlayableHome({
     }
   }
 
-  function addAttachments(files: FileList | null) {
+  function addAttachments(files: FileList | readonly File[] | null) {
     if (!files) return
     const accepted: HomeAttachment[] = []
     const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachmentsRef.current.length)
@@ -859,7 +862,7 @@ export function PlayableHome({
             disabled={!user || creating || Boolean(creatingTemplate)}
           />
           <p className="text-muted-foreground px-2 text-xs">
-            HTML、ZIP/RAR 单文件最多 100 MiB；Spine 请一起选择
+            支持选择文件夹并保留目录结构，打包后最多 100 MiB。HTML、ZIP/RAR 单文件最多 100 MiB；Spine 请一起选择
             atlas、PNG 和 skel/JSON，合计最多 100 MiB。
           </p>
           {attachments.length > 0 && (
@@ -902,11 +905,17 @@ export function PlayableHome({
                 event.target.value = ''
               }}
             />
+            <FolderUploadButton
+              disabled={!user || creating || Boolean(creatingTemplate) || attachments.length >= MAX_HOME_ATTACHMENTS}
+              onFile={(file) => addAttachments([file])}
+              onError={setError}
+              onBusyChange={setPackingFolder}
+            />
             <Button
               size="icon"
               className="rounded-full"
               onClick={() => void createPlayable()}
-              disabled={!user || (!prompt.trim() && attachments.length === 0) || creating}
+              disabled={!user || (!prompt.trim() && attachments.length === 0) || creating || packingFolder}
               aria-label="新建试玩"
             >
               {creating ? <Loader2 className="animate-spin" /> : <ArrowRight />}
