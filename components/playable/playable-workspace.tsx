@@ -33,6 +33,8 @@ import {
   maxAssetBytesForSlot,
   referenceSlotForMimeType,
   attachmentSlotForFile,
+  normalizeAttachmentBatch,
+  assetSizeError,
   playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
@@ -749,18 +751,21 @@ export function PlayableHome({
     if (!files) return
     const accepted: HomeAttachment[] = []
     const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachmentsRef.current.length)
-    for (const file of Array.from(files)) {
+    for (const file of normalizeAttachmentBatch(
+      Array.from(files),
+      attachmentsRef.current.some(({ file }) => /\.(atlas|skel)$/i.test(file.name)),
+    )) {
       if (accepted.length >= remaining) {
         setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
         break
       }
       const slot = attachmentSlotForFile(file)
       if (!slot) {
-        setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材')
+        setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件')
         continue
       }
       if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
-        setError(slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB')
+        setError(assetSizeError(slot))
         continue
       }
       const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined
@@ -847,12 +852,16 @@ export function PlayableHome({
         >
           <Textarea
             aria-label="新试玩需求"
-            placeholder="描述玩法、视觉方向，或上传／拖入参考素材…"
+            placeholder="描述玩法，或上传／拖入视频、HTML、ZIP/RAR、Spine 资源…"
             className="min-h-20 resize-none border-0 px-2.5 py-2 text-base shadow-none focus-visible:ring-0"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             disabled={!user || creating || Boolean(creatingTemplate)}
           />
+          <p className="text-muted-foreground px-2 text-xs">
+            HTML、ZIP/RAR 单文件最多 100 MiB；Spine 请一起选择
+            atlas、PNG 和 skel/JSON，合计最多 100 MiB。
+          </p>
           {attachments.length > 0 && (
             <div className="mb-3 px-1">
               <AssetPreviewList
@@ -876,7 +885,7 @@ export function PlayableHome({
               variant="ghost"
               disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
               onClick={() => attachmentInput.current?.click()}
-              aria-label="添加参考图片、视频或 GLB 模型"
+              aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
             >
               <Paperclip aria-hidden="true" />
             </Button>
@@ -886,7 +895,7 @@ export function PlayableHome({
               type="file"
               multiple
               accept={PLAYABLE_ATTACHMENT_ACCEPT}
-              aria-label="上传参考图片、视频或 GLB 模型"
+              aria-label="上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
               disabled={!user || creating}
               onChange={(event) => {
                 addAttachments(event.target.files)

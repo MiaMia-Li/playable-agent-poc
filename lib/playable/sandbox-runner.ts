@@ -1,3 +1,6 @@
+import { attachImportedManifest } from './task-imports'
+import { importedRuntimePreparationCommand } from './imported-runtime'
+import { safeImportPath } from './asset-archive'
 import { applyRenderingBuildPolicy, renderingPreparationCommand } from './rendering-policy'
 import { referenceImageWorkspaceFiles } from './reference-images'
 import {
@@ -341,7 +344,31 @@ export async function runPlayableBuild(
         abortSignal: dependencies.abortSignal,
       })
     }
+    // 保留导入目录结构，且只允许写入 user-imports；本地与云端构建遵循相同边界。
+    for (const file of input.importedFiles ?? []) {
+      const relative = safeImportPath(file.path)
+      if (!relative.startsWith('user-imports/')) throw new Error('Invalid import destination')
+      await sandbox.writeBinaryFile({
+        path: path.join(workspace, relative),
+        content: file.bytes,
+        abortSignal: dependencies.abortSignal,
+      })
+    }
+    await sandbox.writeTextFile({
+      path: path.join(workspace, 'imported-assets.json'),
+      content: JSON.stringify(input.importedAssets ?? [], null, 2),
+      abortSignal: dependencies.abortSignal,
+    })
+    const importPreparation = importedRuntimePreparationCommand(input)
+    // 外部 Agent 已完成的产物只需验收，不重复安装导入资源运行时。
+    if (importPreparation && !dependencies.preparedArtifact)
+      await requireSuccessfulCommand(
+        sandbox,
+        { command: importPreparation, workingDirectory: workspace, abortSignal: dependencies.abortSignal },
+        'Imported runtime preparation failed',
+      )
     const assetManifest: PlayableAssetManifest = createAssetSourceManifest(confirmation, [])
+    attachImportedManifest(assetManifest, input.importedAssets)
     for (const asset of input.assets ?? []) {
       if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
       const workspacePath = path.posix.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
@@ -367,7 +394,11 @@ export async function runPlayableBuild(
         content: dependencies.preparedArtifact,
         abortSignal: dependencies.abortSignal,
       })
-    } else if (confirmation.sourceTemplateId || input.revision?.strategy === 'patch') {
+    } else if (
+      confirmation.sourceHtmlAssetId ||
+      confirmation.sourceTemplateId ||
+      input.revision?.strategy === 'patch'
+    ) {
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),

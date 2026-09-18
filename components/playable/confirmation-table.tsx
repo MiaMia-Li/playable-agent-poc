@@ -186,6 +186,11 @@ export function ConfirmationTable({
 
   return (
     <section aria-label="确认方案" className="space-y-4">
+      {Boolean(proposal.importedAssetIds?.length) && (
+        <p className="text-muted-foreground text-sm">
+          已导入压缩包或 Spine 资源；构建会使用原始文件和目录结构，并检查资源完整性。
+        </p>
+      )}
       {nativeUi && (
         <p className="text-muted-foreground text-sm">
           复用模板原生 CTA 和结束页，不额外添加。文案与素材修改应用到原生界面。
@@ -236,7 +241,16 @@ export function ConfirmationTable({
                     : '实现方式'}
               </th>
               <td className="space-y-2 px-3 py-2">
-                {proposal.routing.match === 'freeform' ? (
+                {proposal.sourceHtmlAssetId ? (
+                  <>
+                    <Badge variant="secondary">基于上传 HTML 修改</Badge>
+                    <p className="text-muted-foreground text-xs">
+                      {uploadedAssets.find((asset) => asset.id === proposal.sourceHtmlAssetId)?.filename ??
+                        '已确认的 HTML 源文件'}
+                      {' · 保留原有玩法、引擎与内嵌资源，按确认需求修改。'}
+                    </p>
+                  </>
+                ) : proposal.routing.match === 'freeform' ? (
                   <>
                     <Badge variant="secondary">Agent 自由生成</Badge>
                     <p className="text-muted-foreground text-xs">

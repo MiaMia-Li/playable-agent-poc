@@ -1,4 +1,6 @@
-import { hasIncompatibleModelAssets } from './asset-policy'
+import { loadTaskImports, importedSourceEvidence, importedResourcePaths, attachImportedManifest } from './task-imports'
+import { bindSourceHtml, selectSourceHtml } from './source-html'
+import { hasIncompatibleModelAssets, playableResourceAssetSlots, MAX_TASK_ASSETS } from './asset-policy'
 import { isPlayableSandboxValidationEnabled } from './validation-policy'
 import { renderingRevision } from './rendering-policy'
 import { sourceTemplateFile } from './build-skill'
@@ -1171,11 +1173,39 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const revision = task.pendingRevision
       ? sanitizeRevisionProposal(task.pendingRevision, [apiKey, ...(mediaApiKey ? [mediaApiKey] : [])])
       : undefined
+    const importedIds = sanitizedConfirmation.importedAssetIds ?? []
+    const buildStoredAssets = await repository.listAssets(task.id, task.userId)
+    if (importedIds.some((id) => !buildStoredAssets.some((asset) => asset.id === id)))
+      throw new Error('Imported asset is missing')
+    // 构建只读取确认时锁定的导入集合，避免后续上传悄悄改变已确认的输入。
+    const imports = await loadTaskImports(
+      buildStoredAssets.filter((asset) => importedIds.includes(asset.id)),
+      artifactStore,
+    )
+    if (imports.summaries.some((summary) => summary.issues.length)) throw new Error('Imported resources are incomplete')
     let baseHtml: string | undefined
     let baseConfirmation: ConfirmationProposal | undefined
     let reusableScenarios: { preview: string; full: string } | undefined
     if (sanitizedConfirmation.sourceTemplateId && revision?.strategy !== 'patch') {
       baseHtml = await readFile(sourceTemplateFile(sanitizedConfirmation.sourceTemplateId), 'utf8')
+    }
+    // 首次构建或重新生成从上传源码开始；patch 必须保留选定历史产物中已经完成的修改。
+    if (sanitizedConfirmation.sourceHtmlAssetId && revision?.strategy !== 'patch') {
+      const source = (await repository.listAssets(task.id, task.userId)).find(
+        (asset) =>
+          asset.id === sanitizedConfirmation.sourceHtmlAssetId && ['sourceHtml', 'assetPackage'].includes(asset.slot),
+      )
+      if (!source) throw new Error('Uploaded HTML source is missing')
+      if (source.slot === 'assetPackage') {
+        const summary = imports.summaries.find((item) => item.assetId === source.id)
+        const file = imports.files.find((item) => item.path === `${summary?.root}/${summary?.entrypoint}`)
+        if (!file) throw new Error('Package HTML entrypoint is missing')
+        baseHtml = new TextDecoder().decode(file.bytes)
+      } else {
+        const stream = await artifactStore.get(source.storageKey)
+        if (!stream) throw new Error('Uploaded HTML source is missing')
+        baseHtml = new TextDecoder().decode(await readAll(stream))
+      }
     }
     if (revision?.strategy === 'patch') {
       stage = 'base_artifact'
@@ -1330,6 +1360,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       ...(referenceKeyframes.length ? { referenceKeyframes } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
+      ...(imports.files.length ? { importedFiles: imports.files, importedAssets: imports.summaries } : {}),
       ...(dependencies.gameplayBlueprint ? { gameplayBlueprint: dependencies.gameplayBlueprint } : {}),
     })
     await activityQueue
@@ -1369,6 +1400,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     const validationReport = result.validation
     const productionConfig = createProductionConfig(sanitizedConfirmation)
     const assetManifest = result.assetManifest ?? createAssetSourceManifest(sanitizedConfirmation, assets)
+    attachImportedManifest(assetManifest, imports.summaries)
     stage = 'artifact_store'
     timing.start('publish')
     console.log('Storing playable artifacts')
@@ -2003,7 +2035,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (
         body.attachmentIds !== undefined &&
         (!Array.isArray(body.attachmentIds) ||
-          body.attachmentIds.length > 10 ||
+          body.attachmentIds.length > MAX_TASK_ASSETS ||
           body.attachmentIds.some((assetId) => typeof assetId !== 'string'))
       ) {
         return jsonError(400, 'Invalid request')
@@ -2214,6 +2246,29 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               if (lockedRevisionBase)
                 referenceToolCache.set(`read_version:${lockedRevisionBase.version}`, lockedRevisionBase.buildId)
               let completedMarketResearch: MarketResearchReport | undefined
+              const imports = await loadTaskImports(assets, dependencies.artifactStore)
+              // 先由宿主解析包入口并选定基底，再把源码作为证据提供给需求 Agent。
+              const sourceAsset = selectSourceHtml(
+                assets,
+                effectiveAttachedAssetIds,
+                access.task.requirementBrief?.sourceHtmlAssetId ?? access.task.confirmation?.sourceHtmlAssetId,
+                imports.summaries.filter((item) => item.entrypoint).map((item) => item.assetId),
+              )
+              let sourceHtml: AgentInput['sourceHtml']
+              if (sourceAsset) {
+                const summary = imports.summaries.find((item) => item.assetId === sourceAsset.id)
+                const entry = imports.files.find((item) => item.path === `${summary?.root}/${summary?.entrypoint}`)
+                const stream =
+                  sourceAsset.slot === 'assetPackage'
+                    ? undefined
+                    : await dependencies.artifactStore.get(sourceAsset.storageKey)
+                if (!stream && !entry) throw new Error('Uploaded HTML source is missing')
+                sourceHtml = {
+                  assetId: sourceAsset.id,
+                  filename: sourceAsset.filename,
+                  ...versionSourceForAgent(entry?.bytes ?? (await readAll(stream!)), apiKey),
+                }
+              }
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -2232,6 +2287,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     : null,
                   assets: assets.map(safeAsset),
                   attachedAssetIds: effectiveAttachedAssetIds,
+                  sourceHtml,
+                  importedAssets: imports.summaries,
+                  importedSourceFiles: importedSourceEvidence(imports.files).map((file) => ({
+                    ...file,
+                    text: safeString(file.text, [apiKey]),
+                  })),
                   referenceImages,
                   hasArtifact: Boolean(access.task.latestArtifactKey),
                   versions: builds
@@ -2336,6 +2397,14 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               const templateId = selectedSourceTemplate(access.task)
               delete nextBrief.sourceTemplateId
               if (templateId !== undefined) nextBrief.sourceTemplateId = templateId
+              // 覆盖模型返回的绑定字段，使 Requirement Brief 与后续确认方案使用同一组真实素材。
+              delete nextBrief.importedAssetIds
+              if (imports.assetIds.length) nextBrief.importedAssetIds = imports.assetIds
+              delete nextBrief.sourceHtmlAssetId
+              if (sourceAsset) {
+                nextBrief.sourceHtmlAssetId = sourceAsset.id
+                nextBrief.sourceTemplateId = null
+              }
               if (validatedReply.annotations) {
                 stage = 'annotation_store'
                 await storeGameplayAnnotations(access.task, access.userId, validatedReply.annotations)
@@ -2416,7 +2485,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
-              const validated = bindSourceTemplate(validatedReply.confirmation, selectedSourceTemplate(access.task))
+              const validated = bindSourceHtml(
+                bindSourceTemplate(validatedReply.confirmation, selectedSourceTemplate(access.task)),
+                sourceAsset?.id,
+              )
+              delete validated.importedAssetIds
+              if (imports.assetIds.length) validated.importedAssetIds = imports.assetIds
               stage = 'phase_transition'
               if (validatedReply.kind === 'revision') {
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
@@ -2734,6 +2808,16 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
+      // 确认请求可编辑需求，但不能替换服务端已选定的源码或导入集合。
+      sanitized = bindSourceHtml(sanitized, access.task.confirmation?.sourceHtmlAssetId)
+      sanitized.importedAssetIds = access.task.confirmation?.importedAssetIds
+      if (
+        sanitized.sourceHtmlAssetId &&
+        !(await dependencies.repository.listAssets(access.task.id, access.userId)).some(
+          (asset) => asset.id === sanitized.sourceHtmlAssetId && ['sourceHtml', 'assetPackage'].includes(asset.slot),
+        )
+      )
+        return jsonError(409, 'Uploaded HTML source is missing')
       if (Object.values(sanitized.resources).some((resource) => resource.status === '待上传')) {
         return jsonError(400, 'Pending uploads')
       }
@@ -2751,12 +2835,32 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.repository.listAssets(access.task.id, access.userId),
         gameplayBlueprintDocumentFor(access.task),
       ])
+      // 上传允许分批补齐；提交构建前必须重新检查文件存在性、HTML 入口及 Spine 配套完整性。
+      const importIds = sanitized.importedAssetIds ?? []
+      if (importIds.some((id) => !assets.some((asset) => asset.id === id)))
+        return jsonError(409, '导入素材已删除，请重新整理需求')
+      const importedSlots = new Set<string>()
+      try {
+        const imports = await loadTaskImports(
+          assets.filter((asset) => importIds.includes(asset.id)),
+          dependencies.artifactStore,
+        )
+        for (const slot of playableResourceAssetSlots)
+          if (importedResourcePaths(imports.summaries, slot).length) importedSlots.add(slot)
+        if (imports.summaries.some((item) => item.issues.length))
+          return jsonError(400, '导入资源不完整或版本不受支持，请补齐 Spine 文件并检查 HTML 入口')
+      } catch {
+        return jsonError(400, '无法读取导入资源，请检查压缩包或 Spine 文件')
+      }
       if (hasIncompatibleModelAssets(sanitized, assets)) {
         return jsonError(400, 'GLB 模型需要 Three.js 自定义构建，请先更新确认方案的渲染方式')
       }
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
       const missingUpload = Object.entries(sanitized.resources).some(
-        ([slot, resource]) => resource.status === '用户上传' && !uploadedSlots.has(slot as PlayableAsset['slot']),
+        ([slot, resource]) =>
+          resource.status === '用户上传' &&
+          !uploadedSlots.has(slot as PlayableAsset['slot']) &&
+          !importedSlots.has(slot),
       )
       if (missingUpload) return jsonError(400, 'Uploaded asset missing')
       // The table may have switched the visual direction; the server applies
@@ -2765,8 +2869,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
 
       if (revision?.strategy === 'patch') {
         const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
-        const previousTemplate = baseBuild?.confirmation.sourceTemplateId ?? baseBuild?.confirmation.mode
-        const nextTemplate = sanitized.sourceTemplateId ?? sanitized.mode
+        // 源码素材变化也属于基底变化，不能把旧产物的 patch 套到另一份 HTML 上。
+        const previousTemplate =
+          baseBuild?.confirmation.sourceHtmlAssetId ??
+          baseBuild?.confirmation.sourceTemplateId ??
+          baseBuild?.confirmation.mode
+        const nextTemplate = sanitized.sourceHtmlAssetId ?? sanitized.sourceTemplateId ?? sanitized.mode
         if (baseBuild && previousTemplate !== nextTemplate) {
           if (revision.baseSelection === 'manual')
             return jsonError(409, 'Selected base version requires the same implementation route')

@@ -48,7 +48,10 @@ export type RequirementToolName = (typeof requirementToolNames)[number]
 // adding a field does not change how any existing call parses.
 export const requirementToolCallSchema = z.strictObject({
   name: z.enum(requirementToolNames),
-  brief: requirementBriefSchema.omit({ sourceTemplateId: true }).nullable(),
+  // 素材基底和导入清单由宿主绑定，模型工具不能自行指定或替换这些 ID。
+  brief: requirementBriefSchema
+    .omit({ sourceTemplateId: true, sourceHtmlAssetId: true, importedAssetIds: true })
+    .nullable(),
   annotations: z.array(gameplayAnnotationDraftSchema).max(MAX_GAMEPLAY_ANNOTATIONS).nullable(),
   request: requirementInputRequestSchema.nullable(),
   confirmation: generatedConfirmationProposalSchema.nullable(),
@@ -95,7 +98,7 @@ export const requirementAgentStepOutputSchema = requirementAgentStepSchema.exten
         .array(
           requirementToolCallSchema.extend({
             brief: requirementBriefSchema
-              .omit({ sourceTemplateId: true })
+              .omit({ sourceTemplateId: true, sourceHtmlAssetId: true, importedAssetIds: true })
               .extend({
                 assets: requirementBriefSchema.shape.assets.extend({ models: z.enum(['unknown', 'none', 'upload']) }),
               })

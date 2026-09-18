@@ -4,7 +4,7 @@ import Image from 'next/image'
 import dynamic from 'next/dynamic'
 import { GLB_MIME_TYPE } from '@/lib/playable/asset-policy'
 import { Dialog, DialogContent, DialogTrigger, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { FileAudio, FileImage, FileVideo, X } from 'lucide-react'
+import { FileAudio, FileCode, FileImage, FileVideo, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 const ModelPreview = dynamic(() => import('./model-preview'), { ssr: false })
@@ -77,7 +77,9 @@ export function AssetPreviewList({
               </div>
             ) : (
               <span className="bg-background flex size-16 shrink-0 items-center justify-center rounded border">
-                {item.mimeType.startsWith('video/') ? (
+                {item.mimeType === 'text/html' ? (
+                  <FileCode className="text-muted-foreground size-5" aria-hidden="true" />
+                ) : item.mimeType.startsWith('video/') ? (
                   <FileVideo className="text-muted-foreground size-5" aria-hidden="true" />
                 ) : (
                   <FileImage className="text-muted-foreground size-5" aria-hidden="true" />
