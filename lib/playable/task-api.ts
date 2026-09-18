@@ -2449,9 +2449,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 )
               }
               const serialized = JSON.stringify(validatedReply)
-              stage = 'agent_message_store'
-              await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
+              // 纯信息回复不改变任务状态，可直接保存；其余回复必须在对应状态转换成功后保存。
+              // 否则刷新会读到尚未生效的 Confirmation Proposal，出现“看得到但不能构建”的情况。
               if (validatedReply.kind === 'informational') {
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 enqueue({
                   type: 'informational',
                   message: validatedReply.message,
@@ -2467,6 +2469,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   ? await dependencies.repository.clearPendingRevision(access.task.id, access.userId)
                   : await dependencies.repository.setDraft(access.task.id, access.userId)
                 if (!transitioned) throw new Error('Task phase conflict')
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 if (validatedReply.tools?.includes('offer_market_research')) {
                   await dependencies.repository.appendEvent({
                     taskId: access.task.id,
@@ -2543,6 +2547,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   revision,
                 )
                 if (!transitioned) throw new Error('Task phase conflict')
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 await dependencies.repository.appendEvent({
                   taskId: access.task.id,
                   type: 'revision_proposed',
@@ -2567,6 +2573,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 validated,
               )
               if (!transitioned) throw new Error('Task phase conflict')
+              stage = 'agent_message_store'
+              await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
               await dependencies.repository.appendEvent({
                 taskId: access.task.id,
                 type: 'confirmation_proposed',

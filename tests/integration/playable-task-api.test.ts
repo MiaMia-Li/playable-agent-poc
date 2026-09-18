@@ -2409,7 +2409,7 @@ describe('playable task API', () => {
   )
 
   it.each([1, 99])(
-    'rejects unread historical or unavailable base %s without using the latest build',
+    'rejects unread historical or unavailable base %s without saving an unbuildable proposal',
     async (requestedBaseVersion) => {
       const task = harness.repository.tasks.get('owned')!
       task.phase = 'ready'
@@ -2448,9 +2448,47 @@ describe('playable task API', () => {
       expect(body).not.toContain('"type":"revision"')
       expect(body).toContain('修改基准版本未通过校验')
       expect(body).not.toContain('任务状态已变化')
+      expect((await harness.repository.listMessages('owned')).filter((item) => item.role === 'agent')).toEqual([])
       expect(task.pendingRevision).toBeNull()
       expect(task.phase).toBe('ready')
       expect(harness.agent.build).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['confirmation', 'revision'] as const)(
+    'does not persist a %s proposal when the task changes phase during the reply',
+    async (kind) => {
+      const task = harness.repository.tasks.get('owned')!
+      if (kind === 'revision') {
+        task.phase = 'ready'
+        task.confirmation = confirmation
+        task.latestArtifactKey = 'latest/playable.html'
+        harness.repository.builds.push({
+          id: 'build-1',
+          taskId: 'owned',
+          status: 'succeeded',
+          confirmation,
+          artifactKey: task.latestArtifactKey,
+          createdAt: new Date(1),
+        })
+      }
+      vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce(
+        kind === 'revision'
+          ? { kind, message: '修改', reasoning: '修改', revision: patchRevision, confirmation }
+          : confirmationReply,
+      )
+      const transition = kind === 'revision' ? 'setAwaitingRevision' : 'setAwaitingConfirmation'
+      vi.spyOn(harness.repository, transition).mockImplementationOnce(async () => {
+        task.phase = 'building'
+        return false
+      })
+      const response = await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '修改' }),
+        { params: Promise.resolve({ taskId: 'owned' }) },
+      )
+      expect(await response.text()).toContain('任务状态已变化')
+      expect(task.phase).toBe('building')
+      expect((await harness.repository.listMessages('owned')).filter((item) => item.role === 'agent')).toEqual([])
     },
   )
 
