@@ -1,3 +1,5 @@
+import type { ImportedAssetSummary } from './task-imports'
+import type { ImportedFile } from './asset-archive'
 import type { inspectGlb } from './glb'
 import type { BuildActivityCallback } from './build-activity'
 import type {
@@ -42,6 +44,7 @@ export interface PlayableAssetManifest {
     files: string[]
   }>
   assets: Array<Omit<PlayableBuildAsset, 'bytes'> & { workspacePath: string; model?: ReturnType<typeof inspectGlb> }>
+  imports?: ImportedAssetSummary[]
   entrypoint: 'playable.html'
 }
 
@@ -85,6 +88,10 @@ export interface AgentInput {
   confirmation?: ConfirmationProposal | null
   brief?: RequirementBrief | null
   assets?: SafePlayableAsset[]
+  importedAssets?: ImportedAssetSummary[]
+  // 需求阶段只传有截断标记的摘录；ConfirmedBuildInput.importedFiles 才承载完整源码和二进制。
+  importedSourceFiles?: { path: string; text: string; truncated: boolean }[]
+  sourceHtml?: { assetId: string; filename: string; html: string; truncated: boolean }
   attachedAssetIds?: string[]
   referenceImages?: ReferenceImageEvidence[]
   gameplayBlueprint?: GameplayBlueprintDocument
@@ -173,6 +180,8 @@ export interface ConfirmedBuildInput {
   referenceKeyframes?: ReferenceKeyframeBuildInput[]
   revision?: RevisionProposal
   baseHtml?: string
+  importedFiles?: ImportedFile[]
+  importedAssets?: ImportedAssetSummary[]
 }
 
 export interface BuildResult {

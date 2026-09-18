@@ -108,3 +108,16 @@ it('embeds a real GLB with canonical MIME and rejects hidden external texture de
   )
   await expect(bundlePlayable(input)).rejects.toThrow('self-contained GLB')
 })
+
+it('embeds Spine atlas text and binary skeleton without external resource references', async () => {
+  const input = await fixture(
+    `import atlas from './hero.atlas'; import skeleton from './hero.skel'; window.spineInputs = { atlas, bytes: Array.from(skeleton) }`,
+  )
+  await writeFile(path.join(input.root, 'hero.atlas'), 'hero.png\nsize: 1,1')
+  await writeFile(path.join(input.root, 'hero.skel'), Buffer.from([0, 1, 255]))
+  await bundlePlayable(input)
+  const dom = new JSDOM(await readFile(path.join(input.root, input.output), 'utf8'), { runScripts: 'dangerously' })
+  await new Promise<void>((resolve) => dom.window.addEventListener('load', () => resolve(), { once: true }))
+  expect(dom.window.spineInputs).toEqual({ atlas: 'hero.png\nsize: 1,1', bytes: [0, 1, 255] })
+  dom.window.close()
+})

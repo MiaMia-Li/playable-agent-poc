@@ -6,6 +6,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const versions = { esbuild: '0.25.12', three: '0.165.0', '@dimforge/rapier3d-compat': '0.17.3' }
+// 与服务端 Spine 版本表同步；只安装宿主认可的固定版本，不执行上传包中的依赖配置。
+const spineVersions = { '4.0': '4.0.31', 4.1: '4.1.56', 4.2: '4.2.120', 4.3: '4.3.13' }
 const marker = '<!-- PLAYABLE_SCRIPT -->'
 
 export async function prepareRuntime(mode, root = process.cwd()) {
@@ -13,6 +15,19 @@ export async function prepareRuntime(mode, root = process.cwd()) {
   const dependencies = { esbuild: versions.esbuild }
   if (mode !== '2d') dependencies.three = versions.three
   if (mode === 'three-physics') dependencies['@dimforge/rapier3d-compat'] = versions['@dimforge/rapier3d-compat']
+  let imports = []
+  try {
+    imports = JSON.parse(await readFile(path.join(root, 'imported-assets.json'), 'utf8'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  for (const group of imports.flatMap((item) => item.spine ?? [])) {
+    const majorMinor = group.version.split('.').slice(0, 2).join('.')
+    const pinned = spineVersions[majorMinor]
+    if (!pinned || pinned !== group.runtimeVersion) throw new Error('Unsupported Spine runtime version')
+    // npm 别名让不同导出版本的 Spine 资源在同一构建中使用各自匹配的运行时。
+    dependencies['spine-' + majorMinor.replace('.', '-')] = 'npm:@esotericsoftware/spine-webgl@' + pinned
+  }
   const directory = path.join(root, 'work/.playable-deps')
   await mkdir(directory, { recursive: true })
   await writeFile(path.join(directory, 'package.json'), JSON.stringify({ private: true, dependencies }))
@@ -49,12 +64,17 @@ export async function bundlePlayable({ entry, shell, output, root = process.cwd(
     logLevel: 'silent',
     nodePaths: [path.join(dependencyRoot, 'node_modules')],
     supported: { 'inline-script': true },
-    loader: Object.fromEntries(
-      ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.glb', '.mp3', '.ogg', '.wav', '.woff2', '.wasm'].map((ext) => [
-        ext,
-        'dataurl',
-      ]),
-    ),
+    loader: {
+      // atlas 作为文本、skel 作为二进制内嵌，最终单文件不再依赖原始目录或网络请求。
+      '.atlas': 'text',
+      '.skel': 'binary',
+      ...Object.fromEntries(
+        ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.glb', '.mp3', '.ogg', '.wav', '.woff2', '.wasm'].map((ext) => [
+          ext,
+          'dataurl',
+        ]),
+      ),
+    },
     plugins: [
       {
         name: 'offline-imports',
@@ -94,6 +114,12 @@ export async function bundlePlayable({ entry, shell, output, root = process.cwd(
         'utf8',
       ),
     )
+  }
+  for (const key of Object.keys(spineVersions)) {
+    const alias = 'spine-' + key.replace('.', '-')
+    if (Object.keys(result.metafile.inputs).some((file) => file.includes('/' + alias + '/'))) {
+      licenses.push(await readFile(path.join(dependencyRoot, 'node_modules', alias, 'LICENSE'), 'utf8'))
+    }
   }
   const license = licenses.join('\n').replace(/<\/script/gi, '<\\/script')
   // Inline classic scripts execute at the marker, which can precede HUD/CTA nodes.

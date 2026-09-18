@@ -1231,7 +1231,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片、视频或 GLB 模型'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['image'], 'board.png', { type: 'image/png' }),
@@ -1311,7 +1311,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片、视频或 GLB 模型'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['image'], 'success.png', { type: 'image/png' }),
@@ -1370,7 +1370,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    const input = screen.getByLabelText('选择参考图片、视频或 GLB 模型')
+    const input = screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源')
     fireEvent.change(input, {
       target: { files: [new File(['local'], 'local.png', { type: 'image/png' })] },
     })

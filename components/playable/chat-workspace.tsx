@@ -1,6 +1,7 @@
 'use client'
 
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
+import { FolderUploadButton } from './folder-upload-button'
 import { BuildTimeline } from './build-timeline'
 import type { BuildTimelineEvent } from '@/lib/playable/build-activity'
 import { AgentText, ReasoningText } from './reasoning-text'
@@ -45,6 +46,8 @@ import {
   playableAssetAccept,
   referenceSlotForMimeType,
   attachmentSlotForFile,
+  normalizeAttachmentBatch,
+  assetSizeError,
   playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import type { SafePlayableAsset } from '@/lib/playable/task-assets'
@@ -417,6 +420,7 @@ export function ChatWorkspace({
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
+  const [packingFolder, setPackingFolder] = useState(false)
   const streamController = useRef<AbortController | undefined>(undefined)
   const scrollContainer = useRef<HTMLDivElement>(null)
   const followBuild = useRef(true)
@@ -476,7 +480,8 @@ export function ChatWorkspace({
         (attachmentSnapshot.length > 0
           ? `请参考已上传素材：${attachmentSnapshot.map((attachment) => attachment.filename).join('、')}`
           : '')
-      if (!content || sending || !canCompose) return false
+      // 点击和键盘提交都经过此处，打包未完成时不能生成缺少文件夹附件的需求。
+      if (!content || sending || packingFolder || !canCompose) return false
       const id = crypto.randomUUID()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
@@ -524,7 +529,10 @@ export function ChatWorkspace({
           )
           try {
             const slot = attachmentSlotForFile(attachment.file)
-            if (!slot) throw new Error('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材')
+            if (!slot)
+              throw new Error(
+                '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
+              )
             const uploadedAsset = await uploadPlayableAsset(taskId, slot, attachment.file, {
               fallbackMessage: '素材上传失败',
               signal: controller.signal,
@@ -780,6 +788,7 @@ export function ChatWorkspace({
       onVideoAnalysisToolStatus,
       onAnnotations,
       sending,
+      packingFolder,
       taskId,
       updateSelectedAssets,
       waitForVideoAnalysis,
@@ -892,14 +901,19 @@ export function ChatWorkspace({
       }
       const staged: ComposerAttachment[] = []
       let validationError = files.length > remainingCapacity ? '部分素材超出数量上限，已自动忽略' : ''
-      for (const file of files.slice(0, remainingCapacity)) {
+      for (const file of normalizeAttachmentBatch(
+        files.slice(0, remainingCapacity),
+        items.some(({ file }) => /\.(atlas|skel)$/i.test(file.name)) ||
+          selectedAssetsRef.current.some((asset) => asset.slot === 'spine'),
+      )) {
         const slot = attachmentSlotForFile(file)
         if (!slot) {
-          validationError = '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM 和 GLB 素材'
+          validationError =
+            '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件'
           continue
         }
         if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
-          validationError = slot === 'referenceVideo' ? '单个参考视频不能超过 100 MiB' : '单个参考素材不能超过 4 MiB'
+          validationError = assetSizeError(slot)
           continue
         }
         composerAttachmentSequence.current += 1
@@ -1569,7 +1583,7 @@ export function ChatWorkspace({
               type="button"
               size="icon"
               variant="ghost"
-              aria-label="添加参考图片、视频或 GLB 模型"
+              aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
               disabled={!canCompose || sending}
               onClick={() => composerAttachmentInput.current?.click()}
             >
@@ -1581,13 +1595,19 @@ export function ChatWorkspace({
               type="file"
               multiple
               accept={PLAYABLE_ATTACHMENT_ACCEPT}
-              aria-label="选择参考图片、视频或 GLB 模型"
+              aria-label="选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
               disabled={!canCompose || sending}
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? [])
                 event.target.value = ''
                 stageComposerFiles(files)
               }}
+            />
+            <FolderUploadButton
+              disabled={!canCompose || sending || confirming}
+              onFile={(file) => stageComposerFiles([file])}
+              onError={setError}
+              onBusyChange={setPackingFolder}
             />
             {sending ? (
               <Button type="button" variant="destructive" size="sm" onClick={() => streamController.current?.abort()}>
@@ -1599,7 +1619,7 @@ export function ChatWorkspace({
                 type="button"
                 size="icon"
                 aria-label="发送需求"
-                disabled={(!message.trim() && composerAttachments.length === 0) || !canCompose}
+                disabled={(!message.trim() && composerAttachments.length === 0) || !canCompose || packingFolder}
                 onClick={() => void sendMessage()}
               >
                 <ArrowUp aria-hidden="true" />

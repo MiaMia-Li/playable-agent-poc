@@ -1,3 +1,5 @@
+import { zipFiles, spineJson, spineAtlas, spinePng } from '../fixtures/imported-assets'
+import { confirmationProposalSchema } from '@/lib/playable/schemas'
 import { sourceTemplateFile } from '@/lib/playable/build-skill'
 import { readFile } from 'node:fs/promises'
 import { sourceTemplateIds } from '@/lib/playable/types'
@@ -1122,7 +1124,7 @@ describe('playable task API', () => {
       }),
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
-    expect(confirmed.status).toBe(202)
+    expect(confirmed.status, await confirmed.clone().text()).toBe(202)
     await harness.scheduled.at(-1)!()
     expect(harness.agent.build).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -2279,7 +2281,7 @@ describe('playable task API', () => {
         }),
         { params: Promise.resolve({ taskId: 'owned' }) },
       )
-      expect(confirmed.status).toBe(202)
+      expect(confirmed.status, await confirmed.clone().text()).toBe(202)
       await harness.scheduled.at(-1)!()
       expect(harness.agent.build).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -2378,7 +2380,7 @@ describe('playable task API', () => {
         }),
         { params: Promise.resolve({ taskId: 'owned' }) },
       )
-      expect(confirmed.status).toBe(202)
+      expect(confirmed.status, await confirmed.clone().text()).toBe(202)
       if (removeBase) harness.artifacts.delete('users/user-1/tasks/owned/build-2/playable.html')
       await harness.scheduled.at(-1)!()
       if (removeBase) {
@@ -3263,6 +3265,189 @@ describe('playable task API', () => {
         baseHtml: await readFile(sourceTemplateFile('balloon_master'), 'utf8'),
       }),
     )
+  })
+
+  it('passes ZIP HTML and relative assets from requirements through the confirmed build', async () => {
+    const html = '<html><img src="images/hero.png"></html>'
+    const bytes = await zipFiles({ 'game/index.html': html, 'game/images/hero.png': spinePng })
+    const asset: PlayableAsset = {
+      id: 'zip-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'assetPackage',
+      filename: 'game.zip',
+      mimeType: 'application/zip',
+      size: bytes.length,
+      storageKey: 'zip-source',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(asset)
+    harness.artifacts.set(asset.storageKey, bytes)
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '修改按钮', attachmentIds: [asset.id] }),
+        context,
+      )
+    ).text()
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceHtml: expect.objectContaining({ html }),
+        importedAssets: [expect.objectContaining({ entrypoint: 'game/index.html' })],
+      }),
+      expect.anything(),
+    )
+    const task = harness.repository.tasks.get('owned')!
+    expect(task.confirmation).toMatchObject({ sourceHtmlAssetId: asset.id, importedAssetIds: [asset.id] })
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: task.confirmation }),
+      context,
+    )
+    expect(response.status, await response.clone().text()).toBe(202)
+    for (const work of harness.scheduled) await work()
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseHtml: html,
+        importedFiles: expect.arrayContaining([
+          expect.objectContaining({ path: 'user-imports/zip-1/game/images/hero.png', bytes: spinePng }),
+        ]),
+      }),
+    )
+  })
+
+  it.each([false, true])('checks loose Spine completeness before build: missing texture=%s', async (missing) => {
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      ...confirmationReply,
+      kind: 'confirmation',
+      confirmation: {
+        ...confirmation,
+        resources: {
+          ...confirmation.resources,
+          animationEffects: { status: '用户上传', treatment: '使用 hero.json、hero.atlas、hero.png 播放角色动画' },
+        },
+      },
+    })
+    const files = [
+      { filename: 'hero.atlas', mimeType: 'application/x-spine-atlas', bytes: Buffer.from(spineAtlas) },
+      { filename: 'hero.json', mimeType: 'application/x-spine-json', bytes: Buffer.from(spineJson) },
+      ...(missing ? [] : [{ filename: 'hero.png', mimeType: 'application/x-spine-png', bytes: spinePng }]),
+    ]
+    for (const [i, file] of files.entries()) {
+      const asset: PlayableAsset = {
+        id: 'spine-' + i,
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'spine',
+        filename: file.filename,
+        mimeType: file.mimeType,
+        size: file.bytes.length,
+        storageKey: 'spine/' + i,
+        durationSeconds: null,
+        createdAt: new Date(),
+      }
+      harness.repository.assets.push(asset)
+      harness.artifacts.set(asset.storageKey, file.bytes)
+    }
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    await (
+      await harness.handlers.message(
+        request('/api/playable-tasks/owned/messages', 'POST', { message: '用上传的 Spine 做角色' }),
+        context,
+      )
+    ).text()
+    const task = harness.repository.tasks.get('owned')!
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: task.confirmation }),
+      context,
+    )
+    expect(response.status).toBe(missing ? 400 : 202)
+    if (!missing) {
+      for (const work of harness.scheduled) await work()
+      expect(harness.agent.build).toHaveBeenCalledWith(
+        expect.objectContaining({
+          importedAssets: [
+            expect.objectContaining({
+              spine: [expect.objectContaining({ animations: ['idle', 'win'], runtimeVersion: '4.2.120' })],
+            }),
+          ],
+          importedFiles: expect.arrayContaining([expect.objectContaining({ path: 'user-imports/spine/hero.atlas' })]),
+        }),
+      )
+    }
+  })
+
+  it('reads uploaded HTML for requirements, pins confirmation and builds the exact source', async () => {
+    const html = '<!doctype html><html><body><button>Spin</button></body></html>'
+    const asset: PlayableAsset = {
+      id: 'html-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'sourceHtml',
+      filename: 'game.html',
+      mimeType: 'text/html',
+      size: html.length,
+      storageKey: 'source-html',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(asset)
+    harness.artifacts.set(asset.storageKey, new TextEncoder().encode(html))
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '修改按钮文案，保留玩法',
+        attachmentIds: [asset.id],
+      }),
+      context,
+    )
+    await response.text()
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceHtml: { assetId: asset.id, filename: asset.filename, html, truncated: false } }),
+      expect.anything(),
+    )
+    const task = harness.repository.tasks.get('owned')!
+    expect(task.confirmation).toMatchObject({
+      sourceHtmlAssetId: asset.id,
+      sourceTemplateId: null,
+      routing: { match: 'freeform' },
+    })
+    expect(confirmationProposalSchema.safeParse(task.confirmation)).toMatchObject({ success: true })
+    // 客户端即使篡改确认请求，也不能替换服务端锁定的 HTML 基底。
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        confirmation: { ...task.confirmation, sourceHtmlAssetId: 'other-source' },
+      }),
+      context,
+    )
+    expect(confirmed.status, await confirmed.clone().text()).toBe(202)
+    for (const work of harness.scheduled) await work()
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseHtml: html,
+        confirmation: expect.objectContaining({ sourceHtmlAssetId: asset.id }),
+      }),
+    )
+  })
+
+  it('fails a build whose confirmed HTML was deleted instead of using a default template', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = {
+      ...confirmation,
+      sourceHtmlAssetId: 'missing',
+      routing: { match: 'freeform', confidence: 1, differences: ['Adapt uploaded HTML'] },
+    }
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'html-build',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    expect(harness.agent.build).not.toHaveBeenCalled()
+    expect(harness.repository.tasks.get('owned')?.phase).toBe('failed')
   })
 
   it.each(['structured', 'legacy'])('loads selected source HTML for %s template tasks', async (selection) => {

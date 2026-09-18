@@ -1,3 +1,4 @@
+import { zipFiles } from '../fixtures/imported-assets'
 import { triangleGlb } from '../fixtures/glb'
 import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
@@ -41,6 +42,17 @@ function harness(owner = 'user-1') {
 }
 
 describe('playable asset upload', () => {
+  it.each(['text/html', '', 'application/octet-stream'])('accepts HTML source with MIME %s', async (type) => {
+    const { handler, store } = harness()
+    const response = await handler(
+      uploadRequest(new File(['<!doctype html><button>Play</button>'], 'game.html', { type }), 'sourceHtml'),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(response.status).toBe(201)
+    expect((await response.json()).asset).toMatchObject({ slot: 'sourceHtml', mimeType: 'text/html' })
+    expect(store.put).toHaveBeenCalled()
+  })
+
   it('stores one allowlisted file privately in one explicit owned slot without exposing its key', async () => {
     const { handler, metadata, store } = harness()
     const response = await handler(
@@ -287,6 +299,50 @@ describe('playable direct asset upload', () => {
     })
   })
 
+  it.each([
+    ['sourceHtml', 'text/html'],
+    ['assetPackage', 'application/zip'],
+    ['assetPackage', 'application/vnd.rar'],
+    ['spine', 'application/x-spine-png'],
+  ])('issues a 100 MiB direct-upload token for %s / %s', async (slot, mimeType) => {
+    const { token, directUploads } = directHarness()
+    const response = await token(jsonRequest('uploads', { slot, mimeType, size: 100 * 1024 * 1024 }), context)
+    expect(response.status).toBe(200)
+    expect(directUploads.issueUploadToken).toHaveBeenCalledWith(key, {
+      contentType: mimeType,
+      maxBytes: 100 * 1024 * 1024,
+    })
+    const over = await token(jsonRequest('uploads', { slot, mimeType, size: 100 * 1024 * 1024 + 1 }), context)
+    expect(over.status).toBe(413)
+  })
+
+  // 上传声明与实际内容必须分别验证，防止伪造 MIME 的无效压缩包进入持久化素材清单。
+  it('validates actual uploaded archive bytes before registering the blob', async () => {
+    const bytes = await zipFiles({ 'index.html': '<html>Game</html>' })
+    const good = directHarness({ stored: { size: bytes.length, contentType: 'application/zip' } })
+    good.store.get.mockResolvedValue(new Response(Uint8Array.from(bytes)).body)
+    expect(
+      (
+        await good.complete(
+          jsonRequest('uploads/complete', { slot: 'assetPackage', pathname: key, filename: 'game.zip' }),
+          context,
+        )
+      ).status,
+    ).toBe(201)
+    const bad = directHarness({ stored: { size: 3, contentType: 'application/zip' } })
+    bad.store.get.mockResolvedValue(new Response('bad').body)
+    expect(
+      (
+        await bad.complete(
+          jsonRequest('uploads/complete', { slot: 'assetPackage', pathname: key, filename: 'game.zip' }),
+          context,
+        )
+      ).status,
+    ).toBe(415)
+    expect(bad.store.delete).toHaveBeenCalledWith(key)
+    expect(bad.metadata).toEqual([])
+  })
+
   it('refuses a token on the same terms as the multipart route', async () => {
     const { token, directUploads } = directHarness()
     const responses = await Promise.all([
@@ -453,6 +509,42 @@ describe('playable asset delete', () => {
 })
 
 describe('playable asset content', () => {
+  it('downloads HTML without executing it on the app origin', async () => {
+    const handler = createPlayableAssetContentHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'html',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'sourceHtml',
+        filename: 'game.html',
+        mimeType: 'text/html',
+        size: 1,
+        storageKey: 'source',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: {
+        put: vi.fn(),
+        delete: vi.fn(),
+        get: async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('<script>alert(1)</script>'))
+              controller.close()
+            },
+          }),
+      },
+    })
+    const response = await handler(new NextRequest('https://app.example/assets/html'), {
+      params: Promise.resolve({ taskId: 'owned', assetId: 'html' }),
+    })
+    expect(response.headers.get('content-type')).toBe('application/octet-stream')
+    expect(response.headers.get('content-disposition')).toMatch(/^attachment;/)
+    expect(response.headers.get('content-security-policy')).toContain('sandbox')
+  })
+
   it('encodes Unicode filenames in the content disposition header', async () => {
     const handler = createPlayableAssetContentHandler({
       authenticate: async () => 'user-1',

@@ -11,6 +11,8 @@ export interface PlayableProductionConfig {
     pluginVersion: string
     runtimeVersion: string
     mode: ConfirmationProposal['mode']
+    // 保留构建所用上传基底的身份，便于产物追溯；与模板 ID 分开记录。
+    sourceHtmlAssetId?: string
     sourceTemplateId?: NonNullable<ConfirmationProposal['sourceTemplateId']>
     gameplay: string
     routing: ConfirmationProposal['routing']
@@ -46,6 +48,7 @@ export function createProductionConfig(confirmation: ConfirmationProposal): Play
       runtimeVersion: mode.runtimeVersion,
       mode: confirmation.mode,
       ...(confirmation.sourceTemplateId ? { sourceTemplateId: confirmation.sourceTemplateId } : {}),
+      ...(confirmation.sourceHtmlAssetId ? { sourceHtmlAssetId: confirmation.sourceHtmlAssetId } : {}),
       gameplay: confirmation.gameplay,
       routing: confirmation.routing,
       ...(confirmation.rendering ? { rendering: confirmation.rendering } : {}),

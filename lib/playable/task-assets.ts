@@ -1,3 +1,6 @@
+import { extractAssetArchive, safeImportPath } from './asset-archive'
+import { spineAtlasPages, spineSkeletonInfo } from './spine-assets'
+import { MAX_SPINE_BYTES } from './asset-policy'
 import { inspectGlb, GLB_UPLOAD_ERROR } from './glb'
 import { GLB_MIME_TYPE, playableFileMimeType } from './asset-policy'
 import type { NextRequest } from 'next/server'
@@ -108,12 +111,38 @@ function refuseAssetContent(input: {
   }
 }
 
-function refuseOverCapacity(currentAssets: PlayableAsset[], slot: PlayableAssetSlot): Response | undefined {
+function refuseOverCapacity(currentAssets: PlayableAsset[], slot: PlayableAssetSlot, size = 0): Response | undefined {
+  if (
+    slot === 'spine' &&
+    currentAssets.filter((asset) => asset.slot === 'spine').reduce((sum, asset) => sum + asset.size, size) >
+      MAX_SPINE_BYTES
+  )
+    return Response.json({ error: 'Spine resources exceed 100 MiB' }, { status: 413 })
   if (currentAssets.length >= MAX_TASK_ASSETS) {
     return Response.json({ error: 'Too many assets' }, { status: 409 })
   }
-  if (currentAssets.filter((asset) => asset.slot === slot).length >= MAX_ASSETS_PER_SLOT) {
+  if (
+    currentAssets.filter((asset) => asset.slot === slot).length >=
+    (slot === 'spine' ? MAX_TASK_ASSETS : MAX_ASSETS_PER_SLOT)
+  ) {
     return Response.json({ error: 'Too many assets in slot' }, { status: 409 })
+  }
+}
+
+// 上传阶段校验单文件内容；Spine 的跨文件配套关系留到确认阶段检查，允许分批补齐。
+async function validateImportUpload(slot: PlayableAssetSlot, mimeType: string, filename: string, bytes: Uint8Array) {
+  if (slot === 'assetPackage') await extractAssetArchive(bytes, mimeType)
+  if (slot !== 'spine') return
+  safeImportPath(filename)
+  if (filename.includes('/') || filename.length > 255 || redactSecrets(filename) !== filename)
+    throw new Error('Invalid Spine filename')
+  if (mimeType === 'application/x-spine-atlas') {
+    if (!spineAtlasPages(bytes).length) throw new Error('Invalid Spine atlas')
+  } else if (mimeType === 'application/x-spine-png') {
+    if (!Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+      throw new Error('Invalid Spine PNG')
+  } else {
+    spineSkeletonInfo({ path: filename, bytes })
   }
 }
 
@@ -145,7 +174,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(form?.get('durationSeconds')) : null
     const refusal =
       refuseAssetContent({ slot, mimeType, size: file.size, durationSeconds }) ??
-      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot)
+      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot, file.size)
     if (refusal) return refusal
 
     const bytes = new Uint8Array(await file.arrayBuffer())
@@ -156,6 +185,11 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
         return Response.json({ error: GLB_UPLOAD_ERROR }, { status: 415 })
       }
     }
+    try {
+      await validateImportUpload(slot, mimeType, file.name, bytes)
+    } catch {
+      return Response.json({ error: 'Invalid archive or Spine asset' }, { status: 415 })
+    }
     const id = dependencies.generateId()
     const storageKey = assetStorageKey(userId, taskId, id)
     const asset: PlayableAsset = {
@@ -163,7 +197,10 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
       taskId,
       userId,
       slot,
-      filename: safeFilename(mimeType === GLB_MIME_TYPE && !/\.glb$/i.test(file.name) ? `${file.name}.glb` : file.name),
+      filename:
+        slot === 'spine'
+          ? file.name
+          : safeFilename(mimeType === GLB_MIME_TYPE && !/\.glb$/i.test(file.name) ? `${file.name}.glb` : file.name),
       mimeType,
       size: file.size,
       durationSeconds,
@@ -226,7 +263,7 @@ export function createPlayableAssetUploadTokenHandler(dependencies: DirectAssetU
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(body?.durationSeconds) : null
     const refusal =
       refuseAssetContent({ slot, mimeType, size, durationSeconds }) ??
-      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot)
+      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot, size)
     if (refusal) return refusal
 
     const pathname = assetStorageKey(userId, taskId, dependencies.generateId())
@@ -278,7 +315,7 @@ export function createPlayableAssetUploadCompleteHandler(dependencies: DirectAss
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(body?.durationSeconds) : null
     const refusal =
       refuseAssetContent({ slot, mimeType: stored.contentType, size: stored.size, durationSeconds }) ??
-      refuseOverCapacity(currentAssets, slot)
+      refuseOverCapacity(currentAssets, slot, stored.size)
     if (refusal) {
       await dependencies.store.delete(storageKey)
       return refusal
@@ -295,14 +332,30 @@ export function createPlayableAssetUploadCompleteHandler(dependencies: DirectAss
         return Response.json({ error: GLB_UPLOAD_ERROR }, { status: 415 })
       }
     }
+    // 直传完成后重新读取存储中的实际字节，不能只信令牌请求的类型和大小；失败则清理对象。
+    if (slot === 'assetPackage' || slot === 'spine') {
+      try {
+        const stream = await dependencies.store.get(storageKey)
+        if (!stream) throw new Error('Missing import')
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer())
+        if (bytes.length !== stored.size) throw new Error('Import size mismatch')
+        await validateImportUpload(slot, stored.contentType, filename, bytes)
+      } catch {
+        await dependencies.store.delete(storageKey)
+        return Response.json({ error: 'Invalid archive or Spine asset' }, { status: 415 })
+      }
+    }
     return recordAsset(dependencies, {
       id,
       taskId,
       userId,
       slot,
-      filename: safeFilename(
-        stored.contentType === GLB_MIME_TYPE && !/\.glb$/i.test(filename) ? `${filename}.glb` : filename,
-      ),
+      filename:
+        slot === 'spine'
+          ? filename
+          : safeFilename(
+              stored.contentType === GLB_MIME_TYPE && !/\.glb$/i.test(filename) ? `${filename}.glb` : filename,
+            ),
       mimeType: stored.contentType,
       size: stored.size,
       durationSeconds,
@@ -337,10 +390,18 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
     if (!asset) return Response.json({ error: 'Not found' }, { status: 404 })
     const stream = await dependencies.store.get(asset.storageKey)
     if (!stream) return Response.json({ error: 'Not found' }, { status: 404 })
+    // 用户源码与导入包仅提供下载，禁止在本站同源页面中直接执行上传的 HTML。
     return new Response(stream, {
       headers: {
-        'Content-Type': asset.mimeType,
-        'Content-Disposition': inlineContentDisposition(asset.filename),
+        'Content-Type': ['sourceHtml', 'assetPackage', 'spine'].includes(asset.slot)
+          ? 'application/octet-stream'
+          : asset.mimeType,
+        'Content-Disposition': ['sourceHtml', 'assetPackage', 'spine'].includes(asset.slot)
+          ? inlineContentDisposition(asset.filename).replace(/^inline/, 'attachment')
+          : inlineContentDisposition(asset.filename),
+        ...(['sourceHtml', 'assetPackage', 'spine'].includes(asset.slot)
+          ? { 'Content-Security-Policy': "sandbox; default-src 'none'" }
+          : {}),
         'Cache-Control': 'private, max-age=300',
         'X-Content-Type-Options': 'nosniff',
       },

@@ -241,6 +241,26 @@ describe('runPlayableBuild', () => {
     expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
   })
 
+  it('seeds uploaded HTML without running a registered template build', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-uploaded-html')
+    input.confirmation = {
+      ...input.confirmation,
+      sourceHtmlAssetId: 'html-source',
+      routing: { match: 'freeform', confidence: 1, differences: ['Adapt uploaded HTML'] },
+    }
+    input.baseHtml = await readFile('public/playable-templates/center_collision.html', 'utf8')
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ workspace }) => {
+        expect(await readFile(path.join(workspace, 'output.html'), 'utf8')).toBe(input.baseHtml)
+        expect(await readFile(path.join(workspace, 'current-playable.html'), 'utf8')).toBe(input.baseHtml)
+      },
+    })
+    expect(result.html).toBe(input.baseHtml)
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+  })
+
   it('classifies Sandbox allocation failures before workspace setup', async () => {
     const providerError = Object.assign(new Error('private Vercel response'), { statusCode: 402 })
 

@@ -57,7 +57,9 @@ describe('PlayableHome reference uploads', () => {
 
     const image = new File(['image'], 'style.png', { type: 'image/png' })
     const video = new File(['video'], 'motion.webm', { type: 'video/webm' })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), { target: { files: [image, video] } })
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+      target: { files: [image, video] },
+    })
 
     expect(screen.getByRole('list', { name: '已选择的参考素材' })).toHaveTextContent('style.png')
     expect(screen.getByRole('list', { name: '已选择的参考素材' })).toHaveTextContent('motion.webm')
@@ -205,7 +207,7 @@ describe('PlayableHome reference uploads', () => {
       <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
     )
 
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['svg'], 'unsafe.svg', { type: 'image/svg+xml' }),
@@ -243,7 +245,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '原样重试' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['ok'], 'success.png', { type: 'image/png' }),
@@ -283,7 +285,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '第一版' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
       target: { files: [new File(['x'], 'reference.png', { type: 'image/png' })] },
     })
     fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
@@ -308,11 +310,77 @@ it('uploads a GLB with missing browser MIME into game resources from the home pa
   const bytes = triangleGlb()
   const file = new File([bytes], 'block.glb')
   Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer })
-  fireEvent.change(screen.getByLabelText('上传参考图片、视频或 GLB 模型'), { target: { files: [file] } })
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    target: { files: [file] },
+  })
   expect(screen.getByText('block.glb')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
   await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/model-task'))
   const form = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/assets'))![1]!.body as FormData
   expect(form.get('slot')).toBe('models')
   expect((form.get('file') as File).type).toBe('model/gltf-binary')
+})
+
+it('starts a task from an uploaded HTML source without a text prompt', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+    if (String(input).endsWith('/assets'))
+      return Response.json({ asset: { id: 'html-1', slot: 'sourceHtml', mimeType: 'text/html' } }, { status: 201 })
+    return Response.json({ task: { id: 'html-task' } }, { status: 201 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(
+    <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+  )
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    target: { files: [new File(['<!doctype html><button>Play</button>'], 'game.html', { type: 'text/html' })] },
+  })
+  expect(screen.getByText('game.html')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+  await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/html-task'))
+  const form = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/assets'))![1]!.body as FormData
+  expect(form.get('slot')).toBe('sourceHtml')
+  expect((form.get('file') as File).type).toBe('text/html')
+})
+
+it('uploads a Spine group together and gives its PNG the Spine size policy', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })
+    if (String(input).endsWith('/assets')) {
+      const form = init?.body as FormData
+      return Response.json(
+        {
+          asset: {
+            id: (form.get('file') as File).name,
+            slot: form.get('slot'),
+            mimeType: (form.get('file') as File).type,
+          },
+        },
+        { status: 201 },
+      )
+    }
+    if (String(input).endsWith('/uploads')) return Response.json({}, { status: 501 })
+    return Response.json({ task: { id: 'spine-task' } }, { status: 201 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(
+    <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+  )
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    target: {
+      files: [
+        new File(['hero.png'], 'hero.atlas'),
+        new File(['skeleton'], 'hero.skel'),
+        new File([new Uint8Array(5 * 1024 * 1024)], 'hero.png', { type: 'image/png' }),
+      ],
+    },
+  })
+  expect(screen.queryByText('单个参考素材不能超过 4 MiB')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
+  await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/tasks/spine-task'))
+  const forms = fetchMock.mock.calls
+    .filter(([url]) => String(url).endsWith('/assets'))
+    .map(([, init]) => init!.body as FormData)
+  expect(forms.map((form) => form.get('slot'))).toEqual(['spine', 'spine', 'spine'])
+  expect((forms[2].get('file') as File).type).toBe('application/x-spine-png')
 })

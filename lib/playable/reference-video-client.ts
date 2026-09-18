@@ -67,9 +67,10 @@ async function uploadDurationSeconds(slot: PlayableAssetSlot, file: File): Promi
 
 /** The server repeats the duration check; its refusal gets the same message. */
 async function assetUploadErrorMessage(response: Response, fallback: string): Promise<string> {
-  if (response.status === 415) return '素材格式不受支持；GLB 需包含完整网格及内嵌贴图，且不使用压缩解码器'
+  if (response.status === 415) return '素材无法读取；请检查文件格式、压缩包完整性及 Spine 导出文件'
   if (response.status !== 413) return fallback
   const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined
+  if (body?.error === 'Spine resources exceed 100 MiB') return 'Spine 资源合计不能超过 100 MiB'
   return body?.error === 'Video too long' ? REFERENCE_VIDEO_TOO_LONG_MESSAGE : fallback
 }
 
@@ -138,8 +139,9 @@ export async function uploadPlayableAsset(
     } catch {
       throw new Error(GLB_UPLOAD_ERROR)
     }
-    if (file.type !== mimeType) file = new File([file], file.name, { type: mimeType })
   }
+  // 浏览器可能不给扩展名文件正确 MIME；直传文件必须与服务端签发令牌时的归一化类型一致。
+  if (file.type !== mimeType) file = new File([file], file.name, { type: mimeType })
   const assetsUrl = `/api/playable-tasks/${encodeURIComponent(taskId)}/assets`
   const durationSeconds = await uploadDurationSeconds(slot, file)
   if (file.size > MAX_FORM_UPLOAD_BYTES) {

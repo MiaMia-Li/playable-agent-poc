@@ -1,3 +1,5 @@
+import { IMPORTED_ASSETS_PROMPT } from './task-imports'
+import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT } from './source-html'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
@@ -179,6 +181,11 @@ async function createProposal(
     currentConfirmation: input.confirmation ?? null,
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
+    sourceHtml: input.sourceHtml ?? null,
+    importedAssets: input.importedAssets ?? [],
+    importedSourceFiles: input.importedSourceFiles ?? [],
+    importedAssetsInstructions: IMPORTED_ASSETS_PROMPT,
+    sourceHtmlInstructions: SOURCE_HTML_REQUIREMENT_PROMPT,
     attachedAssetIds: input.attachedAssetIds ?? [],
     referenceImages: input.referenceImages ?? [],
     gameplayBlueprint: input.gameplayBlueprint ?? null,
@@ -305,6 +312,7 @@ export async function executeBuildAgent(
   onActivity?: BuildActivityCallback,
   /** From `referenceVisualsBuildPrompt`; sent in every phase, since the self-comparison follows acceptance. */
   visualPrompt = '',
+  sourceHtmlAssetId?: string,
 ) {
   const validationEnabled = isPlayableSandboxValidationEnabled()
   const skill = await loadSkill(skillRoot, {
@@ -333,7 +341,9 @@ export async function executeBuildAgent(
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
           PLAYABLE_TOOLS_PROMPT,
-          ...(sourceTemplateId ? [] : [RENDERING_BUILD_PROMPT]),
+          SOURCE_HTML_BUILD_PROMPT,
+          IMPORTED_ASSETS_PROMPT,
+          ...(sourceTemplateId || sourceHtmlAssetId ? [] : [RENDERING_BUILD_PROMPT]),
           NATIVE_TEMPLATE_UI_PROMPT,
           REFERENCE_IMAGES_BUILD_PROMPT,
           visualPrompt,
@@ -343,7 +353,10 @@ export async function executeBuildAgent(
               ? PREVIEW_REPAIR_PROMPT
               : input.phase === 'acceptance'
                 ? FULL_ACCEPTANCE_PROMPT
-                : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, { validationEnabled }),
+                : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, {
+                    validationEnabled,
+                    sourceHtmlAssetId,
+                  }),
         ]
           .filter(Boolean)
           .join('\n'),
@@ -405,9 +418,18 @@ export function createCodexBuildPrompt(
   revision?: RevisionProposal,
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
-  options: { validationEnabled?: boolean } = {},
+  options: { validationEnabled?: boolean; sourceHtmlAssetId?: string } = {},
 ): string {
   const validationEnabled = options.validationEnabled ?? true
+  // 上传 HTML 的修改指令优先于模板和重新生成路径，防止原实现被默认脚手架覆盖。
+  if (options.sourceHtmlAssetId)
+    return [
+      SOURCE_HTML_BUILD_PROMPT,
+      ...codexValidationInstructions(
+        buildValidationCommand({ routing: { match: route, confidence: 1, differences: [] } }),
+        validationEnabled,
+      ),
+    ].join('\n')
   // 首次生成与修改共用模板优先级，不能让 patch 绕过独立 HTML 的规则。
   if (sourceTemplateId) return sourceTemplateBuildPrompt(revision?.strategy, { validationEnabled })
   const selection = {
@@ -497,6 +519,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
                 hasKeyframes: Boolean(input.referenceKeyframes?.length),
                 patch: input.revision?.strategy === 'patch',
               }),
+              input.confirmation.sourceHtmlAssetId,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,

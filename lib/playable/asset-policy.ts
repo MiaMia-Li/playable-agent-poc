@@ -8,13 +8,25 @@ export const playableResourceAssetSlots = [
 ] as const
 
 export const playableReferenceAssetSlots = ['referenceImage', 'referenceVideo'] as const
-export const playableAssetSlots = [...playableResourceAssetSlots, ...playableReferenceAssetSlots] as const
+export const playableAssetSlots = [
+  ...playableResourceAssetSlots,
+  ...playableReferenceAssetSlots,
+  'sourceHtml',
+  'assetPackage',
+  'spine',
+] as const
 
 export type PlayableResourceAssetSlot = (typeof playableResourceAssetSlots)[number]
 export type PlayableReferenceAssetSlot = (typeof playableReferenceAssetSlots)[number]
 export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
 
 export const MAX_ASSET_BYTES = 4 * 1024 * 1024
+// 业务上限与请求体分流阈值分开维护；展开大小和条目数另行限制，避免小压缩包耗尽内存。
+export const MAX_HTML_BYTES = 100 * 1024 * 1024
+export const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+export const MAX_EXPANDED_ARCHIVE_BYTES = 300 * 1024 * 1024
+export const MAX_ARCHIVE_ENTRIES = 1000
+export const MAX_SPINE_BYTES = 100 * 1024 * 1024
 export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
 
 /**
@@ -27,12 +39,11 @@ export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
 export const MAX_REFERENCE_VIDEO_SECONDS = 180
 export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
 /**
- * Largest file the browser posts through the multipart route. Vercel refuses
- * function request bodies over 4.5 MB before the route runs, so anything
- * bigger is uploaded straight to storage instead.
+ * multipart 请求仅承载不超过 4 MiB 的文件，给平台的请求体限制预留表单开销。
+ * 超过此阈值走存储直传；提高 HTML 等业务上限时不能同步提高这个阈值。
  */
-export const MAX_FORM_UPLOAD_BYTES = MAX_ASSET_BYTES
-export const MAX_HOME_ATTACHMENTS = 6
+export const MAX_FORM_UPLOAD_BYTES = 4 * 1024 * 1024
+export const MAX_HOME_ATTACHMENTS = 30
 export const MAX_ASSETS_PER_SLOT = 8
 export const MAX_TASK_ASSETS = 30
 
@@ -43,19 +54,61 @@ export const PLAYABLE_VIDEO_MIME_TYPES = ['video/mp4', 'video/webm'] as const
 export const GLB_MIME_TYPE = 'model/gltf-binary'
 export const PLAYABLE_MODEL_SLOTS = ['models', 'tileFaces', 'backgroundBoard', 'animationEffects'] as const
 
+export const ARCHIVE_MIME_TYPES = ['application/zip', 'application/vnd.rar'] as const
+export const SPINE_MIME_TYPES = [
+  'application/x-spine-atlas',
+  'application/x-spine-skel',
+  'application/x-spine-json',
+  'application/x-spine-png',
+] as const
+
+/** 同批或已选附件含 Spine 元数据时，把 PNG 归入 Spine 资源，避免按参考图限制大小和用途。 */
+export function normalizeAttachmentBatch(files: File[], hasSpine = false): File[] {
+  const spine = hasSpine || files.some((file) => /\.(atlas|skel)$/i.test(file.name))
+  return files.map((file) =>
+    spine && /\.png$/i.test(file.name)
+      ? new File([file], file.name, { type: 'application/x-spine-png', lastModified: file.lastModified })
+      : file,
+  )
+}
+
+export function assetSizeError(slot: PlayableAssetSlot): string {
+  if (slot === 'referenceVideo') return '单个参考视频不能超过 100 MiB'
+  if (slot === 'sourceHtml') return '单个 HTML 文件不能超过 100 MiB'
+  if (slot === 'assetPackage') return '单个压缩包不能超过 100 MiB'
+  if (slot === 'spine') return 'Spine 资源合计不能超过 100 MiB'
+  return '单个参考素材不能超过 4 MiB'
+}
+
 /** Browsers often leave GLB MIME empty or report application/octet-stream. */
 export function playableFileMimeType(file: { name: string; type: string }): string {
   if (/\.glb$/i.test(file.name) && ['', 'application/octet-stream', GLB_MIME_TYPE].includes(file.type))
     return GLB_MIME_TYPE
+  if (/\.html?$/i.test(file.name) && ['', 'application/octet-stream', 'text/html'].includes(file.type))
+    return 'text/html'
+  if (/\.zip$/i.test(file.name)) return 'application/zip'
+  if (/\.rar$/i.test(file.name)) return 'application/vnd.rar'
+  if (/\.atlas$/i.test(file.name)) return 'application/x-spine-atlas'
+  if (/\.skel$/i.test(file.name)) return 'application/x-spine-skel'
+  if (/\.json$/i.test(file.name)) return 'application/x-spine-json'
   return file.type
 }
 
 export function attachmentSlotForFile(file: { name: string; type: string }): PlayableAssetSlot | undefined {
   const mimeType = playableFileMimeType(file)
-  return mimeType === GLB_MIME_TYPE ? 'models' : referenceSlotForMimeType(mimeType)
+  if ((ARCHIVE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'assetPackage'
+  if ((SPINE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'spine'
+  return mimeType === 'text/html'
+    ? 'sourceHtml'
+    : mimeType === GLB_MIME_TYPE
+      ? 'models'
+      : referenceSlotForMimeType(mimeType)
 }
 
 const policies: Record<PlayableAssetSlot, readonly string[]> = {
+  assetPackage: ARCHIVE_MIME_TYPES,
+  spine: SPINE_MIME_TYPES,
+  sourceHtml: ['text/html'],
   models: [GLB_MIME_TYPE],
   tileFaces: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
   backgroundBoard: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
@@ -83,6 +136,9 @@ export function isMimeTypeAllowedForSlot(slot: PlayableAssetSlot, mimeType: stri
 }
 
 export function maxAssetBytesForSlot(slot: PlayableAssetSlot): number {
+  if (slot === 'sourceHtml') return MAX_HTML_BYTES
+  if (slot === 'assetPackage') return MAX_ARCHIVE_BYTES
+  if (slot === 'spine') return MAX_SPINE_BYTES
   return slot === 'referenceVideo' ? MAX_REFERENCE_VIDEO_BYTES : MAX_ASSET_BYTES
 }
 
@@ -97,7 +153,7 @@ export function referenceSlotForMimeType(mimeType: string): PlayableReferenceAss
 
 export const PLAYABLE_REFERENCE_ACCEPT = [...PLAYABLE_IMAGE_MIME_TYPES, ...PLAYABLE_VIDEO_MIME_TYPES].join(',')
 
-export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${GLB_MIME_TYPE},.glb`
+export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${GLB_MIME_TYPE},.glb,text/html,.html,.htm,.zip,.rar,.atlas,.skel,.json`
 
 /** Keep all confirmation buttons and the server gate consistent. */
 export function hasIncompatibleModelAssets(

@@ -548,6 +548,9 @@ function validateRenderingDecision(
 export const confirmationProposalSchema = z
   .strictObject({
     rendering: renderingDecisionSchema.optional(),
+    // 宿主绑定的源码素材 ID（也可指向带 HTML 入口的压缩包），以及确认时锁定的导入集合。
+    sourceHtmlAssetId: z.string().min(1).max(200).optional(),
+    importedAssetIds: z.array(z.string().min(1).max(200)).max(30).optional(),
     referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
@@ -611,6 +614,8 @@ export const requirementInputRequestSchema = z.strictObject({
 })
 
 export const requirementBriefSchema = z.strictObject({
+  sourceHtmlAssetId: z.string().min(1).max(200).optional(),
+  importedAssetIds: z.array(z.string().min(1).max(200)).max(30).optional(),
   sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
   version: z.literal(1),
   summary: z.string().trim().max(600),
