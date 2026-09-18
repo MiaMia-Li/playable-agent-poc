@@ -737,6 +737,7 @@ type RequirementProcessingStage =
   | 'user_message_store'
   | 'agent_reply'
   | 'reply_validation'
+  | 'revision_validation'
   | 'annotation_store'
   | 'brief_store'
   | 'agent_message_store'
@@ -746,6 +747,7 @@ function requirementStageFailureMessage(stage: RequirementProcessingStage): stri
   if (stage === 'context_load') return '无法读取任务上下文，请检查数据库连接后重试'
   if (stage === 'user_message_store') return '无法保存你的消息，请检查数据库连接后重试'
   if (stage === 'reply_validation') return 'Agent 返回的需求方案未通过校验，请重试'
+  if (stage === 'revision_validation') return '修改基准版本未通过校验，请选择基准版本后重新发送修改要求'
   if (stage === 'annotation_store') return '无法保存玩法标注，请检查数据库后重试'
   if (stage === 'brief_store') return '无法保存实时 Brief，请检查数据库后重试'
   if (stage === 'agent_message_store') return '无法保存助手回复，请检查数据库后重试'
@@ -764,6 +766,10 @@ function logRequirementStageFailure(stage: RequirementProcessingStage): void {
   }
   if (stage === 'reply_validation') {
     console.error('Playable requirement processing failed: reply validation failed')
+    return
+  }
+  if (stage === 'revision_validation') {
+    console.error('Playable requirement processing failed: revision validation failed')
     return
   }
   if (stage === 'annotation_store') {
@@ -2443,9 +2449,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 )
               }
               const serialized = JSON.stringify(validatedReply)
-              stage = 'agent_message_store'
-              await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
+              // 纯信息回复不改变任务状态，可直接保存；其余回复必须在对应状态转换成功后保存。
+              // 否则刷新会读到尚未生效的 Confirmation Proposal，出现“看得到但不能构建”的情况。
               if (validatedReply.kind === 'informational') {
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 enqueue({
                   type: 'informational',
                   message: validatedReply.message,
@@ -2461,6 +2469,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   ? await dependencies.repository.clearPendingRevision(access.task.id, access.userId)
                   : await dependencies.repository.setDraft(access.task.id, access.userId)
                 if (!transitioned) throw new Error('Task phase conflict')
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 if (validatedReply.tools?.includes('offer_market_research')) {
                   await dependencies.repository.appendEvent({
                     taskId: access.task.id,
@@ -2491,8 +2501,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               )
               delete validated.importedAssetIds
               if (imports.assetIds.length) validated.importedAssetIds = imports.assetIds
-              stage = 'phase_transition'
               if (validatedReply.kind === 'revision') {
+                // 基准版本校验失败需要重新选择版本，不能误报为刷新即可解决的状态冲突。
+                stage = 'revision_validation'
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
                 let revision = resolveRevisionProposal({
                   plan: lockedRevisionBase
@@ -2512,8 +2523,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     throw new Error('Revision base version conflict')
                   revision.baseSelection = 'manual'
                 }
+                // 最新产物本就是默认修改基准，显式填写其版本号不应额外要求读取历史源码。
+                // 切换到历史版本仍须先读取该版本，避免模型套用当前配置却声称基于历史版本修改。
                 if (
                   revision.requestedBaseVersion != null &&
+                  builds.find((build) => build.id === revision.baseBuildId)?.artifactKey !==
+                    access.task.latestArtifactKey &&
                   referenceToolCache.get(`read_version:${revision.requestedBaseVersion}`) !== revision.baseBuildId
                 ) {
                   throw new Error('Revision base version must be read before confirmation')
@@ -2524,6 +2539,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                     revision,
                     builds.find((build) => build.id === revision.baseBuildId)?.confirmation,
                   ) ?? revision
+                stage = 'phase_transition'
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
                   access.userId,
@@ -2531,6 +2547,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   revision,
                 )
                 if (!transitioned) throw new Error('Task phase conflict')
+                stage = 'agent_message_store'
+                await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
                 await dependencies.repository.appendEvent({
                   taskId: access.task.id,
                   type: 'revision_proposed',
@@ -2548,12 +2566,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
+              stage = 'phase_transition'
               const transitioned = await dependencies.repository.setAwaitingConfirmation(
                 access.task.id,
                 access.userId,
                 validated,
               )
               if (!transitioned) throw new Error('Task phase conflict')
+              stage = 'agent_message_store'
+              await dependencies.repository.appendMessage(access.task.id, 'agent', serialized)
               await dependencies.repository.appendEvent({
                 taskId: access.task.id,
                 type: 'confirmation_proposed',
