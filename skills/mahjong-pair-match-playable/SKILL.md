@@ -105,7 +105,7 @@ Also verify in a browser:
 - the explicitly confirmed gameplay and revision requirements work;
 - audio starts muted and follows the parent mute-message contract;
 - the first interaction remains inside gameplay and does not open the store;
-- the expected destination URL can be identified without opening it during automated testing;
+- real CTA input reaches `mraid.open` with the confirmed URL through `navigation.verify`, without opening a real store;
 - portrait and landscape remain visible and interactive.
 
 Do not turn template-specific match counts, score values, motion paths, stage sequences, or timing into release gates unless the confirmed requirements explicitly request them.
@@ -131,3 +131,10 @@ For confirmed adaptations that need custom 3D rendering beyond the selected temp
 read `references/3d-runtime.md`. The shared bundler can embed Three.js and optional
 physics without tying them to a specific gameplay. Preserve existing template behavior
 and renderer for revisions unless the confirmed change requires replacing them.
+
+## Store navigation
+
+Read `references/cta-navigation.md` for MRAID button wiring, confirmed automatic
+navigation only when explicitly confirmed, and mandatory intercepted CTA
+acceptance with `navigation.verify`. This replaces URL-only CTA inspection; never
+open a real store during tests. Preserve explicitly requested automatic navigation.
