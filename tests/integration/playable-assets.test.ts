@@ -335,8 +335,6 @@ describe('playable direct asset upload', () => {
 
   it.each([
     ['sourceHtml', 'text/html'],
-    ['assetPackage', 'application/zip'],
-    ['assetPackage', 'application/vnd.rar'],
     ['spine', 'application/x-spine-png'],
   ])('issues a 100 MiB direct-upload token for %s / %s', async (slot, mimeType) => {
     const { token, directUploads } = directHarness()
@@ -349,6 +347,31 @@ describe('playable direct asset upload', () => {
     const over = await token(jsonRequest('uploads', { slot, mimeType, size: 100 * 1024 * 1024 + 1 }), context)
     expect(over.status).toBe(413)
   })
+
+  it.each(['application/zip', 'application/vnd.rar'])(
+    'accepts asset packages beyond 100 MiB up to the 300 MiB import budget for %s',
+    async (mimeType) => {
+      const { token, directUploads } = directHarness()
+      const formerLimit = 100 * 1024 * 1024
+      const packageLimit = 300 * 1024 * 1024
+
+      const response = await token(
+        jsonRequest('uploads', { slot: 'assetPackage', mimeType, size: formerLimit + 1 }),
+        context,
+      )
+      expect(response.status).toBe(200)
+      expect(directUploads.issueUploadToken).toHaveBeenCalledWith(key, {
+        contentType: mimeType,
+        maxBytes: packageLimit,
+      })
+
+      const over = await token(
+        jsonRequest('uploads', { slot: 'assetPackage', mimeType, size: packageLimit + 1 }),
+        context,
+      )
+      expect(over.status).toBe(413)
+    },
+  )
 
   // 上传声明与实际内容必须分别验证，防止伪造 MIME 的无效压缩包进入持久化素材清单。
   it('validates actual uploaded archive bytes before registering the blob', async () => {

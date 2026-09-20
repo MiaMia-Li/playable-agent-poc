@@ -23,7 +23,6 @@ export async function packageFolder(files: readonly File[]): Promise<File> {
     if (names.has(path.toLowerCase())) throw new Error('文件夹包含重名文件（不区分大小写）')
     names.add(path.toLowerCase())
     total += file.size
-    if (file.size > MAX_ARCHIVE_BYTES) throw new Error('文件夹内单个文件不能超过 100 MiB')
     if (total > MAX_EXPANDED_ARCHIVE_BYTES) throw new Error('文件夹原始文件合计不能超过 300 MiB')
     selected.push({ file, path })
     if (selected.length > MAX_ARCHIVE_ENTRIES) throw new Error('文件夹最多包含 1000 个文件')
@@ -42,6 +41,6 @@ export async function packageFolder(files: readonly File[]): Promise<File> {
       else resolve(new Uint8Array(data))
     })
   })
-  if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error('文件夹打包后不能超过 100 MiB')
+  if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error('文件夹打包后不能超过 300 MiB')
   return new File([bytes], `${root}.zip`, { type: 'application/zip' })
 }
