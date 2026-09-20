@@ -1,4 +1,5 @@
 import { after } from 'next/server'
+import { readBuildSandboxState } from './build-sandbox-state'
 import { generateId } from '@/lib/utils/id'
 import { PrivateVercelArtifactStore } from './artifact-store'
 import { readSharedPlayableAIKey } from './shared-ai-key'
@@ -70,6 +71,8 @@ export const playableTaskHandlers = createPlayableTaskHandlers({
   readApiKey: localDemo ? readLocalDemoApiKey : localCodex ? readLocalCodexAuthMarker : () => readSharedPlayableAIKey(),
   readMediaApiKey: localCodex ? () => readSharedPlayableAIKey() : undefined,
   repository: playableTaskRepository,
+  // 轮询可能落到另一服务实例，使用远程查询而非进程内的 Agent 状态。
+  readBuildSandboxState,
   agent: playableAgent,
   artifactStore: playableArtifactStore,
   schedule: localDemo ? (work) => void work().catch(() => undefined) : (work) => after(work),

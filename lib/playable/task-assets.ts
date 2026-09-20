@@ -2,7 +2,7 @@ import { extractAssetArchive, safeImportPath } from './asset-archive'
 import { spineAtlasPages, spineSkeletonInfo } from './spine-assets'
 import { MAX_SPINE_BYTES } from './asset-policy'
 import { inspectGlb, GLB_UPLOAD_ERROR } from './glb'
-import { GLB_MIME_TYPE, playableFileMimeType } from './asset-policy'
+import { GLB_MIME_TYPE, SVG_MIME_TYPE, playableFileMimeType } from './asset-policy'
 import type { NextRequest } from 'next/server'
 import type { ArtifactStore } from './artifact-store'
 import { redactSecrets } from './redact'
@@ -390,7 +390,9 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
           : inlineContentDisposition(asset.filename),
         ...(['sourceHtml', 'assetPackage', 'spine'].includes(asset.slot)
           ? { 'Content-Security-Policy': "sandbox; default-src 'none'" }
-          : {}),
+          : asset.mimeType === SVG_MIME_TYPE
+            ? { 'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" }
+            : {}),
         'Cache-Control': 'private, max-age=300',
         'X-Content-Type-Options': 'nosniff',
       },
@@ -399,6 +401,7 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
 }
 
 function importedEntryContentType(path: string): string | undefined {
+  if (/\.svg$/i.test(path)) return SVG_MIME_TYPE
   if (/\.png$/i.test(path)) return 'image/png'
   if (/\.jpe?g$/i.test(path)) return 'image/jpeg'
   if (/\.webp$/i.test(path)) return 'image/webp'
@@ -443,7 +446,10 @@ export function createPlayableAssetEntryHandler(dependencies: AssetAccessHandler
         headers: {
           'Content-Type': contentType,
           'Content-Disposition': inlineContentDisposition(file.path.split('/').at(-1) ?? file.path),
-          'Content-Security-Policy': "sandbox; default-src 'none'",
+          'Content-Security-Policy':
+            contentType === SVG_MIME_TYPE
+              ? "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+              : "sandbox; default-src 'none'",
           'Cache-Control': 'private, max-age=300',
           'X-Content-Type-Options': 'nosniff',
         },

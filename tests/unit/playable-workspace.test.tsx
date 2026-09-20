@@ -1364,7 +1364,7 @@ describe('PlayableWorkspace', () => {
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['image'], 'board.png', { type: 'image/png' }),
@@ -1444,7 +1444,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    fireEvent.change(screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['image'], 'success.png', { type: 'image/png' }),
@@ -1503,7 +1503,7 @@ describe('PlayableWorkspace', () => {
       <ChatWorkspace taskId="task-7" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
     )
 
-    const input = screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源')
+    const input = screen.getByLabelText('选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源')
     fireEvent.change(input, {
       target: { files: [new File(['local'], 'local.png', { type: 'image/png' })] },
     })
@@ -1601,7 +1601,7 @@ describe('PlayableWorkspace', () => {
     const backgroundInput = screen.getByLabelText('为背景与棋盘上传素材')
     expect(backgroundInput).toHaveAttribute(
       'accept',
-      'image/png,image/jpeg,image/webp,image/gif,model/gltf-binary,.glb',
+      'image/png,image/jpeg,image/webp,image/gif,image/svg+xml,model/gltf-binary,.glb',
     )
     fireEvent.change(backgroundInput, {
       target: { files: [new File(['image'], 'board.png', { type: 'image/png' })] },
@@ -2073,4 +2073,40 @@ it('shows model preview and role editing, and blocks confirmation until a 3D rou
     />,
   )
   expect(screen.queryByText(/GLB 模型需要 Three.js/)).not.toBeInTheDocument()
+})
+it('uploads animated SVG as a resource without sending it as a reference screenshot', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/assets')) {
+      expect((init?.body as FormData).get('slot')).toBe('animationEffects')
+      return Response.json(
+        {
+          asset: {
+            id: 'svg-1',
+            filename: 'water.svg',
+            slot: 'animationEffects',
+            mimeType: 'image/svg+xml',
+            size: 100,
+          },
+        },
+        { status: 201 },
+      )
+    }
+    return new Response(`${JSON.stringify({ type: 'informational', message: '水面素材已收到' })}\n`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(
+    <ChatWorkspace taskId="svg-task" phase="draft" onProposal={vi.fn()} onPhase={vi.fn()} onRequireApiKey={vi.fn()} />,
+  )
+  fireEvent.change(screen.getByLabelText('选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
+    target: {
+      files: [new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'water.svg', { type: 'image/svg+xml' })],
+    },
+  })
+  fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '使用这个动态水面作背景' } })
+  fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+  expect(await screen.findByText('水面素材已收到')).toBeInTheDocument()
+  const message = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/messages'))!
+  const body = JSON.parse(message[1]!.body as string)
+  expect(body.attachmentIds).toEqual(['svg-1'])
+  expect(body.referenceImageIds ?? []).toEqual([])
 })

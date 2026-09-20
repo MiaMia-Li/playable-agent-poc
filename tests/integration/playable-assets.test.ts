@@ -43,6 +43,20 @@ function harness(owner = 'user-1') {
 }
 
 describe('playable asset upload', () => {
+  it.each(['image/svg+xml', '', 'application/octet-stream'])(
+    'preserves SVG animation bytes with MIME %s',
+    async (type) => {
+      const { handler, store } = harness()
+      const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="20" height="20"><animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/></rect></svg>'
+      const response = await handler(uploadRequest(new File([svg], 'water.svg', { type }), 'backgroundBoard'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(response.status).toBe(201)
+      expect((await response.json()).asset).toMatchObject({ mimeType: 'image/svg+xml', slot: 'backgroundBoard' })
+      expect(store.put).toHaveBeenCalledWith(expect.any(String), new TextEncoder().encode(svg), 'image/svg+xml')
+    },
+  )
   it.each(['text/html', '', 'application/octet-stream'])('accepts HTML source with MIME %s', async (type) => {
     const { handler, store } = harness()
     const response = await handler(
@@ -604,6 +618,70 @@ describe('playable asset content', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('image/png')
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
+  it('previews an animated SVG entry from an owned uploaded folder archive in a sandbox', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><style>circle{animation:pulse 1s infinite}</style></svg>'
+    const bytes = await zipFiles({ 'game/effects/pulse.svg': svg })
+    const handler = createPlayableAssetEntryHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'folder-1',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'assetPackage',
+        filename: 'game.zip',
+        mimeType: 'application/zip',
+        size: bytes.length,
+        storageKey: 'folder',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: { put: vi.fn(), delete: vi.fn(), get: async () => new Response(Uint8Array.from(bytes)).body! },
+    })
+
+    const response = await handler(
+      new NextRequest('https://app.example/assets/folder-1/entry?path=game%2Feffects%2Fpulse.svg'),
+      { params: Promise.resolve({ taskId: 'owned', assetId: 'folder-1' }) },
+    )
+
+    expect(response.headers.get('content-type')).toBe('image/svg+xml')
+    expect(response.headers.get('content-security-policy')).toBe(
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    )
+    expect(await response.text()).toBe(svg)
+  })
+
+  it('serves SVG as an animated image but sandboxes direct document navigation', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    const handler = createPlayableAssetContentHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'svg',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'animationEffects',
+        filename: 'water.svg',
+        mimeType: 'image/svg+xml',
+        size: svg.length,
+        storageKey: 'svg',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: { put: vi.fn(), delete: vi.fn(), get: async () => new Response(svg).body! },
+    })
+    const response = await handler(new NextRequest('https://app.example/assets/svg'), {
+      params: Promise.resolve({ taskId: 'owned', assetId: 'svg' }),
+    })
+    expect(response.headers.get('content-type')).toBe('image/svg+xml')
+    expect(response.headers.get('content-disposition')).toMatch(/^inline;/)
+    expect(response.headers.get('content-security-policy')).toBe(
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    )
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await response.text()).toBe(svg)
   })
 
   it('downloads HTML without executing it on the app origin', async () => {

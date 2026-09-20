@@ -266,6 +266,32 @@ describe('CodexPlayableAgent', () => {
     } as never)
   })
 
+  it('propagates cancellation of one build without cancelling a replacement build', async () => {
+    const signals: AbortSignal[] = []
+    const pending: Array<() => void> = []
+    const buildRunner = vi.fn((_input: ConfirmedBuildInput, options?: { abortSignal?: AbortSignal }) => {
+      signals.push(options!.abortSignal!)
+      return new Promise<BuildResult>((_resolve, reject) => {
+        pending.push(() => reject(new Error('finished')))
+      })
+    })
+    const agent = new CodexPlayableAgent({ buildRunner })
+    const firstController = new AbortController()
+    const input = { taskId: 'same-task', apiKey: 'sk-test', confirmation: validProposal }
+    const first = agent.build({ ...input, abortSignal: firstController.signal }).catch(() => undefined)
+    const second = agent.build(input).catch(() => undefined)
+    firstController.abort()
+    expect(signals[0].aborted).toBe(true)
+    expect(signals[1].aborted).toBe(false)
+    // 让旧构建先退出，再按任务取消，验证旧 finally 没有删除新构建的取消句柄。
+    pending[0]()
+    await first
+    await agent.cancel(input.taskId)
+    expect(signals[1].aborted).toBe(true)
+    pending[1]()
+    await second
+  })
+
   it('configures Codex Harness to use OpenRouter Responses', () => {
     createCodexBuildAgent({
       apiKey: 'sk-or-test',

@@ -428,6 +428,9 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
     confirmationProposalSchema.parse(input.confirmation)
     const validationEnabled = isPlayableSandboxValidationEnabled()
     const controller = new AbortController()
+    // 同时响应主动取消和本轮构建失去归属；后者不能按 taskId 取消，以免误伤新一轮构建。
+    const buildSignal = input.abortSignal ? AbortSignal.any([controller.signal, input.abortSignal]) : controller.signal
+    buildSignal.throwIfAborted()
     this.activeTasks.set(input.taskId, controller)
     let workspace: string | undefined
     try {
@@ -438,7 +441,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         const localWorkspace = workspace
         return await runPlayableBuild(input, {
           skillRoot: this.skillRoot,
-          abortSignal: controller.signal,
+          abortSignal: buildSignal,
           executeAgent: async ({ phase, sandbox, workspace: remoteWorkspace, abortSignal }) => {
             const current = await sandbox.readTextFile({ path: path.join(remoteWorkspace, 'output.html'), abortSignal })
             if (current) await writeFile(path.join(localWorkspace, 'output.html'), current)
@@ -460,7 +463,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               workspace: localWorkspace,
               sandbox: 'workspace-write',
               reasoningEffort: 'medium',
-              abortSignal: abortSignal ?? controller.signal,
+              abortSignal: abortSignal ?? buildSignal,
               schema: codexOutputSchema(completionSchema),
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
@@ -539,7 +542,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         onEvent(event) {
           reportCliBuildActivity(event, input.onActivity)
         },
-        abortSignal: controller.signal,
+        abortSignal: buildSignal,
         schema: codexOutputSchema(completionSchema),
         prompt:
           (input.confirmation.sourceTemplateId || input.confirmation.sourceHtmlAssetId
@@ -624,12 +627,12 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
       }
       input.onActivity?.('agent_completed')
       console.log('Codex CLI playable workspace completed')
-      if (this.buildRunner) return await this.buildRunner(input, { abortSignal: controller.signal })
+      if (this.buildRunner) return await this.buildRunner(input, { abortSignal: buildSignal })
       const preparedArtifact = new Uint8Array(await readFile(path.join(workspace, 'output.html')))
       console.log('Starting Vercel Sandbox playable validation')
       const buildResult = await runPlayableBuild(input, {
         skillRoot: this.skillRoot,
-        abortSignal: controller.signal,
+        abortSignal: buildSignal,
         preparedArtifact,
         executeAgent: async ({ sandbox, workspace: remoteWorkspace }) => {
           if (validationEnabled && input.confirmation.rendering?.renderer === 'threejs') {
@@ -637,7 +640,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               await sandbox.writeBinaryFile({
                 path: path.join(remoteWorkspace, file),
                 content: new Uint8Array(await readFile(path.join(workspace!, file))),
-                abortSignal: controller.signal,
+                abortSignal: buildSignal,
               })
           }
           console.log('Confirmed configuration loaded in Vercel Sandbox')
@@ -666,7 +669,8 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         : undefined
       return visualComparison ? { ...buildResult, visualComparison } : buildResult
     } finally {
-      this.activeTasks.delete(input.taskId)
+      // 旧构建可能晚于新构建退出，只清除自己登记的取消句柄。
+      if (this.activeTasks.get(input.taskId) === controller) this.activeTasks.delete(input.taskId)
       if (workspace) await rm(workspace, { recursive: true, force: true })
     }
   }

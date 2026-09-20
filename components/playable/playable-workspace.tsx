@@ -758,7 +758,9 @@ export function PlayableHome({
     )) {
       const slot = attachmentSlotForFile(file)
       if (!slot) {
-        setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件')
+        setError(
+          '仅支持 PNG、JPEG、WebP、GIF、SVG、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
+        )
         continue
       }
       if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
@@ -856,8 +858,8 @@ export function PlayableHome({
             disabled={!user || creating || Boolean(creatingTemplate)}
           />
           <p className="text-muted-foreground px-2 text-xs">
-            支持选择文件夹并保留目录结构，打包后最多 100 MiB。HTML、ZIP/RAR 单文件最多 100 MiB；Spine 请一起选择
-            atlas、PNG 和 skel/JSON，合计最多 100 MiB。
+            支持选择文件夹并保留目录结构，打包后最多 300 MiB。HTML 单文件最多 100 MiB，ZIP/RAR 单文件最多 300 MiB；Spine
+            请一起选择 atlas、PNG 和 skel/JSON，合计最多 100 MiB。
           </p>
           {attachments.length > 0 && (
             <div className="mb-3 px-1">
@@ -882,7 +884,7 @@ export function PlayableHome({
               variant="ghost"
               disabled={!user || creating}
               onClick={() => attachmentInput.current?.click()}
-              aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="添加参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
             >
               <Paperclip aria-hidden="true" />
             </Button>
@@ -892,7 +894,7 @@ export function PlayableHome({
               type="file"
               multiple
               accept={PLAYABLE_ATTACHMENT_ACCEPT}
-              aria-label="上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
               disabled={!user || creating}
               onChange={(event) => {
                 addAttachments(event.target.files)

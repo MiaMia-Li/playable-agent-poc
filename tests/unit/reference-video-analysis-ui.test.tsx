@@ -93,7 +93,7 @@ describe('reference video analysis in the workspace', () => {
     vi.stubGlobal('fetch', fetchMock)
     render(<PlayableWorkspace taskId="task-upload" />)
 
-    fireEvent.change(screen.getByLabelText('选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: { files: [new File(['video'], 'gameplay.mp4', { type: 'video/mp4' })] },
     })
     expect(await screen.findByText('gameplay.mp4')).toBeInTheDocument()
