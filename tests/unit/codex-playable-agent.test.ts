@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { executeBuildAgent } from '@/lib/playable/codex-playable-agent'
 import type { PlayableSandbox } from '@/lib/playable/sandbox-runner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -264,6 +265,70 @@ describe('CodexPlayableAgent', () => {
       })(),
       output: Promise.resolve(confirmationOutput),
     } as never)
+  })
+
+  it.each(
+    [
+      {
+        rule: 'terminal_missing',
+        stage: 'plan_execution',
+        output: { ...confirmationOutput, calls: confirmationOutput.calls.slice(0, -1) },
+      },
+      { rule: 'schema_invalid', stage: 'step_validation', output: { ...confirmationOutput, message: 42 } },
+      {
+        rule: 'step_shape_invalid',
+        stage: 'step_validation',
+        output: { kind: 'tool_calls', message: null, reasoning: 'Check', toolCalls: [], plan: null },
+      },
+    ].flatMap((scenario) => [false, true].map((repeated) => ({ ...scenario, repeated }))),
+  )('repairs $rule once (repeated: $repeated)', async ({ repeated, rule, stage, output: incomplete }) => {
+    for (const output of [incomplete, repeated ? incomplete : confirmationOutput]) {
+      responseMocks.streamText.mockReturnValueOnce({
+        fullStream: (async function* () {})(),
+        partialOutputStream: (async function* () {})(),
+        output: Promise.resolve(output),
+      } as never)
+    }
+    const result = new CodexPlayableAgent().proposeConfirmation({
+      taskId: 'requirement-validation-repair',
+      prompt: '调整游戏需求',
+      apiKey: 'unit-key',
+    })
+    if (repeated) {
+      await expect(result).rejects.toMatchObject({
+        code: 'output_invalid',
+        diagnostic: { stage, step: 2, rule },
+      })
+    } else {
+      await expect(result).resolves.toMatchObject({ kind: 'confirmation' })
+    }
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
+    expect(responseMocks.streamText.mock.calls[0][0].instructions).not.toContain('previous plan was rejected')
+    expect(responseMocks.streamText.mock.calls[1][0].instructions).toContain('previous plan was rejected')
+  })
+
+  it('repairs nested structured-output validation errors without exposing rejected values', async () => {
+    const parsed = z.object({ message: z.number() }).safeParse({ message: 'private-rejected-value' })
+    if (parsed.success) throw new Error('Invalid fixture expected')
+    responseMocks.streamText.mockReturnValueOnce({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      get output() {
+        return Promise.reject(new Error('private-provider-detail', { cause: parsed.error }))
+      },
+    } as never)
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation({
+        taskId: 'schema-repair',
+        prompt: '调整玩法',
+        apiKey: 'unit-key',
+      }),
+    ).resolves.toMatchObject({ kind: 'confirmation' })
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
+    const instructions = responseMocks.streamText.mock.calls[1][0].instructions
+    expect(instructions).toContain('structured_output')
+    expect(instructions).toContain('invalid_type')
+    expect(instructions).not.toContain('private-')
   })
 
   it('propagates cancellation of one build without cancelling a replacement build', async () => {
@@ -700,7 +765,7 @@ describe('CodexPlayableAgent', () => {
   })
 
   it('rejects invalid structured output without silently repairing it', async () => {
-    responseMocks.streamText.mockReturnValueOnce({
+    responseMocks.streamText.mockReturnValue({
       fullStream: (async function* () {})(),
       partialOutputStream: (async function* () {})(),
       output: Promise.resolve({
@@ -740,7 +805,7 @@ describe('CodexPlayableAgent', () => {
         },
       ],
     }
-    responseMocks.streamText.mockReturnValueOnce({
+    responseMocks.streamText.mockReturnValue({
       fullStream: (async function* () {})(),
       partialOutputStream: (async function* () {})(),
       output: Promise.resolve(plan),
@@ -755,9 +820,9 @@ describe('CodexPlayableAgent', () => {
       }),
     ).rejects.toMatchObject({
       code: 'output_invalid',
-      diagnostic: { stage: 'plan_execution', step: 1, rule: 'revision_capabilities_missing', issues: [] },
+      diagnostic: { stage: 'plan_execution', step: 2, rule: 'revision_capabilities_missing', issues: [] },
     })
-    expect(responseMocks.streamText).toHaveBeenCalledTimes(1)
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(2)
   })
 
   // 相同 freeform/template 输出，仅宿主加载了 HTML 时可通过，防止把例外扩展到普通新建任务。
@@ -797,7 +862,7 @@ describe('CodexPlayableAgent', () => {
           },
         ],
       }
-      responseMocks.streamText.mockReturnValueOnce({
+      responseMocks.streamText.mockReturnValue({
         fullStream: (async function* () {})(),
         partialOutputStream: (async function* () {})(),
         output: Promise.resolve(plan),

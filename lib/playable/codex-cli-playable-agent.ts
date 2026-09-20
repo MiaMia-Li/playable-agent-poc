@@ -1,4 +1,8 @@
-import { requirementDiagnostic, type RequirementDiagnosticStage } from './requirement-diagnostics'
+import {
+  requirementDiagnostic,
+  requirementRepairInstructions,
+  type RequirementDiagnosticStage,
+} from './requirement-diagnostics'
 import { attachImportedManifest } from './task-imports'
 import { importedRuntimePreparationCommand } from './imported-runtime'
 import { safeImportPath } from './asset-archive'
@@ -349,6 +353,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
     try {
       const toolResults: RequirementAnalysisToolResult[] = []
       const toolCache = new Map<string, RequirementAnalysisToolResult>()
+      let repairInstructions: string | undefined
       for (let stepNumber = 0; stepNumber < MAX_REQUIREMENT_AGENT_STEPS; stepNumber += 1) {
         const result = await this.invokeCodex({
           workspace,
@@ -356,7 +361,10 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
           reasoningEffort: 'low',
           abortSignal: controller.signal,
           schema: requirementPlanOutputSchema(),
-          prompt: createRequirementAgentPrompt(input, toolResults),
+          prompt: [
+            createRequirementAgentPrompt(input, toolResults),
+            ...(repairInstructions ? [repairInstructions] : []),
+          ].join('\n'),
           onEvent(event) {
             if (event.type !== 'item.completed' || !event.item?.text) return
             if (event.item.type === 'reasoning') {
@@ -410,6 +418,10 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             error instanceof PlayableAgentError && error.diagnostic
               ? { ...error.diagnostic, step: stepNumber + 1 }
               : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
+          if (!repairInstructions && stepNumber + 1 < MAX_REQUIREMENT_AGENT_STEPS) {
+            repairInstructions = requirementRepairInstructions(diagnostic)
+            if (repairInstructions) continue
+          }
           throw new PlayableAgentError('output_invalid', diagnostic)
         }
       }
