@@ -4492,7 +4492,7 @@ describe('playable task API', () => {
     expect(inline.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(inline.headers.get('content-disposition')).toBe('inline; filename="playable.html"')
     expect(inline.headers.get('content-security-policy')).toBe(
-      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
+      "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
     )
     expect(inline.headers.get('x-content-type-options')).toBe('nosniff')
     expect(inline.headers.get('cache-control')).toBe('private, no-store')
@@ -4518,7 +4518,7 @@ describe('playable task API', () => {
     })
     const csp = response.headers.get('content-security-policy')!
     expect(csp).toContain('connect-src data: blob:;')
-    expect(csp).toContain('sandbox allow-scripts;')
+    expect(csp).toContain('sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;')
     expect(csp).not.toContain('allow-same-origin')
     expect(csp).not.toContain('https:')
   })

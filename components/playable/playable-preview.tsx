@@ -344,7 +344,7 @@ export function PlayablePreview({
               ref={iframeRef}
               className="size-full border-0"
               title="Playable preview"
-              sandbox="allow-scripts"
+              sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
               src={authenticatedArtifactUrl}
               onLoad={() => postMute(muted)}
             />
