@@ -156,13 +156,43 @@ function escapePattern(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replaceAll('*', '.*')
 }
 
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function treatmentNamesImportedRange(treatment: string, filename: string): boolean {
+  const numberedFilename = /^(.*?)(\d+)(\.[^.]+)$/.exec(filename)
+  if (!numberedFilename) return false
+  const [, prefix, candidateValue, extension] = numberedFilename
+  const escapedPrefix = escapeRegularExpression(prefix)
+  const escapedExtension = escapeRegularExpression(extension)
+  const range = new RegExp(
+    `${escapedPrefix}(\\d+)${escapedExtension}\\s*(?:至|到|[-~～–—])\\s*(?:${escapedPrefix})?(\\d+)${escapedExtension}`,
+    'giu',
+  )
+  const candidate = Number(candidateValue)
+  for (const match of treatment.matchAll(range)) {
+    const start = Number(match[1])
+    const end = Number(match[2])
+    if (candidate >= Math.min(start, end) && candidate <= Math.max(start, end)) return true
+  }
+  return false
+}
+
 function treatmentNamesImportedPath(treatment: string, path: string): boolean {
   const normalizedTreatment = treatment.toLocaleLowerCase()
   const normalizedPath = path.toLocaleLowerCase()
   const filename = normalizedPath.split('/').at(-1) ?? normalizedPath
   if (normalizedTreatment.includes(normalizedPath) || normalizedTreatment.includes(filename)) return true
+  if (treatmentNamesImportedRange(normalizedTreatment, filename)) return true
   const stem = filename.replace(/\.[^.]+$/, '')
-  if (stem.length >= 4 && normalizedTreatment.includes(stem)) return true
+  if (
+    stem.length >= 4 &&
+    new RegExp(`(^|[^\\p{L}\\p{N}_-])${escapeRegularExpression(stem)}(?![\\p{L}\\p{N}_-])`, 'iu').test(
+      normalizedTreatment,
+    )
+  )
+    return true
   return normalizedTreatment
     .split(/[\s、，。；;:“”"'`()]+/)
     .filter((token) => token.includes('*'))

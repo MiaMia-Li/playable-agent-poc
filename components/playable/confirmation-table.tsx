@@ -1,7 +1,7 @@
 'use client'
 
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
-import { useId, useRef } from 'react'
+import { useId, useRef, useState } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
 import {
   applyVisualDirection,
@@ -134,6 +134,7 @@ export function ConfirmationTable({
   hasReferenceVisuals = false,
 }: ConfirmationTableProps) {
   const uploadInputs = useRef<Partial<Record<PlayableAssetSlot, HTMLInputElement | null>>>({})
+  const [expandedImportedSlots, setExpandedImportedSlots] = useState<Set<string>>(() => new Set())
   const storeUrlId = useId()
   const nativeUi = nativeTemplateUiPolicy(proposal.sourceTemplateId)
   const presentation = proposal.presentation ?? defaultConfirmationPresentation
@@ -320,6 +321,10 @@ export function ConfirmationTable({
               const bindings = proposal.resourceBindings?.[slot] ?? []
               const importedBindings = bindings.filter((binding) => binding.kind === 'import')
               const sourceHtmlBindings = bindings.filter((binding) => binding.kind === 'sourceHtml')
+              const importedBindingsExpanded = expandedImportedSlots.has(slot)
+              const visibleImportedBindings = importedBindingsExpanded
+                ? importedBindings
+                : importedBindings.slice(0, 24)
               return (
                 <tr key={slot}>
                   <th className="bg-muted/40 px-3 py-2 font-medium">{label}</th>
@@ -454,7 +459,7 @@ export function ConfirmationTable({
                       <div className="mt-2 space-y-1">
                         <AssetPreviewList
                           ariaLabel={`${label}导入素材`}
-                          items={importedBindings.slice(0, 24).map((binding) => ({
+                          items={visibleImportedBindings.map((binding) => ({
                             id: `${binding.assetId}:${binding.path}`,
                             filename: binding.filename,
                             mimeType: binding.mimeType,
@@ -463,9 +468,30 @@ export function ConfirmationTable({
                           }))}
                         />
                         {importedBindings.length > 24 && (
-                          <p className="text-muted-foreground text-xs">
-                            另有 {importedBindings.length - 24} 个已绑定文件
-                          </p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="link"
+                            className="h-auto px-0 text-xs"
+                            aria-expanded={importedBindingsExpanded}
+                            aria-label={
+                              importedBindingsExpanded
+                                ? '收起已绑定文件'
+                                : `查看全部 ${importedBindings.length} 个已绑定文件`
+                            }
+                            onClick={() =>
+                              setExpandedImportedSlots((current) => {
+                                const next = new Set(current)
+                                if (next.has(slot)) next.delete(slot)
+                                else next.add(slot)
+                                return next
+                              })
+                            }
+                          >
+                            {importedBindingsExpanded
+                              ? '收起'
+                              : `查看全部 ${importedBindings.length} 个（另有 ${importedBindings.length - 24} 个）`}
+                          </Button>
                         )}
                       </div>
                     )}
