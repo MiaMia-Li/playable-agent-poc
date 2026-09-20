@@ -5,7 +5,13 @@ Both manual CTA and explicitly requested automatic navigation must call the actu
 supplies MRAID; do not load an external mraid.js. Do not return early through a
 `playable.openUrl` or other wrapper unless its real SDK forwarding is verified.
 Some imported bridges silently do nothing without an SDK. Outside the ad container,
-provide a browser fallback. Never permanently disable manual retry before a
+provide a browser fallback using `window.open(confirmedStoreUrl, '_blank', 'noopener,noreferrer')`
+from the manual CTA click. Never use `location.href`, `location.assign`,
+`location.replace`, a `_self` link, or parent/top navigation as a fallback:
+Studio embeds the playable in an iframe, and store pages reject embedded loading.
+If using an anchor, set `target="_blank"` and `rel="noopener noreferrer"`.
+Browsers may block automatic popups without a user gesture; leave manual CTA retry
+available instead of falling back to same-frame navigation. Never permanently disable manual retry before a
 navigation attempt has succeeded; a failed automatic attempt must not consume CTA.
 
 Automatic navigation is optional and has no default delay. Implement it only when
