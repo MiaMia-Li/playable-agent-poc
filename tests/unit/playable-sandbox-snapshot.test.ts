@@ -33,7 +33,11 @@ describe('playable snapshot startup', () => {
     const settings = vi.mocked(createVercelSandbox).mock.calls[0][0]
     expect(settings).toMatchObject({ source: { type: 'snapshot', snapshotId: 'snap_test' }, persistent: false })
     expect(settings).not.toHaveProperty('runtime')
-    expect(createSession).toHaveBeenCalledWith({ sessionId: 'test', abortSignal: signal })
+    // 名称保留任务前缀并增加随机后缀，断言格式而不固定某次生成的值。
+    expect(createSession).toHaveBeenCalledWith({
+      sessionId: expect.stringMatching(/^test-[a-f0-9-]+$/),
+      abortSignal: signal,
+    })
     expect(sandbox.run).toHaveBeenCalledWith(
       expect.objectContaining({
         env: { PLAYABLE_TOOLS_EXPECTED_VERSION: PLAYABLE_SANDBOX_TOOLS_VERSION },

@@ -860,6 +860,8 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
         : ['awaiting_confirmation', 'failed'].includes(task.phase))
     )
       return
+    // 与数据库实现一致，新一轮不继承旧沙箱关联。
+    task.sandboxId = null
     task.phase = 'building'
     task.confirmation = confirmation
     task.pendingRevision = revision ?? null
@@ -951,6 +953,13 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return true
   }
 
+  // 内存实现复用心跳的构建归属检查，保持与持久化仓库相同的登记约束。
+  async registerBuildSandbox(taskId: string, buildId: string, sandboxId: string): Promise<boolean> {
+    if (!(await this.touchBuild(taskId, buildId))) return false
+    this.tasks.get(taskId)!.sandboxId = sandboxId
+    return true
+  }
+
   async touchBuild(taskId: string, buildId: string): Promise<boolean> {
     const task = this.tasks.get(taskId)
     const build = this.builds.get(taskId)?.find((candidate) => candidate.id === buildId)
@@ -959,10 +968,12 @@ class LocalDemoTaskRepository implements PlayableTaskRepository {
     return true
   }
 
-  async failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean> {
+  async failStaleBuild(taskId: string, userId: string, staleBefore: Date, sandboxId?: string | null): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
     if (!task || !['building', 'validating'].includes(task.phase) || !task.updatedAt || task.updatedAt >= staleBefore)
       return false
+    // 模拟数据库的条件更新：检查期间更换沙箱后，旧检查结果应失效。
+    if ((task.sandboxId ?? null) !== (sandboxId ?? null)) return false
     task.phase = 'failed'
     task.updatedAt = new Date()
     const build = this.builds

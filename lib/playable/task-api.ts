@@ -145,6 +145,8 @@ export interface PlayableTaskRecord {
   title?: string | null
   createdAt?: Date
   updatedAt?: Date
+  /** 仅供服务端查询的 Vercel 沙箱名称，不包含在公开任务状态中。 */
+  sandboxId?: string | null
 }
 
 export interface PlayableEventRecord {
@@ -282,8 +284,10 @@ export interface PlayableTaskRepository {
   ): Promise<boolean>
   acceptArtifact(taskId: string, userId: string): Promise<boolean>
   requestRevision(taskId: string, userId: string): Promise<boolean>
+  /** 只有仍持有本轮构建归属的执行实例可以登记沙箱。 */
+  registerBuildSandbox(taskId: string, buildId: string, sandboxId: string): Promise<boolean>
   touchBuild(taskId: string, buildId: string): Promise<boolean>
-  failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean>
+  failStaleBuild(taskId: string, userId: string, staleBefore: Date, sandboxId?: string | null): Promise<boolean>
   markFailed(taskId: string, buildId: string): Promise<boolean>
   listBuilds(taskId: string): Promise<PlayableBuildRecord[]>
   listBuildsForTasks?(taskIds: string[]): Promise<PlayableBuildRecord[]>
@@ -414,6 +418,8 @@ interface HandlerDependencies {
   schedule: BackgroundScheduler
   buildStartedEventTimeoutMs?: number
   buildHeartbeatIntervalMs?: number
+  /** unknown 表示无法确认状态，不能据此将构建判为失败。 */
+  readBuildSandboxState?: (sandboxId: string) => Promise<'active' | 'stopped' | 'unknown'>
   staleBuildTimeoutMs?: number
   requirementStreamKeepaliveMs?: number
   mediaGenerator?: MediaGenerator
@@ -657,7 +663,7 @@ function previewCsp(confirmation?: ConfirmationProposal | null) {
 const DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS = 1_000
 const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
-const STALE_BUILD_FAILURE_MESSAGE = '构建进程已停止，请重新确认方案并重试。'
+const STALE_BUILD_FAILURE_MESSAGE = '构建心跳已超时，且未检测到运行中的沙箱，请重新确认方案并重试。'
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ error }, { status })
@@ -1015,6 +1021,7 @@ function startBuildHeartbeat(
   taskId: string,
   buildId: string,
   intervalMs: number,
+  onOwnershipLost: () => void,
 ): () => void {
   let stopped = false
   let heartbeatPending = false
@@ -1023,7 +1030,18 @@ function startBuildHeartbeat(
     heartbeatPending = true
     void repository
       .touchBuild(taskId, buildId)
-      .catch(() => undefined)
+      .then((active) => {
+        // false 是数据库确认归属已丢失；请求抛错仅代表心跳写入失败，两者不能混同。
+        if (!active && !stopped) {
+          stopped = true
+          console.warn('Playable build heartbeat lost ownership')
+          onOwnershipLost()
+        }
+      })
+      .catch(() => {
+        // 保留后续心跳重试，只记录静态诊断信息，不因一次数据库故障取消构建。
+        console.error('Unable to persist playable build heartbeat')
+      })
       .finally(() => {
         heartbeatPending = false
       })
@@ -1041,11 +1059,23 @@ async function reconcileStaleBuild(
   repository: PlayableTaskRepository,
   task: PlayableTaskRecord,
   staleBuildTimeoutMs: number,
+  readSandboxState?: HandlerDependencies['readBuildSandboxState'],
 ): Promise<void> {
   if (!['building', 'validating'].includes(task.phase) || !task.updatedAt) return
   const staleBefore = new Date(Date.now() - staleBuildTimeoutMs)
   if (task.updatedAt >= staleBefore) return
-  const failed = await repository.failStaleBuild(task.id, task.userId, staleBefore)
+  // 心跳过期不能证明远程工作已停止；持久化关联允许其他服务实例核实沙箱状态。
+  // 查询不可用或状态未知时保留构建，交由后续轮询重新判断。
+  if (task.sandboxId) {
+    if (!readSandboxState) return
+    try {
+      if ((await readSandboxState(task.sandboxId)) !== 'stopped') return
+    } catch {
+      console.error('Unable to inspect stale build sandbox')
+      return
+    }
+  }
+  const failed = await repository.failStaleBuild(task.id, task.userId, staleBefore, task.sandboxId)
   if (!failed) return
   await repository
     .appendEvent({
@@ -1127,11 +1157,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     return
   }
 
+  // 取消信号绑定 buildId 对应的执行实例，不通过任务级取消入口查找可能已更新的句柄。
+  const buildController = new AbortController()
   const stopHeartbeat = startBuildHeartbeat(
     repository,
     task.id,
     buildId,
     dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
+    () => buildController.abort(),
   )
 
   // 顺序写入步骤事件，确保工具先开始再结束；终止事件前要等待队列排空。
@@ -1145,12 +1178,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
   ]
   let activityQueue = Promise.resolve()
   const persistActivity: BuildActivityCallback = (activity, detail) => {
-    if (!Object.hasOwn(buildActivityLabels, activity)) return
+    if (buildController.signal.aborted || !Object.hasOwn(buildActivityLabels, activity)) return
     const message = detail
       ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
       : buildActivityLabels[activity]
     activityQueue = activityQueue
       .then(async () => {
+        // 排队等待期间也可能失去归属，写入前再次检查，避免旧进度混入新构建。
+        if (buildController.signal.aborted) return
         await repository.appendEvent({
           taskId: task.id,
           type: `build_activity_${activity}`,
@@ -1315,7 +1350,13 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         .catch(() => undefined)
     }
     stage = 'agent'
+    buildController.signal.throwIfAborted()
     const result = await agent.build({
+      abortSignal: buildController.signal,
+      onSandboxReady: async (sandboxId) => {
+        if (!(await repository.registerBuildSandbox(task.id, buildId, sandboxId)))
+          throw new Error('Sandbox build is no longer active')
+      },
       onPreview: async (html) => {
         if (containsExactSecret(html, apiKey) || redactSecrets(html) !== html)
           throw new Error('Preview contains a credential')
@@ -2975,6 +3016,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.repository,
         access.task,
         dependencies.staleBuildTimeoutMs ?? DEFAULT_STALE_BUILD_TIMEOUT_MS,
+        dependencies.readBuildSandboxState,
       )
       const latestTask = (await dependencies.repository.findOwnedTask(access.task.id, access.userId)) ?? access.task
       await recoverLegacyPreview(latestTask)

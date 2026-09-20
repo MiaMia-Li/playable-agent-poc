@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { attachImportedManifest } from './task-imports'
 import { importedRuntimePreparationCommand } from './imported-runtime'
 import { safeImportPath } from './asset-archive'
@@ -43,6 +44,8 @@ interface SandboxCommandResult {
 }
 
 export interface PlayableSandbox {
+  /** Vercel 适配器返回的沙箱名称，用于跨服务实例查询；本地测试替身可不提供。 */
+  readonly id?: string
   readonly defaultWorkingDirectory: string
   writeBinaryFile(options: { path: string; content: Uint8Array; abortSignal?: AbortSignal }): PromiseLike<void>
   writeTextFile(options: { path: string; content: string; abortSignal?: AbortSignal }): PromiseLike<void>
@@ -191,7 +194,8 @@ export async function createPlayableSandbox(taskId: string, abortSignal?: AbortS
     ...explicitCredentials,
   })
   try {
-    const sandbox = await provider.createSession({ sessionId: taskId, abortSignal })
+    // 同一任务的重试也使用独立名称，避免旧沙箱的检查或清理影响新沙箱。
+    const sandbox = await provider.createSession({ sessionId: `${taskId}-${randomUUID()}`, abortSignal })
     if (snapshotId) {
       try {
         // 仅做轻量就绪检查，不重新安装或启动浏览器；玩法验收仍由后续 Agent 执行。
@@ -250,6 +254,11 @@ export async function runPlayableBuild(
 
   try {
     sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
+    // 先登记再执行命令；登记失败会进入 finally 销毁沙箱，避免留下未被追踪的执行实例。
+    if (input.onSandboxReady) {
+      if (!sandbox.id) throw new Error('Build sandbox identity is missing')
+      await input.onSandboxReady(sandbox.id)
+    }
     const sandboxRoot = sandbox.defaultWorkingDirectory
     const workspace = path.join(sandboxRoot, 'work')
     stage = 'workspace'
