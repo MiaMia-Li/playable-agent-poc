@@ -1713,11 +1713,11 @@ describe('PlayableWorkspace', () => {
     unmount()
   })
 
-  it('uses only the authenticated artifact endpoint in a scripts-only sandbox', () => {
+  it('uses the authenticated artifact endpoint in an opaque sandbox with standalone CTA popups', () => {
     render(<PlayablePreview taskId="task-7" phase="ready" />)
 
     const iframe = screen.getByTitle('Playable preview')
-    expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(iframe).toHaveAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox')
     expect(iframe).toHaveAttribute('src', '/api/playable-tasks/task-7/artifact?kind=playable')
   })
 

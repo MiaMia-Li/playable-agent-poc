@@ -651,8 +651,10 @@ const ARTIFACT_CSP =
   "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'"
 // Packed game bootstrappers evaluate embedded scripts. Keep this capability scoped to
 // the opaque-origin sandbox, without same-origin access or network connections.
+// CTA popups must open outside the sandbox so store pages can function normally.
+// Keep the playable itself opaque and disallow navigation of the Studio window.
 const PREVIEW_CSP =
-  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+  "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 // Three.js loaders fetch embedded GLB buffers. Permit embedded fetches only;
 // external network access and same-origin iframe access remain unavailable.
 function previewCsp(confirmation?: ConfirmationProposal | null) {
