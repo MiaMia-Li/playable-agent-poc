@@ -759,7 +759,7 @@ export function PlayableHome({
       const slot = attachmentSlotForFile(file)
       if (!slot) {
         setError(
-          '仅支持 PNG、JPEG、WebP、GIF、SVG、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
+          '仅支持 PNG、JPEG、WebP、GIF、SVG、MP3、WAV、OGG、M4A、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
         )
         continue
       }

@@ -12,7 +12,7 @@ import {
   MAX_ASSET_BYTES,
   type PlayableAsset,
 } from '@/lib/playable/task-assets'
-import { MAX_REFERENCE_VIDEO_SECONDS } from '@/lib/playable/asset-policy'
+import { attachmentSlotForFile, MAX_REFERENCE_VIDEO_SECONDS } from '@/lib/playable/asset-policy'
 
 function uploadRequest(file: File, slot = 'audio', durationSeconds?: number) {
   const form = new FormData()
@@ -43,6 +43,22 @@ function harness(owner = 'user-1') {
 }
 
 describe('playable asset upload', () => {
+  it.each(['audio/ogg', 'application/ogg', '', 'application/octet-stream'])(
+    'uploads OGG chat attachments with browser MIME %s as audio',
+    async (type) => {
+      const { handler, store } = harness()
+      const file = new File(['OggS'], 'sound.OGG', { type })
+      const slot = attachmentSlotForFile(file)
+      expect(slot).toBe('audio')
+      const response = await handler(uploadRequest(file, slot), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      expect(response.status).toBe(201)
+      expect((await response.json()).asset).toMatchObject({ slot: 'audio', mimeType: 'audio/ogg' })
+      expect(store.put).toHaveBeenCalledWith(expect.any(String), new TextEncoder().encode('OggS'), 'audio/ogg')
+    },
+  )
+
   it.each(['image/svg+xml', '', 'application/octet-stream'])(
     'preserves SVG animation bytes with MIME %s',
     async (type) => {

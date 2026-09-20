@@ -80,8 +80,10 @@ export function assetSizeError(slot: PlayableAssetSlot): string {
   return '单个参考素材不能超过 4 MiB'
 }
 
-/** Browsers often leave GLB MIME empty or report application/octet-stream. */
+/** Normalize file types that browsers leave empty or report with a generic MIME type. */
 export function playableFileMimeType(file: { name: string; type: string }): string {
+  if (/\.ogg$/i.test(file.name) && ['', 'application/octet-stream', 'application/ogg', 'audio/ogg'].includes(file.type))
+    return 'audio/ogg'
   if (/\.svg$/i.test(file.name) && ['', 'application/octet-stream', SVG_MIME_TYPE].includes(file.type))
     return SVG_MIME_TYPE
   if (/\.glb$/i.test(file.name) && ['', 'application/octet-stream', GLB_MIME_TYPE].includes(file.type))
@@ -98,6 +100,7 @@ export function playableFileMimeType(file: { name: string; type: string }): stri
 
 export function attachmentSlotForFile(file: { name: string; type: string }): PlayableAssetSlot | undefined {
   const mimeType = playableFileMimeType(file)
+  if ((PLAYABLE_AUDIO_MIME_TYPES as readonly string[]).includes(mimeType)) return 'audio'
   if (mimeType === SVG_MIME_TYPE) return 'animationEffects'
   if ((ARCHIVE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'assetPackage'
   if ((SPINE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'spine'
@@ -131,7 +134,11 @@ export function isPlayableResourceAssetSlot(value: PlayableAssetSlot): value is 
 }
 
 export function playableAssetAccept(slot: PlayableAssetSlot): string {
-  return [...policies[slot], ...(policies[slot].includes(GLB_MIME_TYPE) ? ['.glb'] : [])].join(',')
+  return [
+    ...policies[slot],
+    ...(policies[slot].includes(GLB_MIME_TYPE) ? ['.glb'] : []),
+    ...(slot === 'audio' ? ['.ogg'] : []),
+  ].join(',')
 }
 
 export function isMimeTypeAllowedForSlot(slot: PlayableAssetSlot, mimeType: string): boolean {
@@ -156,7 +163,7 @@ export function referenceSlotForMimeType(mimeType: string): PlayableReferenceAss
 
 export const PLAYABLE_REFERENCE_ACCEPT = [...PLAYABLE_IMAGE_MIME_TYPES, ...PLAYABLE_VIDEO_MIME_TYPES].join(',')
 
-export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${SVG_MIME_TYPE},.svg,${GLB_MIME_TYPE},.glb,text/html,.html,.htm,.zip,.rar,.atlas,.skel,.json`
+export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${PLAYABLE_AUDIO_MIME_TYPES.join(',')},.ogg,${SVG_MIME_TYPE},.svg,${GLB_MIME_TYPE},.glb,text/html,.html,.htm,.zip,.rar,.atlas,.skel,.json`
 
 /** Keep all confirmation buttons and the server gate consistent. */
 export function hasIncompatibleModelAssets(
