@@ -115,7 +115,7 @@ export function importedResourcePaths(summaries: ImportedAssetSummary[], slot: P
       ? /\.(mp3|wav|ogg|m4a|mp4)$/i
       : slot === 'models'
         ? /\.glb$/i
-        : /\.(png|jpe?g|webp|gif|atlas|skel)$/i
+        : /\.(png|jpe?g|webp|gif|svg|atlas|skel)$/i
   return summaries.flatMap((summary) =>
     summary.files
       .filter(

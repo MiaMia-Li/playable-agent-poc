@@ -57,7 +57,7 @@ describe('PlayableHome reference uploads', () => {
 
     const image = new File(['image'], 'style.png', { type: 'image/png' })
     const video = new File(['video'], 'motion.webm', { type: 'video/webm' })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: { files: [image, video] },
     })
 
@@ -207,10 +207,10 @@ describe('PlayableHome reference uploads', () => {
       <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
     )
 
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
-          new File(['svg'], 'unsafe.svg', { type: 'image/svg+xml' }),
+          new File(['document'], 'unsupported.pdf', { type: 'application/pdf' }),
           new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }),
         ],
       },
@@ -245,7 +245,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '原样重试' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: {
         files: [
           new File(['ok'], 'success.png', { type: 'image/png' }),
@@ -285,7 +285,7 @@ describe('PlayableHome reference uploads', () => {
     )
 
     fireEvent.change(screen.getByLabelText('新试玩需求'), { target: { value: '第一版' } })
-    fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
       target: { files: [new File(['x'], 'reference.png', { type: 'image/png' })] },
     })
     fireEvent.click(screen.getByRole('button', { name: '新建试玩' }))
@@ -310,7 +310,7 @@ it('uploads a GLB with missing browser MIME into game resources from the home pa
   const bytes = triangleGlb()
   const file = new File([bytes], 'block.glb')
   Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer })
-  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
     target: { files: [file] },
   })
   expect(screen.getByText('block.glb')).toBeInTheDocument()
@@ -332,7 +332,7 @@ it('starts a task from an uploaded HTML source without a text prompt', async () 
   render(
     <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
   )
-  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
     target: { files: [new File(['<!doctype html><button>Play</button>'], 'game.html', { type: 'text/html' })] },
   })
   expect(screen.getByText('game.html')).toBeInTheDocument()
@@ -366,7 +366,7 @@ it('uploads a Spine group together and gives its PNG the Spine size policy', asy
   render(
     <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
   )
-  fireEvent.change(screen.getByLabelText('上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源'), {
+  fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
     target: {
       files: [
         new File(['hero.png'], 'hero.atlas'),

@@ -764,7 +764,9 @@ export function PlayableHome({
       }
       const slot = attachmentSlotForFile(file)
       if (!slot) {
-        setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件')
+        setError(
+          '仅支持 PNG、JPEG、WebP、GIF、SVG、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
+        )
         continue
       }
       if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
@@ -888,7 +890,7 @@ export function PlayableHome({
               variant="ghost"
               disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
               onClick={() => attachmentInput.current?.click()}
-              aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="添加参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
             >
               <Paperclip aria-hidden="true" />
             </Button>
@@ -898,7 +900,7 @@ export function PlayableHome({
               type="file"
               multiple
               accept={PLAYABLE_ATTACHMENT_ACCEPT}
-              aria-label="上传参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
               disabled={!user || creating}
               onChange={(event) => {
                 addAttachments(event.target.files)
