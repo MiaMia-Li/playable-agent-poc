@@ -13,6 +13,7 @@ import {
   type PlayableSandbox,
   type RunPlayableBuildDependencies,
 } from '@/lib/playable/sandbox-runner'
+import { OUTPUT_CAP_DIRECTORY, OUTPUT_CAP_MARKER, OUTPUT_CAP_SCRIPT_NAME } from '@/lib/playable/output-cap'
 import type { ConfirmedBuildInput } from '@/lib/playable/playable-agent-adapter'
 import type { PlayableModeId } from '@/lib/playable/types'
 import { deliveryProfileSnapshot } from '@/lib/playable/delivery-standards'
@@ -135,7 +136,8 @@ class LocalSandbox implements PlayableSandbox {
     try {
       const result = await execAsync(options.command, {
         cwd: options.workingDirectory ?? this.defaultWorkingDirectory,
-        env: { ...process.env, ...options.env },
+        // 真实沙盒里 HOME 属于沙盒；这里必须一并模拟，否则构建会写到开发机的家目录。
+        env: { ...process.env, HOME: this.defaultWorkingDirectory, ...options.env },
         maxBuffer: 10 * 1024 * 1024,
         signal: options.abortSignal,
       })
@@ -337,6 +339,16 @@ describe('runPlayableBuild', () => {
       const sourceSkill = await readFile(path.join(process.cwd(), 'skills/mahjong-pair-match-playable/SKILL.md'))
       const copiedMaster = await readFile(path.join(sandbox.defaultWorkingDirectory, 'skill-master', 'SKILL.md'))
       expect(copiedMaster).toEqual(sourceSkill)
+
+      // 输出上限只装在沙盒家目录，且脚本放在工作区之外，Agent 清理 work/ 时不会删掉它。
+      const profile = await readFile(path.join(sandbox.defaultWorkingDirectory, '.bash_profile'), 'utf8')
+      expect(profile).toContain(OUTPUT_CAP_MARKER)
+      expect(
+        await readFile(
+          path.join(sandbox.defaultWorkingDirectory, OUTPUT_CAP_DIRECTORY, OUTPUT_CAP_SCRIPT_NAME),
+          'utf8',
+        ),
+      ).toContain('PLAYABLE_OUTPUT_CAP_BYTES')
     },
     30_000,
   )

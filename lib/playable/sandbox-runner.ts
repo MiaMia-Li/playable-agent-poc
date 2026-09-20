@@ -14,6 +14,7 @@ import { readBuildSkillFiles } from './build-skill'
 import { uploadWorkspaceBundle, verifyWorkspaceMaster } from './workspace-bundle'
 import { PREVIEW_TARGET_MS, supportsFastPreview, withPreviewBudget } from './preview-build'
 import { applyCampaignParameters } from './campaign-parameters'
+import { installOutputCap } from './output-cap'
 import { createHash } from 'node:crypto'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import path from 'node:path'
@@ -252,6 +253,17 @@ export async function runPlayableBuild(
     sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
     const sandboxRoot = sandbox.defaultWorkingDirectory
     const workspace = path.join(sandboxRoot, 'work')
+    // 守卫装不上只会让单条命令重新变慢，不该让整次构建失败。
+    try {
+      if (
+        !(await installOutputCap(sandbox, {
+          ...(dependencies.abortSignal ? { abortSignal: dependencies.abortSignal } : {}),
+        }))
+      )
+        console.error('Agent output cap was not installed')
+    } catch (error) {
+      console.error('Agent output cap installation failed:', error)
+    }
     stage = 'workspace'
     input.onActivity?.('transferring')
     if (serializedConfirmation.includes(input.apiKey)) {

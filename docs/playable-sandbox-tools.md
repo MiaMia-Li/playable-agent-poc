@@ -51,6 +51,24 @@ The agent reads `/opt/playable-tools/README.md` and imports
 the same browser cache used at install time, including when called from an ES module.
 The readiness check is not a substitute for gameplay acceptance.
 
+## Agent output cap
+
+A playable baseline embeds its assets, so one line of it can be megabytes. Handing such
+a line back through a tool result used to cost five to seven minutes per command, and the
+host kept only the first 24000 characters of it anyway. Every build therefore installs
+`lib/playable/output-cap.ts` into the sandbox before the agent starts: a collector on the
+login shell's stdout and stderr forwards the first 32 KiB of each and reports how much it
+withheld. Commands still run to completion, exit codes are unchanged, and a redirection to
+a file inside a command never passes through the collector, so artifacts are never truncated.
+The host's own commands use `bash -c`, which does not read `.bash_profile`, so validation,
+bundling and artifact checks are unaffected. The installer probes a login shell afterwards;
+when the guard does not take effect the build continues without it and says so in the server log.
+
+To read a baseline the agent uses `node assets/starter/work/node-tools.mjs slice FILE FROM TO`
+(numbered lines, over-long lines shortened, at most 400 lines per call) and
+`node assets/starter/work/node-tools.mjs search FILE PATTERN` (case-insensitive, match context
+only, never whole lines). This needs no snapshot change: the script ships with the skill bundle.
+
 ## Update
 
 Change the pinned version in `lib/playable/sandbox-tools.ts` and increment the
