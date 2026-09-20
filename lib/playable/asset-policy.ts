@@ -48,6 +48,9 @@ export const MAX_ASSETS_PER_SLOT = 8
 export const MAX_TASK_ASSETS = 30
 
 export const PLAYABLE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
+// SVGs are playable resources, not raster Reference Images sent to vision models.
+export const SVG_MIME_TYPE = 'image/svg+xml'
+export const PLAYABLE_VISUAL_RESOURCE_MIME_TYPES = [...PLAYABLE_IMAGE_MIME_TYPES, SVG_MIME_TYPE] as const
 export const PLAYABLE_AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'] as const
 export const PLAYABLE_VIDEO_MIME_TYPES = ['video/mp4', 'video/webm'] as const
 
@@ -82,6 +85,8 @@ export function assetSizeError(slot: PlayableAssetSlot): string {
 
 /** Browsers often leave GLB MIME empty or report application/octet-stream. */
 export function playableFileMimeType(file: { name: string; type: string }): string {
+  if (/\.svg$/i.test(file.name) && ['', 'application/octet-stream', SVG_MIME_TYPE].includes(file.type))
+    return SVG_MIME_TYPE
   if (/\.glb$/i.test(file.name) && ['', 'application/octet-stream', GLB_MIME_TYPE].includes(file.type))
     return GLB_MIME_TYPE
   if (/\.html?$/i.test(file.name) && ['', 'application/octet-stream', 'text/html'].includes(file.type))
@@ -96,6 +101,7 @@ export function playableFileMimeType(file: { name: string; type: string }): stri
 
 export function attachmentSlotForFile(file: { name: string; type: string }): PlayableAssetSlot | undefined {
   const mimeType = playableFileMimeType(file)
+  if (mimeType === SVG_MIME_TYPE) return 'animationEffects'
   if ((ARCHIVE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'assetPackage'
   if ((SPINE_MIME_TYPES as readonly string[]).includes(mimeType)) return 'spine'
   return mimeType === 'text/html'
@@ -110,11 +116,11 @@ const policies: Record<PlayableAssetSlot, readonly string[]> = {
   spine: SPINE_MIME_TYPES,
   sourceHtml: ['text/html'],
   models: [GLB_MIME_TYPE],
-  tileFaces: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
-  backgroundBoard: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
-  animationEffects: [...PLAYABLE_IMAGE_MIME_TYPES, GLB_MIME_TYPE],
+  tileFaces: [...PLAYABLE_VISUAL_RESOURCE_MIME_TYPES, GLB_MIME_TYPE],
+  backgroundBoard: [...PLAYABLE_VISUAL_RESOURCE_MIME_TYPES, GLB_MIME_TYPE],
+  animationEffects: [...PLAYABLE_VISUAL_RESOURCE_MIME_TYPES, GLB_MIME_TYPE],
   audio: PLAYABLE_AUDIO_MIME_TYPES,
-  endCard: PLAYABLE_IMAGE_MIME_TYPES,
+  endCard: PLAYABLE_VISUAL_RESOURCE_MIME_TYPES,
   referenceImage: PLAYABLE_IMAGE_MIME_TYPES,
   referenceVideo: PLAYABLE_VIDEO_MIME_TYPES,
 }
@@ -153,7 +159,7 @@ export function referenceSlotForMimeType(mimeType: string): PlayableReferenceAss
 
 export const PLAYABLE_REFERENCE_ACCEPT = [...PLAYABLE_IMAGE_MIME_TYPES, ...PLAYABLE_VIDEO_MIME_TYPES].join(',')
 
-export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${GLB_MIME_TYPE},.glb,text/html,.html,.htm,.zip,.rar,.atlas,.skel,.json`
+export const PLAYABLE_ATTACHMENT_ACCEPT = `${PLAYABLE_REFERENCE_ACCEPT},${SVG_MIME_TYPE},.svg,${GLB_MIME_TYPE},.glb,text/html,.html,.htm,.zip,.rar,.atlas,.skel,.json`
 
 /** Keep all confirmation buttons and the server gate consistent. */
 export function hasIncompatibleModelAssets(

@@ -42,6 +42,7 @@ import {
   MAX_HOME_ATTACHMENTS,
   MAX_TASK_ASSETS,
   PLAYABLE_ATTACHMENT_ACCEPT,
+  PLAYABLE_IMAGE_MIME_TYPES,
   maxAssetBytesForSlot,
   playableAssetAccept,
   referenceSlotForMimeType,
@@ -416,7 +417,9 @@ export function ChatWorkspace({
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
-  const composerHasNewImages = composerAttachments.some((asset) => asset.mimeType.startsWith('image/'))
+  const composerHasNewImages = composerAttachments.some((asset) =>
+    (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType),
+  )
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
@@ -531,7 +534,7 @@ export function ChatWorkspace({
             const slot = attachmentSlotForFile(attachment.file)
             if (!slot)
               throw new Error(
-                '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
+                '仅支持 PNG、JPEG、WebP、GIF、SVG、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件',
               )
             const uploadedAsset = await uploadPlayableAsset(taskId, slot, attachment.file, {
               fallbackMessage: '素材上传失败',
@@ -595,7 +598,9 @@ export function ChatWorkspace({
           })
           if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
         }
-        const newImageIds = attachments.filter((asset) => asset.mimeType.startsWith('image/')).map((asset) => asset.id)
+        const newImageIds = attachments
+          .filter((asset) => (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType))
+          .map((asset) => asset.id)
         // 新上传图片替换沿用图片；显式清空仍发送空数组，阻止服务端自动继承旧截图。
         const referenceImageIds = [
           ...new Set([...(newImageIds.length ? newImageIds : activeReferences.map((ref) => ref.assetId))]),
@@ -909,7 +914,7 @@ export function ChatWorkspace({
         const slot = attachmentSlotForFile(file)
         if (!slot) {
           validationError =
-            '仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件'
+            '仅支持 PNG、JPEG、WebP、GIF、SVG、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件'
           continue
         }
         if (file.size <= 0 || file.size > maxAssetBytesForSlot(slot)) {
@@ -1583,7 +1588,7 @@ export function ChatWorkspace({
               type="button"
               size="icon"
               variant="ghost"
-              aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="添加参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
               disabled={!canCompose || sending}
               onClick={() => composerAttachmentInput.current?.click()}
             >
@@ -1595,7 +1600,7 @@ export function ChatWorkspace({
               type="file"
               multiple
               accept={PLAYABLE_ATTACHMENT_ACCEPT}
-              aria-label="选择参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
+              aria-label="选择参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
               disabled={!canCompose || sending}
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? [])

@@ -11,6 +11,21 @@ const { bundlePlayable } = await import(
   pathToFileURL(path.resolve('skills/_shared/assets/starter/work/bundle-playable.mjs')).href
 )
 const roots: string[] = []
+
+it('embeds animated SVG without rasterizing it or exposing its markup to the page', async () => {
+  const input = await fixture(`import water from './water.svg'; window.water = water`)
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"><animate attributeName="r" values="5;10;5" dur="2s" repeatCount="indefinite"/></circle></svg>'
+  await writeFile(path.join(input.root, 'water.svg'), svg)
+  await bundlePlayable(input)
+  const dom = new JSDOM(await readFile(path.join(input.root, input.output), 'utf8'), { runScripts: 'dangerously' })
+  await new Promise<void>((resolve) => dom.window.addEventListener('load', () => resolve(), { once: true }))
+  expect(dom.window.water).toMatch(/^data:image\/svg\+xml[;,]/)
+  const response = await fetch(dom.window.water)
+  expect(await response.text()).toBe(svg)
+  expect(dom.window.document.querySelector('svg')).toBeNull()
+  dom.window.close()
+})
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
