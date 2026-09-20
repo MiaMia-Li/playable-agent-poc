@@ -24,7 +24,7 @@ preserve its original text/artwork. If a campaign field has no native counterpar
 do not invent visible UI to bind it; omit the campaign binding contract instead.
 
 During acceptance, reach the native ending via real gameplay, verify that no duplicate
-CTA/ending appears, and check the native CTA destination without navigating to it.
+CTA/ending appears, and verify native CTA input through the intercepted MRAID check in `references/cta-navigation.md`.
 Do not require generic DOM selectors for engine-rendered controls. Add
 `playable-native-ui-preserved-v1` only after verifying and fixing duplicate UI;
 this marker permits future copy-only updates to reuse the accepted native layout.
@@ -40,7 +40,7 @@ Otherwise perform one bounded pass:
 3. Run `node assets/starter/work/browser-acceptance.mjs output.html work/scenario.mjs` once. Use its network/console results and portrait/landscape screenshots instead of starting a separate visual review.
 4. Write `work/validation-checklist.md` once with four columns: requirement, expected, observed, pass/fail. Tie it to the final artifact hash.
 
-The same browser pass must cover offline loading, initial mute, parent mute messages, first-interaction gameplay, responsive layout, ending, and the stored CTA destination without opening it. Use bounded waits based on animation duration. After a failure, make at most one focused repair and rerun only the failed assertion and affected downstream transitions. Never force success state, replay unchanged passing checks, or rerun tests for report-only edits. Report size-limit warnings without restarting acceptance.
+The same browser pass must cover offline loading, initial mute, parent mute messages, first-interaction gameplay, responsive layout, ending, and real CTA input through the intercepted MRAID check (no actual store navigation). Use bounded waits based on animation duration. After a failure, make at most one focused repair and rerun only the failed assertion and affected downstream transitions. Never force success state, replay unchanged passing checks, or rerun tests for report-only edits. Report size-limit warnings without restarting acceptance.
 
 ## Inspect and patch obfuscated Cocos business scripts
 
@@ -84,7 +84,7 @@ No-change round trips preserve the exact original HTML bytes. Changed scripts an
 
 The browser runner passes a `probe` to every scenario. `await probe.snapshot()` returns a bounded read-only snapshot: engine, readiness, current public state, native scene nodes/component state and visible input-target bounds. Cocos and Laya probes traverse the actual scene; the existing `__PLAYABLE__.snapshot()` contract supplies state for other templates. Missing fields remain absent, not fabricated.
 
-Use `await probe.waitFor(s => s.state.ended === true, { timeout: 12000 })` only when that field is actually exposed. Otherwise use the observed native node/component field. Waiting is bounded; do not replace state waits with long fixed sleeps. `await probe.click('start')` targets the wheel's native start button; dragon slots and Zeus expose `spin`, Zeus exposes `collect`. Actual node names or unique scene paths from `snapshot().targets` are also accepted. Missing or ambiguous bounds fail instead of guessing coordinates. For Balloon Master, select an observed gameplay target from the scene; its `download` target is for inspection, not a gameplay start. Never click a store target during acceptance. Still assert the observed gameplay outcome with `check`; probe availability alone proves nothing.
+Use `await probe.waitFor(s => s.state.ended === true, { timeout: 12000 })` only when that field is actually exposed. Otherwise use the observed native node/component field. Waiting is bounded; do not replace state waits with long fixed sleeps. `await probe.click('start')` targets the wheel's native start button; dragon slots and Zeus expose `spin`, Zeus exposes `collect`. Actual node names or unique scene paths from `snapshot().targets` are also accepted. Missing or ambiguous bounds fail instead of guessing coordinates. For Balloon Master, select an observed gameplay target from the scene; its `download` target is for inspection, not a gameplay start. Only click store targets inside the intercepted navigation.verify check from references/cta-navigation.md. Still assert the observed gameplay outcome with `check`; probe availability alone proves nothing.
 
 ## Tool availability and one repair
 

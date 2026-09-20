@@ -33,8 +33,8 @@ pinned dependencies and embed the implementation. Add physics only when needed.
 
 Deliver one offline responsive HTML with a 2D or WebGL canvas, initially muted. The first tap must stay
 inside gameplay. Support parent playable:set-muted messages, expose read-only real
-engine state through `window.__PLAYABLE__`, and keep the CTA destination without opening
-it during tests. Soft size limits are warnings; functional failures block completion.
+engine state through `window.__PLAYABLE__`, and verify CTA input with the intercepted
+MRAID check in `references/cta-navigation.md` without opening a real store. Soft size limits are warnings; functional failures block completion.
 
 Run node assets/starter/work/test-freeform-playable.mjs output.html, then run browser
 acceptance through assets/starter/work/browser-acceptance.mjs with a scenario module
@@ -48,3 +48,10 @@ Shared dependency: the platform merges `skills/_shared/` into this Skill workspa
 for `assets/starter/work/browser-acceptance.mjs` and `test-freeform-playable.mjs`.
 When packaging this Skill outside the application, include those shared tools at
 the same workspace paths.
+
+## Store navigation
+
+Read `references/cta-navigation.md` for MRAID button wiring, confirmed automatic
+navigation only when explicitly confirmed, and mandatory intercepted CTA
+acceptance with `navigation.verify`. This replaces URL-only CTA inspection; never
+open a real store during tests. Preserve explicitly requested automatic navigation.

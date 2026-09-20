@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createCtaAcceptance, installMraidRecorder } from './cta-acceptance.mjs'
 import { createTemplateProbe } from './template-probe.mjs'
 import { installRuntimeEvidence, runtimeEvidenceChecks } from './runtime-evidence.mjs'
 
@@ -11,7 +12,7 @@ const require = createRequire(import.meta.url)
 let browser
 let timer
 const smoke = process.argv.includes('--smoke')
-const report = { passed: false, smoke, checks: [], errors: [], requests: [], screenshots: [] }
+const report = { passed: false, smoke, checks: [], errors: [], requests: [], screenshots: [], cta: [] }
 let stage = 'setup'
 const startedAt = Date.now()
 const evidenceDir = path.resolve('work/browser-acceptance')
@@ -40,6 +41,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 360, height: 640 } })
   context.setDefaultTimeout(10000)
   const page = await context.newPage()
+  if (!smoke) await installMraidRecorder(page, () => {})
   if (rendering?.renderer === 'threejs') await page.addInitScript(installRuntimeEvidence, evidenceKey)
   // 允许单文件内嵌资源，拦截外部资源和弹窗，避免自动验收触发商店导航。
   await context.route(/https?:\/\//, route => { report.requests.push(route.request().url()); return route.abort() })
@@ -60,6 +62,7 @@ try {
     await page.screenshot({ path: path.join(evidenceDir, filename) })
     report.screenshots.push(filename)
   }
+  const navigation = createCtaAcceptance({ browser, artifactUrl: pathToFileURL(artifact).href, storeUrl: config.storeUrl, createProbe: target => createTemplateProbe(target, config.sourceTemplateId ?? config.mode), check, report: report.cta })
   await Promise.race([
     (async () => {
       stage = 'navigation'
@@ -67,7 +70,7 @@ try {
       stage = 'contract'
       await page.waitForFunction(() => Boolean(window.__PLAYABLE__), undefined, { timeout: 15000 })
       stage = 'scenario'
-      await run({ page, context, check, capture, probe: createTemplateProbe(page, config.sourceTemplateId ?? config.mode),
+      await run({ page, context, check, capture, navigation, probe: createTemplateProbe(page, config.sourceTemplateId ?? config.mode),
         // 坐标基于当前画布边界，避免模板逻辑尺寸与浏览器缩放不同导致误点。
         clickCanvas: async (x, y) => {
           const box = await page.locator('canvas').first().boundingBox()
@@ -76,6 +79,7 @@ try {
         },
       })
       if (report.checks.length === 0) throw new Error('Scenario did not assert gameplay')
+      if (!smoke) navigation.assertVerified()
       stage = 'capture'
       await capture('portrait')
       if (!smoke) {

@@ -33,8 +33,7 @@ disabled; use approved uploads and bundled assets. Keep credentials out of artif
 
 Deliver one offline responsive HTML. Start muted, make the first tap gameplay,
 implement the `playable:set-muted` parent-message contract and expose read-only
-`window.__PLAYABLE__` state reflecting the real engine. Confirm the stored CTA URL
-without opening it. Report soft size limits as warnings, never hide functional failures.
+`window.__PLAYABLE__` state reflecting the real engine. Verify real CTA input using `navigation.verify` without opening a real store. Report soft size limits as warnings, never hide functional failures.
 
 Run the structural check and browser acceptance described in `adaptation.md`.
 Use `assets/starter/work/browser-acceptance.mjs` with a task-specific scenario module
@@ -47,3 +46,10 @@ checks pass and do not replay unchanged output just to rewrite reports.
 
 Return the completion protocol only after validation. The application publishes the
 artifact for human review and controls final delivery actions.
+
+## Store navigation
+
+Read `references/cta-navigation.md` for MRAID button wiring, confirmed automatic
+navigation only when explicitly confirmed, and mandatory intercepted CTA
+acceptance with `navigation.verify`. This replaces URL-only CTA inspection; never
+open a real store during tests. Preserve explicitly requested automatic navigation.
