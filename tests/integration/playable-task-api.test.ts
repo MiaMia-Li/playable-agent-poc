@@ -1986,18 +1986,20 @@ describe('playable task API', () => {
     const response = await harness.handlers.list(request('/api/playable-tasks'))
     const body = await response.json()
 
-    expect(body.tasks).toEqual([
-      expect.objectContaining({
-        id: 'owned',
-        prompt: 'Build a game',
-        phase: 'draft',
-        hasArtifact: false,
-        artifactVersion: null,
-      }),
-    ])
-    expect(JSON.stringify(body)).not.toContain('userId')
-    expect(JSON.stringify(body)).not.toContain('latestArtifactKey')
-    expect(JSON.stringify(body)).not.toContain('users/')
+    expect(body).toEqual({
+      tasks: [
+        {
+          id: 'owned',
+          title: null,
+          prompt: 'Build a game',
+          phase: 'draft',
+          hasArtifact: false,
+          artifactVersion: null,
+          createdAt: null,
+          updatedAt: null,
+        },
+      ],
+    })
   })
 
   it('renames an owned conversation through the task API', async () => {

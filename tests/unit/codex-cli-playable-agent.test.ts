@@ -403,7 +403,7 @@ describe('CodexCliPlayableAgent', () => {
     expect(buildRunner).toHaveBeenCalledWith(input, expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
   })
 
-  it('skips Codex CLI validation instructions when sandbox validation is disabled', async () => {
+  it('keeps Codex CLI static validation instructions when full validation is disabled', async () => {
     vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
     const invokeCodex = vi.fn(async () => ({ completed: true }))
     const result: BuildResult = {
@@ -419,6 +419,8 @@ describe('CodexCliPlayableAgent', () => {
 
     const calls = invokeCodex.mock.calls as unknown as Array<[{ prompt: string }]>
     expect(calls[0][0].prompt).toContain('full Codex validation is disabled')
+    expect(calls[0][0].prompt).toContain('test-freeform-playable.mjs')
+    expect(calls[0][0].prompt).toContain('Do not run browser acceptance')
     expect(calls[0][0].prompt).not.toContain('test-playable.mjs')
     expect(calls[0][0].prompt).not.toContain('work/validation-checklist.md')
   })

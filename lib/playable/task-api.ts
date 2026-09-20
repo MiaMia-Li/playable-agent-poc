@@ -149,6 +149,16 @@ export interface PlayableTaskRecord {
   sandboxId?: string | null
 }
 
+export interface PlayableTaskListRecord {
+  id: string
+  prompt: string
+  phase: PlayableTaskPhase
+  latestArtifactKey: string | null
+  title?: string | null
+  createdAt?: Date | null
+  updatedAt?: Date | null
+}
+
 export interface PlayableEventRecord {
   id: string
   taskId: string
@@ -294,7 +304,7 @@ export interface PlayableTaskRepository {
   findBuild(taskId: string, buildId: string): Promise<PlayableBuildRecord | undefined>
   appendEvent(event: { taskId: string; type: string; phase?: string; message?: string }): Promise<void>
   listEvents(taskId: string): Promise<PlayableEventRecord[]>
-  listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]>
+  listOwnedTasks(userId: string): Promise<PlayableTaskListRecord[]>
   saveAsset(asset: PlayableAsset): Promise<void>
   listAssets(taskId: string, userId: string): Promise<PlayableAsset[]>
   findOwnedAsset(taskId: string, userId: string, assetId: string): Promise<PlayableAsset | undefined>
@@ -547,13 +557,14 @@ function safeTaskState(task: PlayableTaskRecord) {
   }
 }
 
-function taskListItem(task: PlayableTaskRecord) {
+function taskListItem(task: PlayableTaskListRecord) {
   return {
     id: task.id,
     title: task.title ?? null,
     prompt: safeString(task.prompt),
-    ...safeTaskState(task),
-    mode: task.confirmation?.mode ?? null,
+    phase: task.phase,
+    hasArtifact: Boolean(task.latestArtifactKey),
+    artifactVersion: task.latestArtifactKey?.split('/').at(-2) ?? null,
     createdAt: task.createdAt?.toISOString() ?? null,
     updatedAt: task.updatedAt?.toISOString() ?? null,
   }

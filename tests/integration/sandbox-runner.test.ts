@@ -1025,19 +1025,11 @@ describe('runPlayableBuild', () => {
   })
 })
 
-it('skips all behavioral validation when disabled and keeps artifact safety checks', async () => {
+it('keeps lightweight artifact validation when full validation is disabled', async () => {
   vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
   const sandbox = await createLocalSandbox()
   const artifact = await readFile('public/playable-templates/center_collision.html')
   replaceArtifactCommands(sandbox, artifact)
-  const run = sandbox.run.bind(sandbox)
-  sandbox.run = async (options) => {
-    if (options.command.includes('test-freeform-playable.mjs')) {
-      sandbox.commands.push(options)
-      return { exitCode: 1, stdout: '', stderr: 'validation must be skipped' }
-    }
-    return run(options)
-  }
   const input = buildInput('center_collision', 'sk-validation-disabled-test')
   input.onPreview = vi.fn(async () => undefined)
   const phases: unknown[] = []
@@ -1055,7 +1047,38 @@ it('skips all behavioral validation when disabled and keeps artifact safety chec
   expect(input.onPreview).not.toHaveBeenCalled()
   expect(sandbox.commands.some(({ command }) => command.includes('browser-acceptance.mjs'))).toBe(false)
   expect(sandbox.commands.some(({ command }) => command.includes('test-playable.mjs'))).toBe(false)
-  expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(false)
+  expect(sandbox.commands.some(({ command }) => command.includes('test-freeform-playable.mjs'))).toBe(true)
+})
+
+it('repairs an external resource before publishing when full validation is disabled', async () => {
+  vi.stubEnv('PLAYABLE_SANDBOX_VALIDATION_ENABLED', '0')
+  const sandbox = await createLocalSandbox()
+  const input = buildInput('center_collision', 'sk-artifact-repair-test')
+  input.confirmation = {
+    ...input.confirmation,
+    sourceHtmlAssetId: 'uploaded-source',
+    routing: { match: 'freeform', confidence: 1, differences: ['Adapt uploaded HTML'] },
+  }
+  input.baseHtml = (await readFile('public/playable-templates/center_collision.html', 'utf8')).replace(
+    '</head>',
+    '<link rel="apple-touch-icon" href=".png" /></head>',
+  )
+
+  const result = await runPlayableBuild(input, {
+    createSandbox: async () => sandbox,
+    executeAgent: async ({ workspace }) => {
+      const repair = await readFile(path.join(workspace, 'work/artifact-repair.json'), 'utf8').catch(() => null)
+      if (!repair) return
+      const artifactPath = path.join(workspace, 'output.html')
+      const artifact = await readFile(artifactPath, 'utf8')
+      await writeFile(artifactPath, artifact.replace('<link rel="apple-touch-icon" href=".png" />', ''))
+    },
+  })
+
+  expect(result.html).not.toContain('apple-touch-icon')
+  expect(await readFile(path.join(sandbox.defaultWorkingDirectory, 'work/work/artifact-repair.json'), 'utf8')).toBe(
+    JSON.stringify({ attempt: 1, reason: 'external_resource', element: 'link', target: 'relative_path' }, null, 2),
+  )
 })
 
 // 编排测试用模拟浏览器报告，验证发布顺序和报告与最终字节的绑定。

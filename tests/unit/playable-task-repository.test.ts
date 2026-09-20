@@ -36,6 +36,10 @@ const confirmation: ConfirmationProposal = {
 }
 
 const database = vi.hoisted(() => {
+  const orderBy = vi.fn()
+  const selectWhere = vi.fn(() => ({ orderBy }))
+  const from = vi.fn(() => ({ where: selectWhere }))
+  const select = vi.fn((_fields?: Record<string, unknown>) => ({ from }))
   const returning = vi.fn()
   const where = vi.fn((_condition: unknown) => ({ returning }))
   const set = vi.fn(() => ({ where }))
@@ -45,11 +49,11 @@ const database = vi.hoisted(() => {
   const transaction = vi.fn(async (operation: (client: { update: typeof update; insert: typeof insert }) => unknown) =>
     operation({ update, insert }),
   )
-  return { update, set, where, returning, insert, values, transaction }
+  return { select, from, selectWhere, orderBy, update, set, where, returning, insert, values, transaction }
 })
 
 vi.mock('@/lib/db/client', () => ({
-  db: { update: database.update, transaction: database.transaction },
+  db: { select: database.select, update: database.update, transaction: database.transaction },
 }))
 
 import { DatabasePlayableTaskRepository } from '@/lib/playable/task-repository'
@@ -124,6 +128,29 @@ describe('DatabasePlayableTaskRepository atomic transitions', () => {
         latestArtifactKey: 'users/user-1/tasks/task-1/build/playable.html',
       }),
     )
+  })
+})
+
+describe('DatabasePlayableTaskRepository task lists', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('selects only the scalar fields needed by recent conversations', async () => {
+    database.orderBy.mockResolvedValueOnce([])
+    const repository = new DatabasePlayableTaskRepository()
+
+    await expect(repository.listOwnedTasks('user-1')).resolves.toEqual([])
+
+    expect(Object.keys(database.select.mock.calls[0]?.[0] ?? {})).toEqual([
+      'id',
+      'prompt',
+      'phase',
+      'latestArtifactKey',
+      'title',
+      'createdAt',
+      'updatedAt',
+    ])
   })
 })
 

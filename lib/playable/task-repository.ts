@@ -39,6 +39,7 @@ const VIDEO_ANALYSIS_CLAIM_RETRIES = 3
 import type {
   PlayableBuildRecord,
   PlayableEventRecord,
+  PlayableTaskListRecord,
   PlayableTaskMessageRecord,
   PlayableTaskRecord,
   PlayableTaskRepository,
@@ -202,13 +203,26 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
-  async listOwnedTasks(userId: string): Promise<PlayableTaskRecord[]> {
+  async listOwnedTasks(userId: string): Promise<PlayableTaskListRecord[]> {
     const rows = await db
-      .select()
+      .select({
+        id: tasks.id,
+        prompt: tasks.prompt,
+        phase: tasks.phase,
+        latestArtifactKey: tasks.latestArtifactKey,
+        title: tasks.title,
+        createdAt: tasks.createdAt,
+        updatedAt: tasks.updatedAt,
+      })
       .from(tasks)
       .where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt), isNull(tasks.repoUrl)))
       .orderBy(asc(tasks.createdAt))
-    return rows.map(toTask).reverse()
+    return rows
+      .map((row) => ({
+        ...row,
+        phase: playableTaskPhaseSchema.parse(row.phase),
+      }))
+      .reverse()
   }
 
   async appendMessage(taskId: string, role: 'user' | 'agent', content: string): Promise<void> {

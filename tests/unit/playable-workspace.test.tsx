@@ -759,6 +759,43 @@ describe('PlayableWorkspace', () => {
     expect(within(audioRow).getByText('reference.html · 源 HTML 内嵌资源')).toBeInTheDocument()
   })
 
+  it('lets the user expand every imported resource in a confirmation field', () => {
+    const importedBindings = Array.from({ length: 25 }, (_, index) => ({
+      kind: 'import' as const,
+      assetId: 'folder-1',
+      path: `game/tiles/tile-${index + 1}.png`,
+      filename: `tile-${index + 1}.png`,
+      mimeType: 'image/png',
+      size: 1024,
+    }))
+    const bound: ConfirmationProposal = {
+      ...proposal,
+      resources: {
+        ...proposal.resources,
+        tileFaces: { status: '用户上传', treatment: '使用文件夹内的牌面' },
+      },
+      resourceBindings: { tileFaces: importedBindings },
+    }
+    render(
+      <ConfirmationTable
+        proposal={bound}
+        onChange={vi.fn()}
+        onConfirm={vi.fn()}
+        resourceBindingPreviewUrl={(assetId, path) => `/entries/${assetId}?path=${path}`}
+      />,
+    )
+
+    const tileRow = screen.getByRole('row', { name: /牌面素材/ })
+    expect(within(tileRow).getAllByRole('img')).toHaveLength(24)
+    expect(within(tileRow).queryByRole('img', { name: 'tile-25.png' })).not.toBeInTheDocument()
+
+    fireEvent.click(within(tileRow).getByRole('button', { name: '查看全部 25 个已绑定文件' }))
+
+    expect(within(tileRow).getAllByRole('img')).toHaveLength(25)
+    expect(within(tileRow).getByRole('img', { name: 'tile-25.png' })).toBeInTheDocument()
+    expect(within(tileRow).getByRole('button', { name: '收起已绑定文件' })).toBeInTheDocument()
+  })
+
   it('keeps delivery and store navigation inside the proposal table', () => {
     render(<ConfirmationTable proposal={proposal} onChange={vi.fn()} onConfirm={vi.fn()} />)
 

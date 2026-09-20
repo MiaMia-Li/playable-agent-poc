@@ -10,7 +10,7 @@ import {
   playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import { spineJson, spineAtlas, spinePng, zipFiles } from '../fixtures/imported-assets'
-import { attachImportedManifest } from '@/lib/playable/task-imports'
+import { attachImportedManifest, bindImportedResources } from '@/lib/playable/task-imports'
 import type { ConfirmationProposal } from '@/lib/playable/schemas'
 import type { PlayableAssetManifest } from '@/lib/playable/playable-agent-adapter'
 
@@ -140,5 +140,90 @@ describe('asset package ingestion', () => {
       { slot: 'tileFaces', files: ['user-imports/folder-1/game/tiles/tile.png'] },
       { slot: 'animationEffects', files: ['user-imports/folder-1/game/guide/hand.png'] },
     ])
+  })
+
+  it('binds every imported file named by a numeric filename range', () => {
+    const summary = {
+      assetId: 'folder-1',
+      filename: 'tiles.zip',
+      root: 'user-imports/folder-1',
+      htmlCandidates: [],
+      files: Array.from({ length: 76 }, (_, index) => ({
+        path: `tiles/mahjang_card_${index + 1}.png`,
+        size: 4,
+      })),
+      spine: [],
+      issues: [],
+    }
+    const confirmation: ConfirmationProposal = {
+      routing: { match: 'freeform', confidence: 1, differences: [] },
+      visualDirection: 'custom',
+      mode: 'top_rack',
+      gameplay: '翻牌配对',
+      resources: {
+        tileFaces: {
+          status: '用户上传',
+          treatment: '使用 mahjang_card_1.png 至 mahjang_card_76.png 作为全部牌面',
+        },
+        backgroundBoard: { status: '内置默认', treatment: '默认背景' },
+        animationEffects: { status: '内置默认', treatment: '默认特效' },
+        audio: { status: '内置默认', treatment: '默认音效' },
+        endCard: { status: '内置默认', treatment: '默认结束卡' },
+      },
+      copy: { title: '试玩', cta: '开始', disclaimer: '演示', locale: 'zh-CN' },
+      storeUrl: 'https://example.com',
+      delivery: {
+        network: 'applovin',
+        logicalWidth: 360,
+        logicalHeight: 640,
+        output: 'single-html',
+        maxBytes: 10 * 1024 * 1024,
+      },
+    }
+
+    const bound = bindImportedResources(confirmation, [summary])
+
+    expect(bound.resourceBindings?.tileFaces).toHaveLength(76)
+    expect(bound.resourceBindings?.tileFaces?.map((binding) => ('path' in binding ? binding.path : ''))).toContain(
+      'tiles/mahjang_card_42.png',
+    )
+  })
+
+  it('does not confuse a shorter numbered filename with a longer one', () => {
+    const summary = {
+      assetId: 'folder-1',
+      filename: 'tiles.zip',
+      root: 'user-imports/folder-1',
+      htmlCandidates: [],
+      files: [7, 76].map((number) => ({ path: `tiles/mahjang_card_${number}.png`, size: 4 })),
+      spine: [],
+      issues: [],
+    }
+    const confirmation: ConfirmationProposal = {
+      routing: { match: 'freeform', confidence: 1, differences: [] },
+      visualDirection: 'custom',
+      mode: 'top_rack',
+      gameplay: '翻牌配对',
+      resources: {
+        tileFaces: { status: '用户上传', treatment: '只使用 mahjang_card_76.png' },
+        backgroundBoard: { status: '内置默认', treatment: '默认背景' },
+        animationEffects: { status: '内置默认', treatment: '默认特效' },
+        audio: { status: '内置默认', treatment: '默认音效' },
+        endCard: { status: '内置默认', treatment: '默认结束卡' },
+      },
+      copy: { title: '试玩', cta: '开始', disclaimer: '演示', locale: 'zh-CN' },
+      storeUrl: 'https://example.com',
+      delivery: {
+        network: 'applovin',
+        logicalWidth: 360,
+        logicalHeight: 640,
+        output: 'single-html',
+        maxBytes: 10 * 1024 * 1024,
+      },
+    }
+
+    const bound = bindImportedResources(confirmation, [summary])
+
+    expect(bound.resourceBindings?.tileFaces).toMatchObject([{ path: 'tiles/mahjang_card_76.png' }])
   })
 })

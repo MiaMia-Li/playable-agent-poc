@@ -61,7 +61,7 @@ interface BuildLogger {
 }
 
 export interface ExecuteAgentInput {
-  phase?: 'preview' | 'preview_repair' | 'acceptance'
+  phase?: 'preview' | 'preview_repair' | 'artifact_repair' | 'acceptance'
   authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
   sandbox: PlayableSandbox
   workspace: string
@@ -498,6 +498,36 @@ export async function runPlayableBuild(
         )
       } else await dependencies.executeAgent(agentInput)
     }
+    stage = 'artifact_check'
+    const artifactBeforeRepair = await sandbox.readTextFile({
+      path: path.join(workspace, 'output.html'),
+      abortSignal: dependencies.abortSignal,
+    })
+    if (!artifactBeforeRepair) throw new PlayableHostCheckError('Playable artifact is missing', 'artifact_missing')
+    try {
+      assertOfflineArtifact(artifactBeforeRepair, 'Playable artifact contains an external resource')
+    } catch (error) {
+      if (!(error instanceof PlayableHostCheckError) || error.reason !== 'external_resource') throw error
+      await sandbox.writeTextFile({
+        path: path.join(workspace, 'work/artifact-repair.json'),
+        content: JSON.stringify({ attempt: 1, reason: error.reason, ...error.detail }, null, 2),
+        abortSignal: dependencies.abortSignal,
+      })
+      input.onActivity?.('artifact_repair_started')
+      stage = 'agent'
+      await dependencies.executeAgent({ ...agentInput, phase: 'artifact_repair' })
+      dependencies.abortSignal?.throwIfAborted()
+      const repairedArtifact = await sandbox.readTextFile({
+        path: path.join(workspace, 'output.html'),
+        abortSignal: dependencies.abortSignal,
+      })
+      stage = 'artifact_check'
+      if (!repairedArtifact || repairedArtifact === artifactBeforeRepair) {
+        input.onActivity?.('artifact_repair_unchanged')
+        throw error
+      }
+      assertOfflineArtifact(repairedArtifact, 'Playable artifact contains an external resource')
+    }
     if (earlyPreview) {
       const checkSignal = dependencies.abortSignal
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -687,25 +717,23 @@ export async function runPlayableBuild(
     }
     stage = 'integrity'
 
-    if (sandboxValidationEnabled) {
-      stage = 'validation'
-      input.onActivity?.('validating')
-      await dependencies.logger?.info('Validating playable behavior')
-      const validation = await sandbox.run({
-        command: buildValidationCommand(confirmation),
-        workingDirectory: workspace,
-        env: {
-          PLAYABLE_MODE: confirmation.mode,
-          PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
-        },
-        abortSignal: dependencies.abortSignal,
+    stage = 'validation'
+    input.onActivity?.('validating')
+    await dependencies.logger?.info('Validating playable behavior')
+    const validation = await sandbox.run({
+      command: buildValidationCommand(confirmation),
+      workingDirectory: workspace,
+      env: {
+        PLAYABLE_MODE: confirmation.mode,
+        PLAYABLE_PLUGIN_VERSION: MAHJONG_PLAYABLE_PLUGIN.version,
+      },
+      abortSignal: dependencies.abortSignal,
+    })
+    if (validation.exitCode !== 0)
+      throw new PlayableHostCheckError('Playable validation failed', 'validation_failed', {
+        exitCode: validation.exitCode,
+        output: outputTail(validation),
       })
-      if (validation.exitCode !== 0)
-        throw new PlayableHostCheckError('Playable validation failed', 'validation_failed', {
-          exitCode: validation.exitCode,
-          output: outputTail(validation),
-        })
-    }
 
     // Rendering evidence belongs to the normal browser acceptance report. Reuse it
     // instead of replaying a successful scenario or starting a separate repair loop.

@@ -58,6 +58,7 @@ export function createBuildTimingReporter(report: BuildActivityCallback, now = D
     if (event === 'validating' || event === 'agent_completed') start('validation')
     if (event === 'preview_checking') start('browser')
     if (event === 'preview_repair_started') start('model')
+    if (event === 'artifact_repair_started') start('model')
     if (
       event === 'command_started' &&
       detail?.id &&
