@@ -1015,6 +1015,7 @@ function startBuildHeartbeat(
   taskId: string,
   buildId: string,
   intervalMs: number,
+  onOwnershipLost: () => void,
 ): () => void {
   let stopped = false
   let heartbeatPending = false
@@ -1023,7 +1024,18 @@ function startBuildHeartbeat(
     heartbeatPending = true
     void repository
       .touchBuild(taskId, buildId)
-      .catch(() => undefined)
+      .then((active) => {
+        // false 是数据库确认归属已丢失；请求抛错仅代表心跳写入失败，两者不能混同。
+        if (!active && !stopped) {
+          stopped = true
+          console.warn('Playable build heartbeat lost ownership')
+          onOwnershipLost()
+        }
+      })
+      .catch(() => {
+        // 保留后续心跳重试，只记录静态诊断信息，不因一次数据库故障取消构建。
+        console.error('Unable to persist playable build heartbeat')
+      })
       .finally(() => {
         heartbeatPending = false
       })
@@ -1127,11 +1139,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     return
   }
 
+  // 取消信号绑定 buildId 对应的执行实例，不通过任务级取消入口查找可能已更新的句柄。
+  const buildController = new AbortController()
   const stopHeartbeat = startBuildHeartbeat(
     repository,
     task.id,
     buildId,
     dependencies.buildHeartbeatIntervalMs ?? DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS,
+    () => buildController.abort(),
   )
 
   // 顺序写入步骤事件，确保工具先开始再结束；终止事件前要等待队列排空。
@@ -1145,12 +1160,14 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
   ]
   let activityQueue = Promise.resolve()
   const persistActivity: BuildActivityCallback = (activity, detail) => {
-    if (!Object.hasOwn(buildActivityLabels, activity)) return
+    if (buildController.signal.aborted || !Object.hasOwn(buildActivityLabels, activity)) return
     const message = detail
       ? JSON.stringify({ version: 1, detail: sanitizeBuildActivityDetail(detail, activitySecrets) })
       : buildActivityLabels[activity]
     activityQueue = activityQueue
       .then(async () => {
+        // 排队等待期间也可能失去归属，写入前再次检查，避免旧进度混入新构建。
+        if (buildController.signal.aborted) return
         await repository.appendEvent({
           taskId: task.id,
           type: `build_activity_${activity}`,
@@ -1315,7 +1332,9 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         .catch(() => undefined)
     }
     stage = 'agent'
+    buildController.signal.throwIfAborted()
     const result = await agent.build({
+      abortSignal: buildController.signal,
       onPreview: async (html) => {
         if (containsExactSecret(html, apiKey) || redactSecrets(html) !== html)
           throw new Error('Preview contains a credential')

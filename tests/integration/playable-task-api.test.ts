@@ -2994,6 +2994,38 @@ describe('playable task API', () => {
     expect(harness.repository.builds.at(-1)?.status).toBe('failed')
   })
 
+  it('aborts the build-specific signal when a heartbeat loses ownership', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    const touch = vi.spyOn(harness.repository, 'touchBuild')
+    const errorLog = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let signal: AbortSignal | undefined
+    vi.mocked(harness.agent.build).mockImplementation(async (input) => {
+      signal = input.abortSignal
+      // 模拟构建开始后失去归属，等待下一次心跳触发本轮取消。
+      touch.mockResolvedValue(false)
+      await new Promise<void>((resolve) => signal!.addEventListener('abort', () => resolve(), { once: true }))
+      throw new Error('aborted')
+    })
+    try {
+      await runConfirmedBuild({
+        task,
+        buildId: 'test-build',
+        apiKey: 'sk-test-secret',
+        repository: harness.repository,
+        agent: harness.agent,
+        artifactStore: harness.artifactStore,
+        buildHeartbeatIntervalMs: 5,
+      })
+      expect(signal?.aborted).toBe(true)
+      expect(harness.artifactStore.put).not.toHaveBeenCalled()
+    } finally {
+      touch.mockRestore()
+      errorLog.mockRestore()
+    }
+  })
+
   it('keeps a recently heartbeating build active', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'

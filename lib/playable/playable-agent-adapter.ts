@@ -169,6 +169,8 @@ export class PlayableAgentError extends Error {
 }
 
 export interface ConfirmedBuildInput {
+  /** 仅取消本轮构建，避免同一任务重试时影响新的执行实例。 */
+  abortSignal?: AbortSignal
   /** 基础安全检查通过后交给宿主保存为待验收版本；浏览器检查失败也保留产物。 */
   onPreview?: (html: string) => Promise<void>
   baseConfirmation?: ConfirmationProposal

@@ -561,21 +561,25 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
     if (!input.apiKey.trim()) throw new Error('API key is required')
     confirmationProposalSchema.parse(input.confirmation)
     const controller = new AbortController()
+    // 同时响应主动取消和本轮构建失去归属；后者不能按 taskId 取消，以免误伤新一轮构建。
+    const buildSignal = input.abortSignal ? AbortSignal.any([controller.signal, input.abortSignal]) : controller.signal
+    buildSignal.throwIfAborted()
     this.activeTasks.set(input.taskId, controller)
     try {
       for (let attempt = 1; attempt <= CODEX_BUILD_MAX_ATTEMPTS; attempt += 1) {
         const attemptInput = attempt === 1 ? input : { ...input, taskId: `${input.taskId}-retry-${attempt}` }
         try {
-          return await this.buildRunner(attemptInput, { abortSignal: controller.signal })
+          return await this.buildRunner(attemptInput, { abortSignal: buildSignal })
         } catch (error) {
           if (input.onPreview || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
             throw error
-          await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, controller.signal)
+          await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, buildSignal)
         }
       }
       throw new Error('Codex build attempts exhausted')
     } finally {
-      this.activeTasks.delete(input.taskId)
+      // 旧构建可能晚于新构建退出，只清除自己登记的取消句柄。
+      if (this.activeTasks.get(input.taskId) === controller) this.activeTasks.delete(input.taskId)
     }
   }
 

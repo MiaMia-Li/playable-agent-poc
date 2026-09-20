@@ -175,6 +175,7 @@ describe('real playable task route wiring', () => {
 
     expect(infrastructure.repository.touchBuild).toHaveBeenCalledWith('task-1', 'build-1')
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
+      abortSignal: expect.any(AbortSignal),
       onActivity: expect.any(Function),
       onPreview: expect.any(Function),
       baseConfirmation: undefined,
