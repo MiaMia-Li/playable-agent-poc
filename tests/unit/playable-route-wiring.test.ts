@@ -174,8 +174,10 @@ describe('real playable task route wiring', () => {
     await infrastructure.scheduled[0]()
 
     expect(infrastructure.repository.touchBuild).toHaveBeenCalledWith('task-1', 'build-1')
+    // 确认真实路由把本轮取消信号和沙箱登记回调传到 Agent 边界。
     expect(infrastructure.agent.build).toHaveBeenCalledWith({
       abortSignal: expect.any(AbortSignal),
+      onSandboxReady: expect.any(Function),
       onActivity: expect.any(Function),
       onPreview: expect.any(Function),
       baseConfirmation: undefined,

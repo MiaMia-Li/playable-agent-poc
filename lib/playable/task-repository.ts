@@ -78,6 +78,7 @@ function toTask(row: typeof tasks.$inferSelect): PlayableTaskRecord {
     title: row.title,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    sandboxId: row.sandboxId,
   }
 }
 
@@ -333,6 +334,8 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
         .update(tasks)
         .set({
           phase: 'building',
+          // 新一轮尚未创建沙箱，不能沿用上一轮的存活状态。
+          sandboxId: null,
           playableMode: confirmation.mode,
           confirmation,
           pendingRevision: revision ?? null,
@@ -500,6 +503,26 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
+  // 将构建归属检查和沙箱登记放在同一条 UPDATE 中，拒绝旧执行实例的迟到登记。
+  async registerBuildSandbox(taskId: string, buildId: string, sandboxId: string): Promise<boolean> {
+    const activeBuild = db
+      .select({ id: playableTaskBuilds.id })
+      .from(playableTaskBuilds)
+      .where(
+        and(
+          eq(playableTaskBuilds.id, buildId),
+          eq(playableTaskBuilds.taskId, taskId),
+          eq(playableTaskBuilds.status, 'building'),
+        ),
+      )
+    const updated = await db
+      .update(tasks)
+      .set({ sandboxId, updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), inArray(tasks.phase, ['building', 'validating']), exists(activeBuild)))
+      .returning({ id: tasks.id })
+    return updated.length === 1
+  }
+
   async touchBuild(taskId: string, buildId: string): Promise<boolean> {
     const activeBuild = db
       .select({ id: playableTaskBuilds.id })
@@ -519,7 +542,7 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
     return updated.length === 1
   }
 
-  async failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean> {
+  async failStaleBuild(taskId: string, userId: string, staleBefore: Date, sandboxId?: string | null): Promise<boolean> {
     return db.transaction(async (transaction) => {
       const completedAt = new Date()
       const [task] = await transaction
@@ -531,6 +554,8 @@ export class DatabasePlayableTaskRepository implements PlayableTaskRepository {
             eq(tasks.userId, userId),
             inArray(tasks.phase, ['building', 'validating']),
             lt(tasks.updatedAt, staleBefore),
+            // 远程检查期间可能登记了新沙箱；只允许对检查时的同一关联标记失败。
+            sandboxId ? eq(tasks.sandboxId, sandboxId) : isNull(tasks.sandboxId),
           ),
         )
         .returning({ id: tasks.id })

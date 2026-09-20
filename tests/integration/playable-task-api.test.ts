@@ -287,6 +287,8 @@ class MemoryRepository implements PlayableTaskRepository {
         : ['awaiting_confirmation', 'failed'].includes(task.phase))
     )
       return
+    // 与数据库实现一致，新一轮不继承旧沙箱关联。
+    task.sandboxId = null
     task.phase = 'building'
     task.confirmation = value
     task.pendingRevision = revision ?? null
@@ -388,6 +390,13 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
+  // 内存实现复用心跳的构建归属检查，保持与持久化仓库相同的登记约束。
+  async registerBuildSandbox(taskId: string, buildId: string, sandboxId: string): Promise<boolean> {
+    if (!(await this.touchBuild(taskId, buildId))) return false
+    this.tasks.get(taskId)!.sandboxId = sandboxId
+    return true
+  }
+
   async touchBuild(taskId: string, buildId: string): Promise<boolean> {
     const task = this.tasks.get(taskId)
     const build = this.builds.find((candidate) => candidate.taskId === taskId && candidate.id === buildId)
@@ -397,10 +406,12 @@ class MemoryRepository implements PlayableTaskRepository {
     return true
   }
 
-  async failStaleBuild(taskId: string, userId: string, staleBefore: Date): Promise<boolean> {
+  async failStaleBuild(taskId: string, userId: string, staleBefore: Date, sandboxId?: string | null): Promise<boolean> {
     const task = await this.findOwnedTask(taskId, userId)
     if (!task || !['building', 'validating'].includes(task.phase) || !task.updatedAt || task.updatedAt >= staleBefore)
       return false
+    // 模拟数据库的条件更新：检查期间更换沙箱后，旧检查结果应失效。
+    if ((task.sandboxId ?? null) !== (sandboxId ?? null)) return false
     task.phase = 'failed'
     task.updatedAt = new Date()
     const build = this.builds
@@ -686,7 +697,9 @@ function createHarness() {
   let authenticatedUserId: string | undefined = 'user-1'
   let apiKey: string | undefined = 'sk-test-secret'
   let mediaApiKey: string | undefined = 'sk-test-media-secret'
+  const readBuildSandboxState = vi.fn<() => Promise<'active' | 'stopped' | 'unknown'>>().mockResolvedValue('unknown')
   const handlers = createPlayableTaskHandlers({
+    readBuildSandboxState,
     authenticate: async () => authenticatedUserId,
     readApiKey: async () => apiKey,
     readMediaApiKey: async () => mediaApiKey,
@@ -705,6 +718,7 @@ function createHarness() {
   })
 
   return {
+    readBuildSandboxState,
     repository,
     scheduled,
     agent,
@@ -2989,9 +3003,46 @@ describe('playable task API', () => {
     expect(body.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: '构建进程已停止，请重新确认方案并重试。',
+      message: '构建心跳已超时，且未检测到运行中的沙箱，请重新确认方案并重试。',
     })
     expect(harness.repository.builds.at(-1)?.status).toBe('failed')
+  })
+
+  it.each(['active', 'unknown', 'stopped'] as const)(
+    'checks the persisted sandbox after heartbeat loss: %s',
+    async (state) => {
+      const task = harness.repository.tasks.get('owned')!
+      task.phase = 'building'
+      task.confirmation = confirmation
+      task.sandboxId = 'sandbox-current'
+      task.updatedAt = new Date(Date.now() - 10 * 60 * 1000)
+      harness.readBuildSandboxState.mockResolvedValue(state)
+      const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+        params: Promise.resolve({ taskId: 'owned' }),
+      })
+      const body = await response.json()
+      expect(body.task.phase).toBe(state === 'stopped' ? 'failed' : 'building')
+      expect(body.task).not.toHaveProperty('sandboxId')
+      expect(harness.readBuildSandboxState).toHaveBeenCalledWith('sandbox-current')
+      expect(body.events.some((event: { type: string }) => event.type === 'build_failed')).toBe(state === 'stopped')
+    },
+  )
+
+  it('does not fail a replacement sandbox registered while the stale sandbox is being checked', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.sandboxId = 'old-sandbox'
+    task.updatedAt = new Date(Date.now() - 10 * 60 * 1000)
+    // 数据库读取返回快照；复制内存对象，才能真实模拟查询期间沙箱关联发生变化。
+    vi.spyOn(harness.repository, 'findOwnedTask').mockResolvedValueOnce({ ...task })
+    harness.readBuildSandboxState.mockImplementation(async () => {
+      task.sandboxId = 'new-sandbox'
+      return 'stopped'
+    })
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+    expect((await response.json()).task.phase).toBe('building')
   })
 
   it('aborts the build-specific signal when a heartbeat loses ownership', async () => {

@@ -198,6 +198,19 @@ afterEach(async () => {
 })
 
 describe('runPlayableBuild', () => {
+  it('destroys the sandbox before running commands if build registration is rejected', async () => {
+    const sandbox = Object.assign(await createLocalSandbox(), { id: 'sandbox-current' })
+    const input = buildInput('center_collision', 'sk-registration-test')
+    // 登记被拒绝时必须清理刚创建的沙箱，且不能开始执行任何构建命令。
+    input.onSandboxReady = vi.fn().mockRejectedValue(new Error('Build no longer active'))
+    await expect(
+      runPlayableBuild(input, { createSandbox: async () => sandbox, executeAgent: vi.fn() }),
+    ).rejects.toThrow()
+    expect(input.onSandboxReady).toHaveBeenCalledWith('sandbox-current')
+    expect(sandbox.destroyed).toBe(true)
+    expect(sandbox.commands).toEqual([])
+  })
+
   it.each(
     sourceTemplateIds.flatMap((sourceTemplateId) =>
       (['exact', 'approximate', 'freeform'] as const).flatMap((match) =>
