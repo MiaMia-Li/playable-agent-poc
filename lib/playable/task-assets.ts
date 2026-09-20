@@ -11,9 +11,7 @@ import {
   isPlayableAssetSlot,
   maxAssetBytesForSlot,
   MAX_ASSET_BYTES,
-  MAX_ASSETS_PER_SLOT,
   MAX_REFERENCE_VIDEO_SECONDS,
-  MAX_TASK_ASSETS,
   MAX_UPLOAD_BYTES,
   type PlayableAssetSlot,
 } from './asset-policy'
@@ -111,22 +109,13 @@ function refuseAssetContent(input: {
   }
 }
 
-function refuseOverCapacity(currentAssets: PlayableAsset[], slot: PlayableAssetSlot, size = 0): Response | undefined {
+function refuseAggregateSize(currentAssets: PlayableAsset[], slot: PlayableAssetSlot, size = 0): Response | undefined {
   if (
     slot === 'spine' &&
     currentAssets.filter((asset) => asset.slot === 'spine').reduce((sum, asset) => sum + asset.size, size) >
       MAX_SPINE_BYTES
   )
     return Response.json({ error: 'Spine resources exceed 100 MiB' }, { status: 413 })
-  if (currentAssets.length >= MAX_TASK_ASSETS) {
-    return Response.json({ error: 'Too many assets' }, { status: 409 })
-  }
-  if (
-    currentAssets.filter((asset) => asset.slot === slot).length >=
-    (slot === 'spine' ? MAX_TASK_ASSETS : MAX_ASSETS_PER_SLOT)
-  ) {
-    return Response.json({ error: 'Too many assets in slot' }, { status: 409 })
-  }
 }
 
 // 上传阶段校验单文件内容；Spine 的跨文件配套关系留到确认阶段检查，允许分批补齐。
@@ -174,7 +163,7 @@ export function createPlayableAssetHandler(dependencies: AssetHandlerDependencie
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(form?.get('durationSeconds')) : null
     const refusal =
       refuseAssetContent({ slot, mimeType, size: file.size, durationSeconds }) ??
-      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot, file.size)
+      refuseAggregateSize(await dependencies.listAssets(taskId, userId), slot, file.size)
     if (refusal) return refusal
 
     const bytes = new Uint8Array(await file.arrayBuffer())
@@ -263,7 +252,7 @@ export function createPlayableAssetUploadTokenHandler(dependencies: DirectAssetU
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(body?.durationSeconds) : null
     const refusal =
       refuseAssetContent({ slot, mimeType, size, durationSeconds }) ??
-      refuseOverCapacity(await dependencies.listAssets(taskId, userId), slot, size)
+      refuseAggregateSize(await dependencies.listAssets(taskId, userId), slot, size)
     if (refusal) return refusal
 
     const pathname = assetStorageKey(userId, taskId, dependencies.generateId())
@@ -315,7 +304,7 @@ export function createPlayableAssetUploadCompleteHandler(dependencies: DirectAss
     const durationSeconds = slot === 'referenceVideo' ? parseUploadedDuration(body?.durationSeconds) : null
     const refusal =
       refuseAssetContent({ slot, mimeType: stored.contentType, size: stored.size, durationSeconds }) ??
-      refuseOverCapacity(currentAssets, slot, stored.size)
+      refuseAggregateSize(currentAssets, slot, stored.size)
     if (refusal) {
       await dependencies.store.delete(storageKey)
       return refusal
@@ -406,6 +395,62 @@ export function createPlayableAssetContentHandler(dependencies: AssetAccessHandl
         'X-Content-Type-Options': 'nosniff',
       },
     })
+  }
+}
+
+function importedEntryContentType(path: string): string | undefined {
+  if (/\.png$/i.test(path)) return 'image/png'
+  if (/\.jpe?g$/i.test(path)) return 'image/jpeg'
+  if (/\.webp$/i.test(path)) return 'image/webp'
+  if (/\.gif$/i.test(path)) return 'image/gif'
+  if (/\.mp3$/i.test(path)) return 'audio/mpeg'
+  if (/\.wav$/i.test(path)) return 'audio/wav'
+  if (/\.ogg$/i.test(path)) return 'audio/ogg'
+  if (/\.m4a$/i.test(path)) return 'audio/mp4'
+  if (/\.mp4$/i.test(path)) return 'video/mp4'
+  if (/\.glb$/i.test(path)) return GLB_MIME_TYPE
+}
+
+/** Read-only preview for one allowlisted media entry inside an owned folder/archive upload. */
+export function createPlayableAssetEntryHandler(dependencies: AssetAccessHandlerDependencies) {
+  return async (request: NextRequest, context: AssetRouteContext) => {
+    const userId = await dependencies.authenticate(request)
+    if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+    const { taskId, assetId } = await context.params
+    const asset = await dependencies.findOwnedAsset(taskId, userId, assetId)
+    if (!asset || asset.slot !== 'assetPackage') return Response.json({ error: 'Not found' }, { status: 404 })
+    const requested = request.nextUrl.searchParams.get('path')
+    let entryPath: string
+    try {
+      if (!requested) throw new Error('Missing path')
+      entryPath = safeImportPath(requested)
+    } catch {
+      return Response.json({ error: 'Invalid request' }, { status: 400 })
+    }
+    const contentType = importedEntryContentType(entryPath)
+    if (!contentType) return Response.json({ error: 'Unsupported preview' }, { status: 415 })
+    const stream = await dependencies.store.get(asset.storageKey)
+    if (!stream) return Response.json({ error: 'Not found' }, { status: 404 })
+    try {
+      const archive = new Uint8Array(await new Response(stream).arrayBuffer())
+      if (archive.length !== asset.size) throw new Error('Archive size mismatch')
+      const files = await extractAssetArchive(archive, asset.mimeType)
+      const file = files.find((candidate) => candidate.path === entryPath)
+      if (!file || file.bytes.length > MAX_ASSET_BYTES) return Response.json({ error: 'Not found' }, { status: 404 })
+      const body = new Uint8Array(file.bytes.length)
+      body.set(file.bytes)
+      return new Response(body.buffer, {
+        headers: {
+          'Content-Type': contentType,
+          'Content-Disposition': inlineContentDisposition(file.path.split('/').at(-1) ?? file.path),
+          'Content-Security-Policy': "sandbox; default-src 'none'",
+          'Cache-Control': 'private, max-age=300',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    } catch {
+      return Response.json({ error: 'Unable to read archive entry' }, { status: 400 })
+    }
   }
 }
 

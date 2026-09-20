@@ -540,6 +540,60 @@ describe('PlayableWorkspace', () => {
     )
   })
 
+  it('uploads more files after a resource slot already has eight assets', async () => {
+    const existingAssets = Array.from({ length: 8 }, (_, index) => ({
+      id: `tile-${index}`,
+      slot: 'tileFaces' as const,
+      filename: `tile-${index}.png`,
+      mimeType: 'image/png',
+      size: 5,
+      durationSeconds: null,
+    }))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          asset: { id: 'tile-8', slot: 'tileFaces', filename: 'tile-8.png', mimeType: 'image/png', size: 5 },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          asset: { id: 'tile-9', slot: 'tileFaces', filename: 'tile-9.png', mimeType: 'image/png', size: 5 },
+        }),
+      )
+    const onAssetsChange = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <ChatWorkspace
+        taskId="task-7"
+        phase="awaiting_confirmation"
+        proposal={proposal}
+        initialAssets={existingAssets}
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+        onRequireApiKey={vi.fn()}
+        onAssetsChange={onAssetsChange}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('为牌面素材上传素材'), {
+      target: {
+        files: [
+          new File(['image'], 'tile-8.png', { type: 'image/png' }),
+          new File(['image'], 'tile-9.png', { type: 'image/png' }),
+        ],
+      },
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(onAssetsChange).toHaveBeenLastCalledWith([
+      ...existingAssets,
+      expect.objectContaining({ id: 'tile-8' }),
+      expect.objectContaining({ id: 'tile-9' }),
+    ])
+    expect(screen.queryByText(/数量上限/)).not.toBeInTheDocument()
+  })
+
   it('keeps every agent build proposal in its original conversation position', () => {
     const firstProposal = {
       ...proposal,
@@ -662,6 +716,47 @@ describe('PlayableWorkspace', () => {
     expect(within(backgroundRow).getByText('系统提供，无需上传，可直接构建')).toBeInTheDocument()
     expect(within(backgroundRow).getByRole('button', { name: '使用系统素材背景与棋盘' })).toBeInTheDocument()
     expect(within(backgroundRow).queryByText('内置默认')).not.toBeInTheDocument()
+  })
+
+  it('shows imported folder images and source HTML bindings inside their confirmation fields', () => {
+    const bound: ConfirmationProposal = {
+      ...proposal,
+      sourceHtmlAssetId: 'html-1',
+      resources: {
+        ...proposal.resources,
+        tileFaces: { status: '用户上传', treatment: '使用文件夹内的牌面' },
+        audio: { status: '用户上传', treatment: '复用源 HTML 音效' },
+      },
+      resourceBindings: {
+        tileFaces: [
+          {
+            kind: 'import',
+            assetId: 'folder-1',
+            path: 'game/tiles/tile.png',
+            filename: 'tile.png',
+            mimeType: 'image/png',
+            size: 4,
+          },
+        ],
+        audio: [{ kind: 'sourceHtml', assetId: 'html-1', filename: 'reference.html' }],
+      },
+    }
+    render(
+      <ConfirmationTable
+        proposal={bound}
+        onChange={vi.fn()}
+        onConfirm={vi.fn()}
+        resourceBindingPreviewUrl={(assetId, path) => `/entries/${assetId}?path=${path}`}
+      />,
+    )
+
+    const tileRow = screen.getByRole('row', { name: /牌面素材/ })
+    expect(within(tileRow).getByRole('img', { name: 'tile.png' })).toHaveAttribute(
+      'src',
+      expect.stringContaining('/entries/folder-1?path=game/tiles/tile.png'),
+    )
+    const audioRow = screen.getByRole('row', { name: /音频/ })
+    expect(within(audioRow).getByText('reference.html · 源 HTML 内嵌资源')).toBeInTheDocument()
   })
 
   it('keeps delivery and store navigation inside the proposal table', () => {
@@ -1105,6 +1200,44 @@ describe('PlayableWorkspace', () => {
         expect.objectContaining({ method: 'POST' }),
       ),
     )
+  })
+
+  it('shows the specific confirmation fields that have no usable uploaded resource', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { code: 'MISSING_RESOURCE_BINDING', error: 'Uploaded asset missing', missingSlots: ['audio'] },
+          { status: 400 },
+        ),
+      ),
+    )
+    const readyProposal: ConfirmationProposal = {
+      ...proposal,
+      storeUrl: 'https://example.com/store',
+      resources: {
+        ...proposal.resources,
+        tileFaces: { status: '内置默认', treatment: '默认牌面' },
+        audio: { status: '用户上传', treatment: '使用原版音效' },
+      },
+    }
+    render(
+      <ChatWorkspace
+        taskId="task-7"
+        phase="awaiting_confirmation"
+        proposal={readyProposal}
+        onProposal={vi.fn()}
+        onPhase={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '确认方案并开始构建' }))
+
+    expect(
+      await screen.findByText(
+        '无法开始构建：“音频”标记为用户上传，但没有绑定可用文件。请上传素材、选择源 HTML 内嵌资源，或改用系统素材。',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('keeps a completed revision successful when the stream closes with an error afterward', async () => {

@@ -312,6 +312,31 @@ const resourceSchema = z.strictObject({
   treatment: z.string().trim().min(1),
 })
 
+const resourceBindingSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('sourceHtml'),
+    assetId: z.string().min(1).max(200),
+    filename: z.string().min(1).max(500),
+  }),
+  z.strictObject({
+    kind: z.literal('import'),
+    assetId: z.string().min(1).max(200),
+    path: z.string().min(1).max(2000),
+    filename: z.string().min(1).max(500),
+    mimeType: z.string().min(1).max(200),
+    size: z.number().int().nonnegative(),
+  }),
+])
+
+const resourceBindingsSchema = z.strictObject({
+  tileFaces: z.array(resourceBindingSchema).max(500).optional(),
+  backgroundBoard: z.array(resourceBindingSchema).max(500).optional(),
+  animationEffects: z.array(resourceBindingSchema).max(500).optional(),
+  audio: z.array(resourceBindingSchema).max(500).optional(),
+  endCard: z.array(resourceBindingSchema).max(500).optional(),
+  models: z.array(resourceBindingSchema).max(500).optional(),
+})
+
 export const confirmationResourceSlots = [
   'tileFaces',
   'backgroundBoard',
@@ -552,7 +577,9 @@ export const confirmationProposalSchema = z
     rendering: renderingDecisionSchema.optional(),
     // 宿主绑定的源码素材 ID（也可指向带 HTML 入口的压缩包），以及确认时锁定的导入集合。
     sourceHtmlAssetId: z.string().min(1).max(200).optional(),
-    importedAssetIds: z.array(z.string().min(1).max(200)).max(30).optional(),
+    importedAssetIds: z.array(z.string().min(1).max(200)).optional(),
+    // 宿主解析的字段级来源；模型不能伪造源 HTML 或压缩包内路径。
+    resourceBindings: resourceBindingsSchema.optional(),
     referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
@@ -619,7 +646,7 @@ export const requirementInputRequestSchema = z.strictObject({
 
 export const requirementBriefSchema = z.strictObject({
   sourceHtmlAssetId: z.string().min(1).max(200).optional(),
-  importedAssetIds: z.array(z.string().min(1).max(200)).max(30).optional(),
+  importedAssetIds: z.array(z.string().min(1).max(200)).optional(),
   sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
   version: z.literal(1),
   summary: z.string().trim().max(600),

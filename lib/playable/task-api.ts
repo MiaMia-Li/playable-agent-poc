@@ -1,6 +1,6 @@
-import { loadTaskImports, importedSourceEvidence, importedResourcePaths, attachImportedManifest } from './task-imports'
+import { loadTaskImports, importedSourceEvidence, attachImportedManifest, bindImportedResources } from './task-imports'
 import { bindSourceHtml, selectSourceHtml } from './source-html'
-import { hasIncompatibleModelAssets, playableResourceAssetSlots, MAX_TASK_ASSETS } from './asset-policy'
+import { hasIncompatibleModelAssets, playableResourceAssetSlots } from './asset-policy'
 import { isPlayableSandboxValidationEnabled } from './validation-policy'
 import { renderingRevision } from './rendering-policy'
 import { sourceTemplateFile } from './build-skill'
@@ -659,8 +659,37 @@ const DEFAULT_BUILD_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_BUILD_TIMEOUT_MS = 3 * 60 * 1000
 const STALE_BUILD_FAILURE_MESSAGE = '构建进程已停止，请重新确认方案并重试。'
 
-function jsonError(status: number, error: string): Response {
-  return Response.json({ error }, { status })
+function jsonError(status: number, error: string, details: Record<string, unknown> = {}): Response {
+  return Response.json({ error, ...details }, { status })
+}
+
+function usesSourceHtmlResource(treatment: string, source: Pick<PlayableAsset, 'filename' | 'slot'>): boolean {
+  const normalized = treatment.toLocaleLowerCase()
+  return (
+    (source.slot === 'sourceHtml' && normalized.includes(source.filename.toLocaleLowerCase())) ||
+    /(?:源|原版|上传|参考)?\s*html.{0,24}(?:内嵌|资源|提取|复用|保留)/i.test(treatment)
+  )
+}
+
+/** Host-owned binding for resources that remain embedded in an uploaded HTML baseline. */
+function bindSourceHtmlResources(
+  confirmation: ConfirmationProposal,
+  source: Pick<PlayableAsset, 'id' | 'filename' | 'slot'> | undefined,
+): ConfirmationProposal {
+  if (!source) return confirmation
+  const resourceBindings = { ...confirmation.resourceBindings }
+  let changed = false
+  for (const slot of playableResourceAssetSlots) {
+    const resource = confirmation.resources[slot]
+    if (resource?.status !== '用户上传' || !usesSourceHtmlResource(resource.treatment, source)) continue
+    const existing = resourceBindings[slot] ?? []
+    resourceBindings[slot] = [
+      ...existing.filter((binding) => binding.kind !== 'sourceHtml'),
+      { kind: 'sourceHtml', assetId: source.id, filename: source.filename },
+    ]
+    changed = true
+  }
+  return changed ? { ...confirmation, resourceBindings } : confirmation
 }
 
 async function ownedTask(
@@ -1507,6 +1536,32 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
     }
   }
 
+  // Older awaiting-confirmation records predate field-level resource bindings.
+  // Hydrate them for display without mutating the stored proposal or requiring a re-upload.
+  const confirmationWithResourceBindings = async (task: PlayableTaskRecord): Promise<ConfirmationProposal | null> => {
+    if (!task.confirmation) return null
+    const confirmation = bindSourceTemplate(task.confirmation, selectedSourceTemplate(task))
+    try {
+      const assets = await dependencies.repository.listAssets(task.id, task.userId)
+      const importedIds = new Set(confirmation.importedAssetIds ?? [])
+      const imports = importedIds.size
+        ? await loadTaskImports(
+            assets.filter((asset) => importedIds.has(asset.id)),
+            dependencies.artifactStore,
+          )
+        : { summaries: [] }
+      const source = confirmation.sourceHtmlAssetId
+        ? assets.find(
+            (asset) =>
+              asset.id === confirmation.sourceHtmlAssetId && ['sourceHtml', 'assetPackage'].includes(asset.slot),
+          )
+        : undefined
+      return bindImportedResources(bindSourceHtmlResources(confirmation, source), imports.summaries)
+    } catch {
+      return confirmation
+    }
+  }
+
   const videoAnalysisClaims = new Map<string, Promise<{ analysis: PlayableVideoAnalysisRecord; claimed: boolean }>>()
 
   const claimVideoAnalysis = async (taskId: string, assetId: string, model: string, rerun: boolean) => {
@@ -2040,9 +2095,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (typeof body?.message !== 'string' || !body.message.trim()) return jsonError(400, 'Invalid request')
       if (
         body.attachmentIds !== undefined &&
-        (!Array.isArray(body.attachmentIds) ||
-          body.attachmentIds.length > MAX_TASK_ASSETS ||
-          body.attachmentIds.some((assetId) => typeof assetId !== 'string'))
+        (!Array.isArray(body.attachmentIds) || body.attachmentIds.some((assetId) => typeof assetId !== 'string'))
       ) {
         return jsonError(400, 'Invalid request')
       }
@@ -2440,12 +2493,18 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 // Applied after the agent's route was checked against its brief:
                 // the agent routes by gameplay, and matching the reference's look
                 // is what lifts an exact route to approximate (spec §4.2).
-                validatedReply.confirmation = applyVisualDirection(
-                  {
-                    ...bindSourceTemplate(validatedReply.confirmation, templateId),
-                    referenceImages: referenceImages.length ? referenceImages : undefined,
-                  },
-                  { hasReferenceVisuals: Boolean(gameplayBlueprint) },
+                validatedReply.confirmation = bindImportedResources(
+                  bindSourceHtmlResources(
+                    applyVisualDirection(
+                      {
+                        ...bindSourceTemplate(validatedReply.confirmation, templateId),
+                        referenceImages: referenceImages.length ? referenceImages : undefined,
+                      },
+                      { hasReferenceVisuals: Boolean(gameplayBlueprint) },
+                    ),
+                    sourceAsset,
+                  ),
+                  imports.summaries,
                 )
               }
               const serialized = JSON.stringify(validatedReply)
@@ -2845,6 +2904,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       // 确认请求可编辑需求，但不能替换服务端已选定的源码或导入集合。
       sanitized = bindSourceHtml(sanitized, access.task.confirmation?.sourceHtmlAssetId)
       sanitized.importedAssetIds = access.task.confirmation?.importedAssetIds
+      delete sanitized.resourceBindings
       if (
         sanitized.sourceHtmlAssetId &&
         !(await dependencies.repository.listAssets(access.task.id, access.userId)).some(
@@ -2869,6 +2929,15 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         dependencies.repository.listAssets(access.task.id, access.userId),
         gameplayBlueprintDocumentFor(access.task),
       ])
+      sanitized = bindSourceHtmlResources(
+        sanitized,
+        sanitized.sourceHtmlAssetId
+          ? assets.find(
+              (asset) =>
+                asset.id === sanitized.sourceHtmlAssetId && ['sourceHtml', 'assetPackage'].includes(asset.slot),
+            )
+          : undefined,
+      )
       // 上传允许分批补齐；提交构建前必须重新检查文件存在性、HTML 入口及 Spine 配套完整性。
       const importIds = sanitized.importedAssetIds ?? []
       if (importIds.some((id) => !assets.some((asset) => asset.id === id)))
@@ -2879,8 +2948,9 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           assets.filter((asset) => importIds.includes(asset.id)),
           dependencies.artifactStore,
         )
+        sanitized = bindImportedResources(sanitized, imports.summaries)
         for (const slot of playableResourceAssetSlots)
-          if (importedResourcePaths(imports.summaries, slot).length) importedSlots.add(slot)
+          if (sanitized.resourceBindings?.[slot]?.some((binding) => binding.kind === 'import')) importedSlots.add(slot)
         if (imports.summaries.some((item) => item.issues.length))
           return jsonError(400, '导入资源不完整或版本不受支持，请补齐 Spine 文件并检查 HTML 入口')
       } catch {
@@ -2890,13 +2960,20 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
         return jsonError(400, 'GLB 模型需要 Three.js 自定义构建，请先更新确认方案的渲染方式')
       }
       const uploadedSlots = new Set(assets.map((asset) => asset.slot))
-      const missingUpload = Object.entries(sanitized.resources).some(
-        ([slot, resource]) =>
-          resource.status === '用户上传' &&
-          !uploadedSlots.has(slot as PlayableAsset['slot']) &&
-          !importedSlots.has(slot),
-      )
-      if (missingUpload) return jsonError(400, 'Uploaded asset missing')
+      const missingUploads = Object.entries(sanitized.resources)
+        .filter(
+          ([slot, resource]) =>
+            resource.status === '用户上传' &&
+            !uploadedSlots.has(slot as PlayableAsset['slot']) &&
+            !importedSlots.has(slot) &&
+            !sanitized.resourceBindings?.[slot as keyof ConfirmationProposal['resources']]?.length,
+        )
+        .map(([slot]) => slot)
+      if (missingUploads.length)
+        return jsonError(400, 'Uploaded asset missing', {
+          code: 'MISSING_RESOURCE_BINDING',
+          missingSlots: missingUploads,
+        })
       // The table may have switched the visual direction; the server applies
       // the same rule so an exact route can never claim to match the reference.
       sanitized = applyVisualDirection(sanitized, { hasReferenceVisuals: Boolean(gameplayBlueprint) })
@@ -2993,8 +3070,13 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       if (latestTask.phase === 'ready' || latestTask.latestArtifactKey?.split('/').at(-2) === previewVersion)
         previewVersion = null
+      const taskState = safeTaskState(latestTask)
+      if (taskState.confirmation) {
+        const hydrated = await confirmationWithResourceBindings(latestTask)
+        if (hydrated) taskState.confirmation = sanitizeConfirmation(hydrated)
+      }
       return Response.json(
-        { task: { ...safeTaskState(latestTask), previewVersion }, events: events.map(eventJson) },
+        { task: { ...taskState, previewVersion }, events: events.map(eventJson) },
         { headers: { 'Cache-Control': 'private, no-store' } },
       )
     },

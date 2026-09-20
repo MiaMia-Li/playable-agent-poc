@@ -29,7 +29,6 @@ import { PlayablePreview } from './playable-preview'
 import { FolderUploadButton } from './folder-upload-button'
 import { AssetPreviewList } from './asset-preview-list'
 import {
-  MAX_HOME_ATTACHMENTS,
   PLAYABLE_ATTACHMENT_ACCEPT,
   maxAssetBytesForSlot,
   referenceSlotForMimeType,
@@ -753,15 +752,10 @@ export function PlayableHome({
   function addAttachments(files: FileList | readonly File[] | null) {
     if (!files) return
     const accepted: HomeAttachment[] = []
-    const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachmentsRef.current.length)
     for (const file of normalizeAttachmentBatch(
       Array.from(files),
       attachmentsRef.current.some(({ file }) => /\.(atlas|skel)$/i.test(file.name)),
     )) {
-      if (accepted.length >= remaining) {
-        setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
-        break
-      }
       const slot = attachmentSlotForFile(file)
       if (!slot) {
         setError('仅支持 PNG、JPEG、WebP、GIF、MP4、WebM、GLB、HTML、ZIP、RAR 和 Spine（atlas、skel、json、png）文件')
@@ -886,7 +880,7 @@ export function PlayableHome({
               type="button"
               size="icon"
               variant="ghost"
-              disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
+              disabled={!user || creating}
               onClick={() => attachmentInput.current?.click()}
               aria-label="添加参考图片、视频、GLB、HTML、压缩包或 Spine 资源"
             >
@@ -906,7 +900,7 @@ export function PlayableHome({
               }}
             />
             <FolderUploadButton
-              disabled={!user || creating || Boolean(creatingTemplate) || attachments.length >= MAX_HOME_ATTACHMENTS}
+              disabled={!user || creating || Boolean(creatingTemplate)}
               onFile={(file) => addAttachments([file])}
               onError={setError}
               onBusyChange={setPackingFolder}

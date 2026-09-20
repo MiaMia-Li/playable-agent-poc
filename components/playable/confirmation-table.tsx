@@ -92,6 +92,7 @@ interface ConfirmationTableProps {
   uploadedAssets?: SafePlayableAsset[]
   removingAssetId?: string
   assetPreviewUrl?: (asset: SafePlayableAsset) => string
+  resourceBindingPreviewUrl?: (assetId: string, path: string) => string
   showConfirmAction?: boolean
   /** The active reference video has a blueprint, so its look can be matched. */
   hasReferenceVisuals?: boolean
@@ -128,6 +129,7 @@ export function ConfirmationTable({
   uploadedAssets = [],
   removingAssetId,
   assetPreviewUrl,
+  resourceBindingPreviewUrl,
   showConfirmAction = true,
   hasReferenceVisuals = false,
 }: ConfirmationTableProps) {
@@ -315,6 +317,9 @@ export function ConfirmationTable({
             {assetFields.map(({ slot, label }) => {
               const resource = confirmationResource(proposal, slot)
               const slotAssets = uploadedAssets.filter((asset) => asset.slot === slot)
+              const bindings = proposal.resourceBindings?.[slot] ?? []
+              const importedBindings = bindings.filter((binding) => binding.kind === 'import')
+              const sourceHtmlBindings = bindings.filter((binding) => binding.kind === 'sourceHtml')
               return (
                 <tr key={slot}>
                   <th className="bg-muted/40 px-3 py-2 font-medium">{label}</th>
@@ -436,6 +441,32 @@ export function ConfirmationTable({
                               : undefined
                           }
                         />
+                      </div>
+                    )}
+                    {sourceHtmlBindings.length > 0 && (
+                      <ul className="text-muted-foreground mt-2 space-y-1 text-xs" aria-label={`${label}源 HTML 资源`}>
+                        {sourceHtmlBindings.map((binding) => (
+                          <li key={`${binding.assetId}:${binding.filename}`}>{binding.filename} · 源 HTML 内嵌资源</li>
+                        ))}
+                      </ul>
+                    )}
+                    {importedBindings.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        <AssetPreviewList
+                          ariaLabel={`${label}导入素材`}
+                          items={importedBindings.slice(0, 24).map((binding) => ({
+                            id: `${binding.assetId}:${binding.path}`,
+                            filename: binding.filename,
+                            mimeType: binding.mimeType,
+                            size: binding.size,
+                            previewUrl: resourceBindingPreviewUrl?.(binding.assetId, binding.path),
+                          }))}
+                        />
+                        {importedBindings.length > 24 && (
+                          <p className="text-muted-foreground text-xs">
+                            另有 {importedBindings.length - 24} 个已绑定文件
+                          </p>
+                        )}
                       </div>
                     )}
                   </td>

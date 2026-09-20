@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
   createPlayableAssetContentHandler,
+  createPlayableAssetEntryHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
   createPlayableAssetUploadCompleteHandler,
@@ -204,6 +205,39 @@ describe('playable asset upload', () => {
       foreign.handler(uploadRequest(file), { params: Promise.resolve({ taskId: 'owned' }) }),
     ])
     expect(responses.map((response) => response.status)).toEqual([404, 404])
+  })
+
+  it('accepts uploads beyond the former task and per-slot count limits', async () => {
+    const existingAssets: PlayableAsset[] = Array.from({ length: 30 }, (_, index) => ({
+      id: `existing-${index}`,
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'audio',
+      filename: `sound-${index}.mp3`,
+      mimeType: 'audio/mpeg',
+      size: 1,
+      durationSeconds: null,
+      storageKey: `existing-${index}`,
+      createdAt: new Date(0),
+    }))
+    const store = { put: vi.fn(async () => undefined), get: vi.fn(), delete: vi.fn(async () => undefined) }
+    const handler = createPlayableAssetHandler({
+      authenticate: async () => 'user-1',
+      findOwnedTask: async () => true,
+      saveAsset: async (asset) => void existingAssets.push(asset),
+      listAssets: async () => existingAssets,
+      activateReferenceVideo: vi.fn(async () => undefined),
+      store,
+      generateId: () => 'asset-31',
+    })
+
+    const response = await handler(uploadRequest(new File(['audio'], 'sound-30.mp3', { type: 'audio/mpeg' })), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    expect(response.status).toBe(201)
+    expect(existingAssets).toHaveLength(31)
+    expect(store.put).toHaveBeenCalled()
   })
 
   it('rejects unknown slots, disallowed MIME types, and oversized files before storage', async () => {
@@ -509,6 +543,46 @@ describe('playable asset delete', () => {
 })
 
 describe('playable asset content', () => {
+  it('previews one safe image entry from an owned uploaded folder archive', async () => {
+    const bytes = await zipFiles({ 'game/tiles/tile.png': new Uint8Array([1, 2, 3]) })
+    const handler = createPlayableAssetEntryHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'folder-1',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'assetPackage',
+        filename: 'game.zip',
+        mimeType: 'application/zip',
+        size: bytes.length,
+        storageKey: 'folder',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: {
+        put: vi.fn(),
+        delete: vi.fn(),
+        get: async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes)
+              controller.close()
+            },
+          }),
+      },
+    })
+
+    const response = await handler(
+      new NextRequest('https://app.example/assets/folder-1/entry?path=game%2Ftiles%2Ftile.png'),
+      { params: Promise.resolve({ taskId: 'owned', assetId: 'folder-1' }) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
   it('downloads HTML without executing it on the app origin', async () => {
     const handler = createPlayableAssetContentHandler({
       authenticate: async () => 'user-1',

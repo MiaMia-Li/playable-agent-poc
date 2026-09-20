@@ -43,10 +43,6 @@ export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
  * 超过此阈值走存储直传；提高 HTML 等业务上限时不能同步提高这个阈值。
  */
 export const MAX_FORM_UPLOAD_BYTES = 4 * 1024 * 1024
-export const MAX_HOME_ATTACHMENTS = 30
-export const MAX_ASSETS_PER_SLOT = 8
-export const MAX_TASK_ASSETS = 30
-
 export const PLAYABLE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 export const PLAYABLE_AUDIO_MIME_TYPES = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'] as const
 export const PLAYABLE_VIDEO_MIME_TYPES = ['video/mp4', 'video/webm'] as const
