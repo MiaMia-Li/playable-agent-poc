@@ -99,6 +99,43 @@ afterEach(() => {
 })
 
 describe('CodexCliPlayableAgent', () => {
+  it.each(
+    [
+      {
+        rule: 'terminal_missing',
+        stage: 'plan_execution',
+        output: { ...confirmationPlan, calls: confirmationPlan.calls.slice(0, -1) },
+      },
+      { rule: 'schema_invalid', stage: 'step_validation', output: { ...confirmationPlan, message: 42 } },
+      {
+        rule: 'step_shape_invalid',
+        stage: 'step_validation',
+        output: { kind: 'tool_calls', message: null, reasoning: 'Check', toolCalls: [], plan: null },
+      },
+    ].flatMap((scenario) => [false, true].map((repeated) => ({ ...scenario, repeated }))),
+  )('repairs $rule once (repeated: $repeated)', async ({ repeated, rule, stage, output: incomplete }) => {
+    const invokeCodex = vi
+      .fn()
+      .mockResolvedValueOnce(incomplete)
+      .mockResolvedValueOnce(repeated ? incomplete : confirmationPlan)
+    const result = new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation({
+      taskId: 'requirement-validation-repair',
+      prompt: '调整游戏需求',
+      apiKey: 'unit-key',
+    })
+    if (repeated) {
+      await expect(result).rejects.toMatchObject({
+        code: 'output_invalid',
+        diagnostic: { stage, step: 2, rule },
+      })
+    } else {
+      await expect(result).resolves.toMatchObject({ kind: 'confirmation' })
+    }
+    expect(invokeCodex).toHaveBeenCalledTimes(2)
+    expect(invokeCodex.mock.calls[0][0].prompt).not.toContain('previous plan was rejected')
+    expect(invokeCodex.mock.calls[1][0].prompt).toContain('previous plan was rejected')
+  })
+
   it('uses a read-only Codex invocation and validates the structured proposal', async () => {
     const invokeCodex = vi.fn(async (...args: unknown[]) => {
       const invocation = args[0] as {

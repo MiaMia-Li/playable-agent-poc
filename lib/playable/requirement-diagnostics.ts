@@ -110,3 +110,22 @@ export function requirementDiagnostic(
   }
   return { version: 1, stage, step, rule: stage === 'step_limit' ? 'step_limit_reached' : 'unclassified', issues: [] }
 }
+
+/** Repair only recognized output validation failures, never infrastructure or tool failures. */
+export function requirementRepairInstructions(diagnostic: RequirementDiagnostic): string | undefined {
+  if (!['structured_output', 'step_validation', 'plan_execution'].includes(diagnostic.stage)) return
+  const knownRules: readonly string[] = [
+    ...Object.values(rules),
+    'schema_invalid',
+    'step_shape_invalid',
+    'analysis_arguments_invalid',
+  ]
+  if (!knownRules.includes(diagnostic.rule)) return
+  const explanation = Object.entries(rules).find(([, rule]) => rule === diagnostic.rule)?.[0]
+  return [
+    'The previous plan was rejected by output validation. No rejected plan changes were persisted. Generate a complete replacement step from the original conversation context and the existing tool results, correcting the validation errors below.',
+    'Follow the supplied schema and all domain tool ordering rules. Do not invent missing user choices, approvals or evidence. If information is missing, update the brief and end with ask_user; if this is purely informational, use only respond_to_user. A terminal plan must end with a valid terminal call. Use a tool_calls step only when actual analysis is needed, and reuse completed tool results.',
+    explanation ?? 'Correct the output shape, field types or analysis arguments identified below.',
+    JSON.stringify(diagnostic),
+  ].join('\n')
+}

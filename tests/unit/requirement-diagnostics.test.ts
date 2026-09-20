@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { requirementDiagnostic } from '@/lib/playable/requirement-diagnostics'
+import { requirementDiagnostic, requirementRepairInstructions } from '@/lib/playable/requirement-diagnostics'
 import { requirementAgentStepOutputSchema } from '@/lib/playable/requirement-tools'
 
 describe('requirement diagnostics', () => {
@@ -23,6 +23,8 @@ describe('requirement diagnostics', () => {
     expect(diagnostic).toMatchObject({ stage: 'structured_output', step: 2, rule: 'schema_invalid' })
     expect(diagnostic.issues[0]).toEqual({ code: 'invalid_type', path: ['plan', 'calls', 0, 'mode'] })
     expect(JSON.stringify(diagnostic)).not.toContain(secret)
+    expect(requirementRepairInstructions(diagnostic)).toContain('invalid_type')
+    expect(requirementRepairInstructions(diagnostic)).not.toContain(secret)
     expect(diagnostic.issues[1].path).toEqual(['[unknown]', '[unknown]'])
   })
 
@@ -56,6 +58,25 @@ describe('requirement diagnostics', () => {
     expect(
       requirementDiagnostic(error, 'structured_output', 1, requirementAgentStepOutputSchema).issues[0],
     ).toMatchObject({ rule: 'freeform_template_renderer' })
+  })
+
+  it.each(['analysis_tools', 'context_serialization', 'step_limit'] as const)(
+    'does not repair failures in %s',
+    (stage) => {
+      expect(
+        requirementRepairInstructions({ version: 1, stage, step: 1, rule: 'schema_invalid', issues: [] }),
+      ).toBeUndefined()
+    },
+  )
+
+  it('does not retry unknown failures or leak their details into feedback', () => {
+    const diagnostic = requirementDiagnostic(
+      new Error('private backend failure'),
+      'structured_output',
+      1,
+      requirementAgentStepOutputSchema,
+    )
+    expect(requirementRepairInstructions(diagnostic)).toBeUndefined()
   })
 
   it('bounds issue counts and handles circular error causes', () => {

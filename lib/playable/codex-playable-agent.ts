@@ -1,4 +1,8 @@
-import { requirementDiagnostic, type RequirementDiagnosticStage } from './requirement-diagnostics'
+import {
+  requirementDiagnostic,
+  requirementRepairInstructions,
+  type RequirementDiagnosticStage,
+} from './requirement-diagnostics'
 import { IMPORTED_ASSETS_PROMPT } from './task-imports'
 import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT } from './source-html'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
@@ -206,6 +210,7 @@ async function createProposal(
   }
   const toolResults: RequirementAnalysisToolResult[] = []
   const toolCache = new Map<string, RequirementAnalysisToolResult>()
+  let repairInstructions: string | undefined
 
   for (let stepNumber = 0; stepNumber < MAX_REQUIREMENT_AGENT_STEPS; stepNumber += 1) {
     let serializedContext: string
@@ -220,7 +225,7 @@ async function createProposal(
     const safePrompt = serializedContext.split(input.apiKey).join('[REDACTED]')
     const result = streamText({
       model: openai.responses(readPlayableAgentModel()),
-      instructions: REQUIREMENT_AGENT_INSTRUCTIONS,
+      instructions: [REQUIREMENT_AGENT_INSTRUCTIONS, ...(repairInstructions ? [repairInstructions] : [])].join('\n'),
       prompt: safePrompt,
       output: Output.object({ schema: requirementAgentStepOutputSchema }),
       abortSignal,
@@ -305,6 +310,10 @@ async function createProposal(
         error instanceof PlayableAgentError && error.diagnostic
           ? { ...error.diagnostic, step: stepNumber + 1 }
           : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
+      if (!repairInstructions && stepNumber + 1 < MAX_REQUIREMENT_AGENT_STEPS) {
+        repairInstructions = requirementRepairInstructions(diagnostic)
+        if (repairInstructions) continue
+      }
       throw new PlayableAgentError('output_invalid', diagnostic)
     }
   }
