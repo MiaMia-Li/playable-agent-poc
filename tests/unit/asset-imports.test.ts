@@ -10,6 +10,9 @@ import {
   playableFileMimeType,
 } from '@/lib/playable/asset-policy'
 import { spineJson, spineAtlas, spinePng, zipFiles } from '../fixtures/imported-assets'
+import { attachImportedManifest } from '@/lib/playable/task-imports'
+import type { ConfirmationProposal } from '@/lib/playable/schemas'
+import type { PlayableAssetManifest } from '@/lib/playable/playable-agent-adapter'
 
 const spineFiles = [
   { path: 'hero.json', bytes: Buffer.from(spineJson) },
@@ -78,5 +81,64 @@ describe('asset package ingestion', () => {
       version: '4.2.22',
       issues: [],
     })
+  })
+
+  it('adds only field-bound archive entries to the build asset manifest', () => {
+    const summary = {
+      assetId: 'folder-1',
+      filename: 'game.zip',
+      root: 'user-imports/folder-1',
+      htmlCandidates: [],
+      files: [
+        { path: 'game/tiles/tile.png', size: 4 },
+        { path: 'game/guide/hand.png', size: 4 },
+      ],
+      spine: [],
+      issues: [],
+    }
+    const bindings: NonNullable<ConfirmationProposal['resourceBindings']> = {
+      tileFaces: [
+        {
+          kind: 'import',
+          assetId: summary.assetId,
+          path: 'game/tiles/tile.png',
+          filename: 'tile.png',
+          mimeType: 'image/png',
+          size: 4,
+        },
+      ],
+      animationEffects: [
+        {
+          kind: 'import',
+          assetId: summary.assetId,
+          path: 'game/guide/hand.png',
+          filename: 'hand.png',
+          mimeType: 'image/png',
+          size: 4,
+        },
+      ],
+    }
+    const manifest: PlayableAssetManifest = {
+      plugin: { id: 'test', version: '1', runtimeVersion: '1' },
+      sources: [
+        { slot: 'tileFaces', status: '用户上传', treatment: '牌面', origin: 'task-upload', files: [] },
+        {
+          slot: 'animationEffects',
+          status: '用户上传',
+          treatment: '引导',
+          origin: 'task-upload',
+          files: [],
+        },
+      ],
+      assets: [],
+      entrypoint: 'playable.html',
+    }
+
+    attachImportedManifest(manifest, [summary], bindings)
+
+    expect(manifest.sources).toMatchObject([
+      { slot: 'tileFaces', files: ['user-imports/folder-1/game/tiles/tile.png'] },
+      { slot: 'animationEffects', files: ['user-imports/folder-1/game/guide/hand.png'] },
+    ])
   })
 })

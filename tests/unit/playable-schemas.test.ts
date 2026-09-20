@@ -89,6 +89,14 @@ describe('confirmation proposal schema', () => {
     ])
   })
 
+  it('accepts more than thirty imported assets', () => {
+    const importedAssetIds = Array.from({ length: 31 }, (_, index) => `asset-${index}`)
+
+    expect(confirmationProposalSchema.parse({ ...validProposal, importedAssetIds }).importedAssetIds).toEqual(
+      importedAssetIds,
+    )
+  })
+
   it('upgrades persisted pre-Plugin confirmations with an exact routing default', () => {
     const { routing: _routing, ...legacyProposal } = validProposal
     void _routing

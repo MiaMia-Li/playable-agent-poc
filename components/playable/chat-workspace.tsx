@@ -38,9 +38,6 @@ import type {
 import type { PlayableAssetSlot } from '@/lib/playable/asset-policy'
 import {
   isPlayableResourceAssetSlot,
-  MAX_ASSETS_PER_SLOT,
-  MAX_HOME_ATTACHMENTS,
-  MAX_TASK_ASSETS,
   PLAYABLE_ATTACHMENT_ACCEPT,
   PLAYABLE_IMAGE_MIME_TYPES,
   maxAssetBytesForSlot,
@@ -122,6 +119,38 @@ const defaultResourceTreatments: Record<string, string> = {
   audio: '使用系统提供的音频',
   endCard: '使用系统提供的结束卡',
   models: '不使用额外 3D 模型',
+}
+
+const fallbackResourceLabels: Record<string, string> = {
+  tileFaces: '牌面素材',
+  backgroundBoard: '背景与棋盘',
+  animationEffects: '动画与特效',
+  audio: '音频',
+  endCard: '结束卡',
+  models: '3D 模型',
+}
+
+async function confirmationFailureMessage(response: Response, proposal: ConfirmationProposal): Promise<string> {
+  const body = (await response.json().catch(() => undefined)) as
+    | { code?: unknown; error?: unknown; missingSlots?: unknown }
+    | undefined
+  if (body?.code === 'MISSING_RESOURCE_BINDING' && Array.isArray(body.missingSlots)) {
+    const fields = proposal.presentation?.assetFields ?? defaultConfirmationPresentation.assetFields
+    const labels = body.missingSlots
+      .filter((slot): slot is string => typeof slot === 'string')
+      .map((slot) => fields.find((field) => field.slot === slot)?.label ?? fallbackResourceLabels[slot] ?? slot)
+    if (labels.length)
+      return `无法开始构建：“${labels.join('、')}”标记为用户上传，但没有绑定可用文件。请上传素材、选择源 HTML 内嵌资源，或改用系统素材。`
+  }
+  if (body?.error === 'Uploaded HTML source is missing') return '构建基线 HTML 已被删除，请重新上传或重新整理需求。'
+  if (body?.error === 'Pending uploads') return '仍有素材待上传，请补齐后再开始构建。'
+  if (body?.error === 'AI media generation is not supported')
+    return '当前暂不支持 AI 生成素材，请改用系统素材或本地上传。'
+  if (body?.error === 'AI service unavailable' || body?.error === 'AI media service unavailable')
+    return 'AI 构建服务暂不可用，请稍后重试。'
+  if (response.status === 409) return '方案或任务状态已变化，请刷新后重试。'
+  if (response.status >= 500) return '构建服务暂时异常，请稍后重试。'
+  return '无法开始构建，请检查表格中的素材与跳转链接。'
 }
 
 interface ChatWorkspaceProps {
@@ -825,18 +854,12 @@ export function ChatWorkspace({
 
   async function upload(slot: PlayableAssetSlot, files: File[]) {
     if (!proposal || !['awaiting_confirmation', 'awaiting_revision_confirmation', 'failed'].includes(phase)) return
-    const slotCapacity = MAX_ASSETS_PER_SLOT - selectedAssets.filter((asset) => asset.slot === slot).length
-    const taskCapacity = MAX_TASK_ASSETS - selectedAssets.length
-    const acceptedFiles = files.slice(0, Math.max(0, Math.min(slotCapacity, taskCapacity)))
-    if (acceptedFiles.length === 0) {
-      setError('已达到素材上传数量上限')
-      return
-    }
+    if (files.length === 0) return
     setUploadingSlot(slot)
-    setError(acceptedFiles.length < files.length ? '部分素材超出数量上限，已自动忽略' : '')
+    setError('')
     const uploaded: SafePlayableAsset[] = []
     try {
-      for (const file of acceptedFiles) {
+      for (const file of files) {
         if (!playableAssetAccept(slot).split(',').includes(playableFileMimeType(file)))
           throw new Error('素材格式不受支持')
         uploaded.push(await uploadPlayableAsset(taskId, slot, file, { fallbackMessage: '素材上传失败' }))
@@ -892,22 +915,10 @@ export function ChatWorkspace({
   function stageComposerFiles(files: File[]) {
     void evictOverlongComposerVideos(files)
     setComposerAttachments((items) => {
-      const localOnlyCount = items.filter((attachment) => !attachment.asset).length
-      const remainingCapacity = Math.max(
-        0,
-        Math.min(
-          MAX_HOME_ATTACHMENTS - items.length,
-          MAX_TASK_ASSETS - selectedAssetsRef.current.length - localOnlyCount,
-        ),
-      )
-      if (remainingCapacity === 0) {
-        setError('已达到素材上传数量上限')
-        return items
-      }
       const staged: ComposerAttachment[] = []
-      let validationError = files.length > remainingCapacity ? '部分素材超出数量上限，已自动忽略' : ''
+      let validationError = ''
       for (const file of normalizeAttachmentBatch(
-        files.slice(0, remainingCapacity),
+        files,
         items.some(({ file }) => /\.(atlas|skel)$/i.test(file.name)) ||
           selectedAssetsRef.current.some((asset) => asset.slot === 'spine'),
       )) {
@@ -1017,8 +1028,7 @@ export function ChatWorkspace({
           confirmsRevision ? { revisionId: revision?.id, confirmation: proposal } : { confirmation: proposal },
         ),
       })
-      if (response.status === 409) throw new Error('方案状态已变化，请刷新后重试')
-      if (!response.ok) throw new Error('无法开始构建')
+      if (!response.ok) throw new Error(await confirmationFailureMessage(response, proposal))
       onPhase('building')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法开始构建')
@@ -1332,6 +1342,9 @@ export function ChatWorkspace({
                           assetPreviewUrl={(asset) =>
                             `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
                           }
+                          resourceBindingPreviewUrl={(assetId, path) =>
+                            `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}/entry?path=${encodeURIComponent(path)}`
+                          }
                           showConfirmAction={false}
                         />
                       </div>
@@ -1349,6 +1362,9 @@ export function ChatWorkspace({
                             uploadedAssets={assetsForProposal(item.confirmation, selectedAssets)}
                             assetPreviewUrl={(asset) =>
                               `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
+                            }
+                            resourceBindingPreviewUrl={(assetId, path) =>
+                              `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}/entry?path=${encodeURIComponent(path)}`
                             }
                             showConfirmAction={false}
                           />
@@ -1408,6 +1424,9 @@ export function ChatWorkspace({
               removingAssetId={removingAssetId}
               assetPreviewUrl={(asset) =>
                 `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(asset.id)}`
+              }
+              resourceBindingPreviewUrl={(assetId, path) =>
+                `/api/playable-tasks/${encodeURIComponent(taskId)}/assets/${encodeURIComponent(assetId)}/entry?path=${encodeURIComponent(path)}`
               }
               showConfirmAction={false}
             />

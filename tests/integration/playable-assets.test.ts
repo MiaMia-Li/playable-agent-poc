@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
   createPlayableAssetContentHandler,
+  createPlayableAssetEntryHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
   createPlayableAssetUploadCompleteHandler,
@@ -220,6 +221,39 @@ describe('playable asset upload', () => {
     expect(responses.map((response) => response.status)).toEqual([404, 404])
   })
 
+  it('accepts uploads beyond the former task and per-slot count limits', async () => {
+    const existingAssets: PlayableAsset[] = Array.from({ length: 30 }, (_, index) => ({
+      id: `existing-${index}`,
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'audio',
+      filename: `sound-${index}.mp3`,
+      mimeType: 'audio/mpeg',
+      size: 1,
+      durationSeconds: null,
+      storageKey: `existing-${index}`,
+      createdAt: new Date(0),
+    }))
+    const store = { put: vi.fn(async () => undefined), get: vi.fn(), delete: vi.fn(async () => undefined) }
+    const handler = createPlayableAssetHandler({
+      authenticate: async () => 'user-1',
+      findOwnedTask: async () => true,
+      saveAsset: async (asset) => void existingAssets.push(asset),
+      listAssets: async () => existingAssets,
+      activateReferenceVideo: vi.fn(async () => undefined),
+      store,
+      generateId: () => 'asset-31',
+    })
+
+    const response = await handler(uploadRequest(new File(['audio'], 'sound-30.mp3', { type: 'audio/mpeg' })), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    expect(response.status).toBe(201)
+    expect(existingAssets).toHaveLength(31)
+    expect(store.put).toHaveBeenCalled()
+  })
+
   it('rejects unknown slots, disallowed MIME types, and oversized files before storage', async () => {
     const { handler, store } = harness()
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
@@ -315,8 +349,6 @@ describe('playable direct asset upload', () => {
 
   it.each([
     ['sourceHtml', 'text/html'],
-    ['assetPackage', 'application/zip'],
-    ['assetPackage', 'application/vnd.rar'],
     ['spine', 'application/x-spine-png'],
   ])('issues a 100 MiB direct-upload token for %s / %s', async (slot, mimeType) => {
     const { token, directUploads } = directHarness()
@@ -329,6 +361,31 @@ describe('playable direct asset upload', () => {
     const over = await token(jsonRequest('uploads', { slot, mimeType, size: 100 * 1024 * 1024 + 1 }), context)
     expect(over.status).toBe(413)
   })
+
+  it.each(['application/zip', 'application/vnd.rar'])(
+    'accepts asset packages beyond 100 MiB up to the 300 MiB import budget for %s',
+    async (mimeType) => {
+      const { token, directUploads } = directHarness()
+      const formerLimit = 100 * 1024 * 1024
+      const packageLimit = 300 * 1024 * 1024
+
+      const response = await token(
+        jsonRequest('uploads', { slot: 'assetPackage', mimeType, size: formerLimit + 1 }),
+        context,
+      )
+      expect(response.status).toBe(200)
+      expect(directUploads.issueUploadToken).toHaveBeenCalledWith(key, {
+        contentType: mimeType,
+        maxBytes: packageLimit,
+      })
+
+      const over = await token(
+        jsonRequest('uploads', { slot: 'assetPackage', mimeType, size: packageLimit + 1 }),
+        context,
+      )
+      expect(over.status).toBe(413)
+    },
+  )
 
   // 上传声明与实际内容必须分别验证，防止伪造 MIME 的无效压缩包进入持久化素材清单。
   it('validates actual uploaded archive bytes before registering the blob', async () => {
@@ -523,6 +580,79 @@ describe('playable asset delete', () => {
 })
 
 describe('playable asset content', () => {
+  it('previews one safe image entry from an owned uploaded folder archive', async () => {
+    const bytes = await zipFiles({ 'game/tiles/tile.png': new Uint8Array([1, 2, 3]) })
+    const handler = createPlayableAssetEntryHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'folder-1',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'assetPackage',
+        filename: 'game.zip',
+        mimeType: 'application/zip',
+        size: bytes.length,
+        storageKey: 'folder',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: {
+        put: vi.fn(),
+        delete: vi.fn(),
+        get: async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes)
+              controller.close()
+            },
+          }),
+      },
+    })
+
+    const response = await handler(
+      new NextRequest('https://app.example/assets/folder-1/entry?path=game%2Ftiles%2Ftile.png'),
+      { params: Promise.resolve({ taskId: 'owned', assetId: 'folder-1' }) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
+  it('previews an animated SVG entry from an owned uploaded folder archive in a sandbox', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><style>circle{animation:pulse 1s infinite}</style></svg>'
+    const bytes = await zipFiles({ 'game/effects/pulse.svg': svg })
+    const handler = createPlayableAssetEntryHandler({
+      authenticate: async () => 'user-1',
+      findOwnedAsset: async () => ({
+        id: 'folder-1',
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'assetPackage',
+        filename: 'game.zip',
+        mimeType: 'application/zip',
+        size: bytes.length,
+        storageKey: 'folder',
+        durationSeconds: null,
+        createdAt: new Date(),
+      }),
+      deleteOwnedAsset: async () => undefined,
+      store: { put: vi.fn(), delete: vi.fn(), get: async () => new Response(Uint8Array.from(bytes)).body! },
+    })
+
+    const response = await handler(
+      new NextRequest('https://app.example/assets/folder-1/entry?path=game%2Feffects%2Fpulse.svg'),
+      { params: Promise.resolve({ taskId: 'owned', assetId: 'folder-1' }) },
+    )
+
+    expect(response.headers.get('content-type')).toBe('image/svg+xml')
+    expect(response.headers.get('content-security-policy')).toBe(
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    )
+    expect(await response.text()).toBe(svg)
+  })
+
   it('serves SVG as an animated image but sandboxes direct document navigation', async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
     const handler = createPlayableAssetContentHandler({
@@ -553,6 +683,7 @@ describe('playable asset content', () => {
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(await response.text()).toBe(svg)
   })
+
   it('downloads HTML without executing it on the app origin', async () => {
     const handler = createPlayableAssetContentHandler({
       authenticate: async () => 'user-1',

@@ -75,6 +75,29 @@ describe('PlayableHome reference uploads', () => {
     expect(fetchMock.mock.invocationCallOrder[2]).toBeLessThan(mocks.push.mock.invocationCallOrder[0])
   })
 
+  it('stages more than thirty reference files without truncating the selection', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ tasks: [] })),
+    )
+    render(
+      <PlayableHome user={{ id: 'user-1', username: 'tester', email: undefined, avatar: '' }} authProvider="github" />,
+    )
+    const files = Array.from(
+      { length: 31 },
+      (_, index) => new File(['image'], `reference-${index}.png`, { type: 'image/png' }),
+    )
+
+    fireEvent.change(screen.getByLabelText('上传参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源'), {
+      target: { files },
+    })
+
+    expect(screen.getByRole('list', { name: '已选择的参考素材' }).querySelectorAll('li')).toHaveLength(31)
+    expect(
+      screen.getByRole('button', { name: '添加参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源' }),
+    ).toBeEnabled()
+  })
+
   it('starts a new conversation from a best-practice template', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === '/api/playable-tasks' && !init?.method) return Response.json({ tasks: [] })

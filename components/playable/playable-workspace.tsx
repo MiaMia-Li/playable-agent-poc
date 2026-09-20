@@ -29,7 +29,6 @@ import { PlayablePreview } from './playable-preview'
 import { FolderUploadButton } from './folder-upload-button'
 import { AssetPreviewList } from './asset-preview-list'
 import {
-  MAX_HOME_ATTACHMENTS,
   PLAYABLE_ATTACHMENT_ACCEPT,
   maxAssetBytesForSlot,
   referenceSlotForMimeType,
@@ -753,15 +752,10 @@ export function PlayableHome({
   function addAttachments(files: FileList | readonly File[] | null) {
     if (!files) return
     const accepted: HomeAttachment[] = []
-    const remaining = Math.max(0, MAX_HOME_ATTACHMENTS - attachmentsRef.current.length)
     for (const file of normalizeAttachmentBatch(
       Array.from(files),
       attachmentsRef.current.some(({ file }) => /\.(atlas|skel)$/i.test(file.name)),
     )) {
-      if (accepted.length >= remaining) {
-        setError(`最多可以添加 ${MAX_HOME_ATTACHMENTS} 个参考素材`)
-        break
-      }
       const slot = attachmentSlotForFile(file)
       if (!slot) {
         setError(
@@ -864,8 +858,8 @@ export function PlayableHome({
             disabled={!user || creating || Boolean(creatingTemplate)}
           />
           <p className="text-muted-foreground px-2 text-xs">
-            支持选择文件夹并保留目录结构，打包后最多 100 MiB。HTML、ZIP/RAR 单文件最多 100 MiB；Spine 请一起选择
-            atlas、PNG 和 skel/JSON，合计最多 100 MiB。
+            支持选择文件夹并保留目录结构，打包后最多 300 MiB。HTML 单文件最多 100 MiB，ZIP/RAR 单文件最多 300 MiB；Spine
+            请一起选择 atlas、PNG 和 skel/JSON，合计最多 100 MiB。
           </p>
           {attachments.length > 0 && (
             <div className="mb-3 px-1">
@@ -888,7 +882,7 @@ export function PlayableHome({
               type="button"
               size="icon"
               variant="ghost"
-              disabled={!user || creating || attachments.length >= MAX_HOME_ATTACHMENTS}
+              disabled={!user || creating}
               onClick={() => attachmentInput.current?.click()}
               aria-label="添加参考图片、视频、SVG、GLB、HTML、压缩包或 Spine 资源"
             >
@@ -908,7 +902,7 @@ export function PlayableHome({
               }}
             />
             <FolderUploadButton
-              disabled={!user || creating || Boolean(creatingTemplate) || attachments.length >= MAX_HOME_ATTACHMENTS}
+              disabled={!user || creating || Boolean(creatingTemplate)}
               onFile={(file) => addAttachments([file])}
               onError={setError}
               onBusyChange={setPackingFolder}

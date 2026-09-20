@@ -8,6 +8,7 @@ import { createPlayableTaskHandlers } from './task-api'
 import { DatabasePlayableTaskRepository } from './task-repository'
 import {
   createPlayableAssetContentHandler,
+  createPlayableAssetEntryHandler,
   createPlayableAssetDeleteHandler,
   createPlayableAssetHandler,
   createPlayableAssetUploadCompleteHandler,
@@ -113,6 +114,7 @@ const playableAssetAccessDependencies = {
 }
 
 export const playableAssetContentHandler = createPlayableAssetContentHandler(playableAssetAccessDependencies)
+export const playableAssetEntryHandler = createPlayableAssetEntryHandler(playableAssetAccessDependencies)
 export const playableAssetDeleteHandler = createPlayableAssetDeleteHandler({
   ...playableAssetAccessDependencies,
   releaseReferenceVideo: async (taskId, userId, assetId) => {

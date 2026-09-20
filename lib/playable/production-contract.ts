@@ -78,13 +78,25 @@ export function createAssetSourceManifest(
       version: MAHJONG_PLAYABLE_PLUGIN.version,
       runtimeVersion: MAHJONG_PLAYABLE_PLUGIN.runtimeVersion,
     },
-    sources: Object.entries(confirmation.resources).map(([slot, resource]) => ({
-      slot: slot as keyof ConfirmationProposal['resources'],
-      status: resource.status,
-      treatment: resource.treatment,
-      origin: slot === 'models' && resource.status === '内置默认' ? 'none' : sourceLabels[resource.status],
-      files: assets.filter((asset) => asset.slot === slot).map((asset) => asset.filename),
-    })),
+    sources: Object.entries(confirmation.resources).map(([slot, resource]) => {
+      const resourceSlot = slot as keyof ConfirmationProposal['resources']
+      const sourceHtml = confirmation.resourceBindings?.[resourceSlot]?.some((binding) => binding.kind === 'sourceHtml')
+      return {
+        slot: resourceSlot,
+        status: resource.status,
+        treatment: resource.treatment,
+        origin:
+          slot === 'models' && resource.status === '内置默认'
+            ? 'none'
+            : sourceHtml
+              ? 'source-html'
+              : sourceLabels[resource.status],
+        files: [
+          ...assets.filter((asset) => asset.slot === slot).map((asset) => asset.filename),
+          ...(sourceHtml ? ['current-playable.html'] : []),
+        ],
+      }
+    }),
     assets: assets.map((asset) => buildAssetManifestEntry(asset, `user-assets/${asset.slot}/${asset.filename}`)),
     entrypoint: 'playable.html',
   }

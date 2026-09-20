@@ -1,4 +1,9 @@
-import type { PlayableResourceAssetSlot } from './asset-policy'
+import {
+  MAX_SPINE_BYTES,
+  SVG_MIME_TYPE,
+  playableResourceAssetSlots,
+  type PlayableResourceAssetSlot,
+} from './asset-policy'
 import type { PlayableAssetManifest } from './playable-agent-adapter'
 import {
   extractAssetArchive,
@@ -8,9 +13,9 @@ import {
   MAX_EXPANDED_ARCHIVE_BYTES,
 } from './asset-archive'
 import { inspectSpineGroups, type SpineGroup } from './spine-assets'
-import { MAX_SPINE_BYTES } from './asset-policy'
 import type { ArtifactStore } from './artifact-store'
 import type { PlayableAsset } from './task-assets'
+import type { ConfirmationProposal } from './schemas'
 import { SVG_ANIMATION_PROMPT } from './svg-animation-policy'
 
 export interface ImportedAssetSummary {
@@ -130,12 +135,100 @@ export function importedResourcePaths(summaries: ImportedAssetSummary[], slot: P
   )
 }
 
+function importedMimeType(path: string): string {
+  if (/\.svg$/i.test(path)) return SVG_MIME_TYPE
+  if (/\.png$/i.test(path)) return 'image/png'
+  if (/\.jpe?g$/i.test(path)) return 'image/jpeg'
+  if (/\.webp$/i.test(path)) return 'image/webp'
+  if (/\.gif$/i.test(path)) return 'image/gif'
+  if (/\.mp3$/i.test(path)) return 'audio/mpeg'
+  if (/\.wav$/i.test(path)) return 'audio/wav'
+  if (/\.ogg$/i.test(path)) return 'audio/ogg'
+  if (/\.m4a$/i.test(path)) return 'audio/mp4'
+  if (/\.mp4$/i.test(path)) return 'video/mp4'
+  if (/\.glb$/i.test(path)) return 'model/gltf-binary'
+  if (/\.atlas$/i.test(path)) return 'application/x-spine-atlas'
+  if (/\.skel$/i.test(path)) return 'application/x-spine-skel'
+  return 'application/octet-stream'
+}
+
+function escapePattern(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replaceAll('*', '.*')
+}
+
+function treatmentNamesImportedPath(treatment: string, path: string): boolean {
+  const normalizedTreatment = treatment.toLocaleLowerCase()
+  const normalizedPath = path.toLocaleLowerCase()
+  const filename = normalizedPath.split('/').at(-1) ?? normalizedPath
+  if (normalizedTreatment.includes(normalizedPath) || normalizedTreatment.includes(filename)) return true
+  const stem = filename.replace(/\.[^.]+$/, '')
+  if (stem.length >= 4 && normalizedTreatment.includes(stem)) return true
+  return normalizedTreatment
+    .split(/[\s、，。；;:“”"'`()]+/)
+    .filter((token) => token.includes('*'))
+    .some((token) => {
+      const pattern = new RegExp(`^${escapePattern(token)}$`, 'i')
+      return pattern.test(normalizedPath) || pattern.test(filename)
+    })
+}
+
+/** Resolve archive entries named in each user-confirmed field; never fan every image out to every field. */
+export function bindImportedResources(
+  confirmation: ConfirmationProposal,
+  summaries: ImportedAssetSummary[],
+): ConfirmationProposal {
+  if (!summaries.length) return confirmation
+  const resourceBindings = { ...confirmation.resourceBindings }
+  let changed = false
+  for (const slot of playableResourceAssetSlots) {
+    const resource = confirmation.resources[slot]
+    if (resource?.status !== '用户上传') continue
+    const allowed = new Set(importedResourcePaths(summaries, slot))
+    const imported = summaries
+      .flatMap((summary) =>
+        summary.files.map((file) => ({
+          kind: 'import' as const,
+          assetId: summary.assetId,
+          path: file.path,
+          filename: file.path.split('/').at(-1) ?? file.path,
+          mimeType: importedMimeType(file.path),
+          size: file.size,
+          workspacePath: `${summary.root}/${file.path}`,
+        })),
+      )
+      .filter(
+        (binding) => allowed.has(binding.workspacePath) && treatmentNamesImportedPath(resource.treatment, binding.path),
+      )
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map(({ workspacePath: _workspacePath, ...binding }) => binding)
+    if (!imported.length) continue
+    resourceBindings[slot] = [
+      ...(resourceBindings[slot] ?? []).filter((binding) => binding.kind !== 'import'),
+      ...imported,
+    ]
+    changed = true
+  }
+  return changed ? { ...confirmation, resourceBindings } : confirmation
+}
+
 // 只补充已确认“用户上传”的资源槽，不能把包内候选素材自动视为用户确认的使用用途。
-export function attachImportedManifest(manifest: PlayableAssetManifest, summaries: ImportedAssetSummary[] = []) {
+export function attachImportedManifest(
+  manifest: PlayableAssetManifest,
+  summaries: ImportedAssetSummary[] = [],
+  bindings?: ConfirmationProposal['resourceBindings'],
+) {
   if (!summaries.length) return
   manifest.imports = summaries
   for (const source of manifest.sources) {
-    if (source.status === '用户上传')
-      source.files = [...new Set([...source.files, ...importedResourcePaths(summaries, source.slot)])]
+    if (source.status !== '用户上传') continue
+    const importedFiles = bindings
+      ? (bindings[source.slot] ?? []).flatMap((binding) => {
+          if (binding.kind !== 'import') return []
+          const summary = summaries.find((candidate) => candidate.assetId === binding.assetId)
+          if (!summary?.files.some((file) => file.path === binding.path)) return []
+          return [`${summary.root}/${binding.path}`]
+        })
+      : importedResourcePaths(summaries, source.slot)
+    source.files = [...new Set([...source.files, ...importedFiles])]
   }
 }

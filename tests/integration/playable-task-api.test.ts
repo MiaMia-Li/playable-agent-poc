@@ -2938,6 +2938,154 @@ describe('playable task API', () => {
     expect(accepted.status).toBe(202)
   })
 
+  it('accepts audio preserved from the confirmed source HTML and records its field binding', async () => {
+    const source = {
+      id: 'source-html-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'sourceHtml' as const,
+      filename: 'reference.html',
+      mimeType: 'text/html',
+      size: 32,
+      storageKey: 'source-html-1',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(source)
+    harness.artifacts.set(source.storageKey, Buffer.from('<html><script>packed game</script></html>'))
+    const sourceAudio = {
+      ...confirmation,
+      sourceHtmlAssetId: source.id,
+      resources: {
+        ...confirmation.resources,
+        audio: {
+          status: '用户上传' as const,
+          treatment: '从 reference.html 的完整内嵌资源中提取并复用原版音效',
+        },
+      },
+    }
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.confirmation = sourceAudio
+
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: sourceAudio }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status, await response.clone().text()).toBe(202)
+    expect(task.confirmation?.resourceBindings?.audio).toEqual([
+      {
+        kind: 'sourceHtml',
+        assetId: source.id,
+        filename: source.filename,
+      },
+    ])
+  })
+
+  it('binds only the imported folder images named by each confirmation field', async () => {
+    const files = {
+      'game/index.html': Buffer.from('<html><body>game</body></html>'),
+      'game/tiles/tile_b.png': Buffer.from('tile-b'),
+      'game/guide/hand.png': Buffer.from('hand'),
+      'game/tiles/tile_a.png': Buffer.from('tile-a'),
+    }
+    const bytes = await zipFiles(files)
+    const archive: PlayableAsset = {
+      id: 'folder-zip-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'assetPackage',
+      filename: 'game.zip',
+      mimeType: 'application/zip',
+      size: bytes.length,
+      storageKey: 'folder-zip-1',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(archive)
+    harness.artifacts.set(archive.storageKey, bytes)
+    const importedImages: ConfirmationProposal = {
+      ...confirmation,
+      sourceHtmlAssetId: archive.id,
+      importedAssetIds: [archive.id],
+      resources: {
+        ...confirmation.resources,
+        tileFaces: { status: '用户上传', treatment: '使用 game/tiles/tile_*.png 作为牌面' },
+        animationEffects: { status: '用户上传', treatment: '使用 game/guide/hand.png 作为引导' },
+      },
+    }
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.confirmation = importedImages
+
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: importedImages }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+
+    expect(response.status, await response.clone().text()).toBe(202)
+    expect(task.confirmation?.resourceBindings).toMatchObject({
+      tileFaces: [
+        expect.objectContaining({ kind: 'import', assetId: archive.id, path: 'game/tiles/tile_a.png' }),
+        expect.objectContaining({ kind: 'import', assetId: archive.id, path: 'game/tiles/tile_b.png' }),
+      ],
+      animationEffects: [expect.objectContaining({ kind: 'import', assetId: archive.id, path: 'game/guide/hand.png' })],
+    })
+    expect(task.confirmation?.resourceBindings?.tileFaces).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: 'game/guide/hand.png' })]),
+    )
+    expect(task.confirmation?.resourceBindings?.tileFaces).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'sourceHtml' })]),
+    )
+  })
+
+  it('hydrates imported image bindings when an older confirmation table is loaded', async () => {
+    const bytes = await zipFiles({
+      '2_切图/麻将牌/mahjiang_card_face.png': Buffer.from('face'),
+      '2_切图/麻将牌/mahjiang_card_back.png': Buffer.from('back'),
+      '2_切图/引导/hand.png': Buffer.from('hand'),
+    })
+    const archive: PlayableAsset = {
+      id: 'legacy-folder-zip',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'assetPackage',
+      filename: '2_切图.zip',
+      mimeType: 'application/zip',
+      size: bytes.length,
+      storageKey: 'legacy-folder-zip',
+      durationSeconds: null,
+      createdAt: new Date(),
+    }
+    harness.repository.assets.push(archive)
+    harness.artifacts.set(archive.storageKey, bytes)
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.confirmation = {
+      ...confirmation,
+      importedAssetIds: [archive.id],
+      resources: {
+        ...confirmation.resources,
+        tileFaces: {
+          status: '用户上传',
+          treatment: '使用 2_切图.zip 内 2_切图/麻将牌/mahjiang_card_*.png',
+        },
+      },
+    }
+
+    const response = await harness.handlers.events(request('/api/playable-tasks/owned/events'), {
+      params: Promise.resolve({ taskId: 'owned' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).task.confirmation.resourceBindings.tileFaces).toEqual([
+      expect.objectContaining({ path: '2_切图/麻将牌/mahjiang_card_back.png' }),
+      expect.objectContaining({ path: '2_切图/麻将牌/mahjiang_card_face.png' }),
+    ])
+    expect(task.confirmation.resourceBindings).toBeUndefined()
+  })
+
   it('returns confirmation without waiting for background event or build work', async () => {
     harness.repository.tasks.get('owned')!.phase = 'awaiting_confirmation'
     vi.spyOn(harness.repository, 'appendEvent').mockImplementationOnce(() => new Promise(() => undefined))
@@ -3537,6 +3685,15 @@ describe('playable task API', () => {
       )
     ).text()
     const task = harness.repository.tasks.get('owned')!
+    if (!missing) {
+      expect(task.confirmation?.resourceBindings?.animationEffects).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'import', path: 'hero.atlas' }),
+          expect.objectContaining({ kind: 'import', path: 'hero.json' }),
+          expect.objectContaining({ kind: 'import', path: 'hero.png' }),
+        ]),
+      )
+    }
     const response = await harness.handlers.confirm(
       request('/api/playable-tasks/owned/confirm', 'POST', { confirmation: task.confirmation }),
       context,

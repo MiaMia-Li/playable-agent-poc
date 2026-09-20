@@ -45,10 +45,7 @@ describe('folder uploads', () => {
     }
   })
   it('checks budgets before reading file contents', async () => {
-    await expect(packageFolder([folderFile('game/a', '', MAX_ARCHIVE_BYTES + 1)])).rejects.toThrow('单个文件')
-    await expect(
-      packageFolder(Array.from({ length: 4 }, (_, i) => folderFile(`game/${i}`, '', MAX_ARCHIVE_BYTES))),
-    ).rejects.toThrow('300 MiB')
+    await expect(packageFolder([folderFile('game/a', '', MAX_ARCHIVE_BYTES + 1)])).rejects.toThrow('300 MiB')
     await expect(packageFolder(Array.from({ length: 1001 }, (_, i) => folderFile(`game/${i}`)))).rejects.toThrow('1000')
   })
 })

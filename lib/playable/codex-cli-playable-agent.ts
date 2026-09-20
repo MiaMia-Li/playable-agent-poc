@@ -293,7 +293,7 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
   }
   await writeFile(path.join(workspace, 'imported-assets.json'), JSON.stringify(input.importedAssets ?? [], null, 2))
   const manifest = createAssetSourceManifest(input.confirmation, [])
-  attachImportedManifest(manifest, input.importedAssets)
+  attachImportedManifest(manifest, input.importedAssets, input.confirmation.resourceBindings)
   for (const asset of input.assets ?? []) {
     const workspacePath = path.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
     const absolutePath = path.join(workspace, workspacePath)

@@ -23,8 +23,9 @@ export type PlayableAssetSlot = (typeof playableAssetSlots)[number]
 export const MAX_ASSET_BYTES = 4 * 1024 * 1024
 // 业务上限与请求体分流阈值分开维护；展开大小和条目数另行限制，避免小压缩包耗尽内存。
 export const MAX_HTML_BYTES = 100 * 1024 * 1024
-export const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 export const MAX_EXPANDED_ARCHIVE_BYTES = 300 * 1024 * 1024
+// 文件夹会在浏览器中打包为 ZIP；压缩包与展开内容使用同一总预算，不再额外卡在 100 MiB。
+export const MAX_ARCHIVE_BYTES = MAX_EXPANDED_ARCHIVE_BYTES
 export const MAX_ARCHIVE_ENTRIES = 1000
 export const MAX_SPINE_BYTES = 100 * 1024 * 1024
 export const MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
@@ -43,10 +44,6 @@ export const MAX_UPLOAD_BYTES = MAX_REFERENCE_VIDEO_BYTES
  * 超过此阈值走存储直传；提高 HTML 等业务上限时不能同步提高这个阈值。
  */
 export const MAX_FORM_UPLOAD_BYTES = 4 * 1024 * 1024
-export const MAX_HOME_ATTACHMENTS = 30
-export const MAX_ASSETS_PER_SLOT = 8
-export const MAX_TASK_ASSETS = 30
-
 export const PLAYABLE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 // SVGs are playable resources, not raster Reference Images sent to vision models.
 export const SVG_MIME_TYPE = 'image/svg+xml'
@@ -78,7 +75,7 @@ export function normalizeAttachmentBatch(files: File[], hasSpine = false): File[
 export function assetSizeError(slot: PlayableAssetSlot): string {
   if (slot === 'referenceVideo') return '单个参考视频不能超过 100 MiB'
   if (slot === 'sourceHtml') return '单个 HTML 文件不能超过 100 MiB'
-  if (slot === 'assetPackage') return '单个压缩包不能超过 100 MiB'
+  if (slot === 'assetPackage') return '单个压缩包不能超过 300 MiB'
   if (slot === 'spine') return 'Spine 资源合计不能超过 100 MiB'
   return '单个参考素材不能超过 4 MiB'
 }

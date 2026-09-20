@@ -64,6 +64,27 @@ describe('playable production contract', () => {
     expect(JSON.stringify(manifest)).not.toContain('users/')
   })
 
+  it('identifies a field preserved from the uploaded HTML baseline', () => {
+    const sourceHtml: ConfirmationProposal = {
+      ...confirmation,
+      sourceHtmlAssetId: 'html-1',
+      resources: {
+        ...confirmation.resources,
+        audio: { status: '用户上传', treatment: '复用源 HTML 内嵌音效' },
+      },
+      resourceBindings: {
+        audio: [{ kind: 'sourceHtml', assetId: 'html-1', filename: 'reference.html' }],
+      },
+    }
+
+    const manifest = createAssetSourceManifest(sourceHtml, [])
+
+    expect(manifest.sources.find((source) => source.slot === 'audio')).toMatchObject({
+      origin: 'source-html',
+      files: ['current-playable.html'],
+    })
+  })
+
   it('publishes an explicit pass report for every automated gate', () => {
     const report = createValidationReport({ bytes: 1024, offlineResources: true, responsiveViewport: true })
 

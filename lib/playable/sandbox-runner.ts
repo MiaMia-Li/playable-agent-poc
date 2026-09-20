@@ -377,7 +377,7 @@ export async function runPlayableBuild(
         'Imported runtime preparation failed',
       )
     const assetManifest: PlayableAssetManifest = createAssetSourceManifest(confirmation, [])
-    attachImportedManifest(assetManifest, input.importedAssets)
+    attachImportedManifest(assetManifest, input.importedAssets, input.confirmation.resourceBindings)
     for (const asset of input.assets ?? []) {
       if (asset.bytes.byteLength !== asset.size) throw new Error('Uploaded asset size mismatch')
       const workspacePath = path.posix.join('user-assets', asset.slot, safeWorkspaceFilename(asset.id, asset.filename))
