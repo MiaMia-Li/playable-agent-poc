@@ -369,16 +369,16 @@ describe('CodexPlayableAgent', () => {
   })
 
   it.each([undefined, 'dragon_slots' as const])(
-    'omits Codex validation and checklists when Sandbox validation is disabled: %s',
+    'keeps static artifact validation while omitting browser acceptance when full validation is disabled: %s',
     (sourceTemplateId) => {
       const prompt = createCodexBuildPrompt('exact', undefined, sourceTemplateId, 'center_collision', {
         validationEnabled: false,
       })
 
       expect(prompt).toContain('full Codex validation is disabled')
-      expect(prompt).toContain('Do not run validation commands or browser acceptance')
+      expect(prompt).toContain('Do not run browser acceptance')
       expect(prompt).not.toContain('test-playable.mjs')
-      expect(prompt).not.toContain('test-freeform-playable.mjs')
+      expect(prompt).toContain('test-freeform-playable.mjs')
       expect(prompt).not.toContain('work/validation-checklist.md')
     },
   )

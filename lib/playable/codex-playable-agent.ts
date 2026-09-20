@@ -6,7 +6,12 @@ import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
 import { referenceVisualsBuildPrompt } from './reference-keyframes-build'
 import { buildSkillEntry, buildSkillRoots, includeBuildSkillFile } from './build-skill'
-import { PREVIEW_BUILD_PROMPT, PREVIEW_REPAIR_PROMPT, FULL_ACCEPTANCE_PROMPT } from './preview-build'
+import {
+  ARTIFACT_REPAIR_PROMPT,
+  PREVIEW_BUILD_PROMPT,
+  PREVIEW_REPAIR_PROMPT,
+  FULL_ACCEPTANCE_PROMPT,
+} from './preview-build'
 import { buildValidationCommand, usesPerspectiveTemplate } from './build-template-policy'
 import type { BuildActivityCallback } from './build-activity'
 import { createHarnessActivityReporter } from './build-activity-detail'
@@ -317,7 +322,7 @@ async function createProposal(
 
 export async function executeBuildAgent(
   input: {
-    phase?: 'preview' | 'preview_repair' | 'acceptance'
+    phase?: 'preview' | 'preview_repair' | 'artifact_repair' | 'acceptance'
     authEnvironment: Readonly<Record<'CODEX_API_KEY' | 'OPENAI_BASE_URL', string>>
     sandbox: PlayableSandbox
     taskId: string
@@ -370,12 +375,14 @@ export async function executeBuildAgent(
             ? PREVIEW_BUILD_PROMPT
             : input.phase === 'preview_repair'
               ? PREVIEW_REPAIR_PROMPT
-              : input.phase === 'acceptance'
-                ? FULL_ACCEPTANCE_PROMPT
-                : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, {
-                    validationEnabled,
-                    sourceHtmlAssetId,
-                  }),
+              : input.phase === 'artifact_repair'
+                ? ARTIFACT_REPAIR_PROMPT
+                : input.phase === 'acceptance'
+                  ? FULL_ACCEPTANCE_PROMPT
+                  : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, {
+                      validationEnabled,
+                      sourceHtmlAssetId,
+                    }),
         ]
           .filter(Boolean)
           .join('\n'),

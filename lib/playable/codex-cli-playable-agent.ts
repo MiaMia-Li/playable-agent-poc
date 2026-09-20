@@ -17,6 +17,7 @@ import {
 } from './reference-keyframes-build'
 import { readBuildSkillFiles } from './build-skill'
 import {
+  ARTIFACT_REPAIR_PROMPT,
   PREVIEW_BUILD_PROMPT,
   PREVIEW_REPAIR_PROMPT,
   FULL_ACCEPTANCE_PROMPT,
@@ -449,6 +450,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               'sandbox-tools.json',
               'work/preview-repair.json',
               'work/preview-failure-report.json',
+              'work/artifact-repair.json',
               'work/acceptance-handoff.json',
               'work/browser-acceptance/report.json',
             ]) {
@@ -479,26 +481,31 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
                   ? PREVIEW_BUILD_PROMPT
                   : phase === 'preview_repair'
                     ? PREVIEW_REPAIR_PROMPT
-                    : FULL_ACCEPTANCE_PROMPT,
+                    : phase === 'artifact_repair'
+                      ? ARTIFACT_REPAIR_PROMPT
+                      : FULL_ACCEPTANCE_PROMPT,
                 phase === 'acceptance'
                   ? 'Use the acceptance handoff first; read only missing details.'
-                  : 'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
+                  : phase === 'artifact_repair'
+                    ? 'Repair only the reported artifact contract failure.'
+                    : 'Read SKILL.md, confirmed-config.json, asset-manifest.json and revision-plan.json when present.',
                 'CLI transport override: the host runs the real browser in its prepared cloud sandbox immediately after this call. Write the scenario for that runner; do not install or run a local browser. Return the completion protocol when the files are ready for host checking.',
               ].join('\n'),
             })
             if (!completionSchema.safeParse(completion).success)
               throw new Error('Codex CLI phase completion is invalid')
-            for (const file of [
-              'output.html',
-              phase === 'acceptance' ? 'work/scenario.mjs' : 'work/preview-scenario.mjs',
-            ]) {
+            const outputFiles =
+              phase === 'artifact_repair'
+                ? ['output.html']
+                : ['output.html', phase === 'acceptance' ? 'work/scenario.mjs' : 'work/preview-scenario.mjs']
+            for (const file of outputFiles) {
               await sandbox.writeBinaryFile({
                 path: path.join(remoteWorkspace, file),
                 content: new Uint8Array(await readFile(path.join(localWorkspace, file))),
                 abortSignal,
               })
             }
-            if (phase !== 'acceptance') {
+            if (phase === 'preview' || phase === 'preview_repair') {
               const notes = await readFile(path.join(localWorkspace, 'work/preview-handoff.md'), 'utf8').catch(
                 () => null,
               )

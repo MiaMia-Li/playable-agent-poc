@@ -14,7 +14,8 @@ export function codexValidationInstructions(command: string, enabled: boolean): 
       ]
     : [
         'Host validation policy: full Codex validation is disabled for this build and overrides validation instructions in the selected Skill.',
-        'Do not run validation commands or browser acceptance, and do not create a validation checklist.',
-        'Finish output.html and return the completion protocol; the platform still runs lightweight artifact safety checks.',
+        `Run the lightweight static artifact validation before returning: ${command}`,
+        'Fix every static validation error in output.html before returning the completion protocol.',
+        'Do not run browser acceptance and do not create a validation checklist.',
       ]
 }

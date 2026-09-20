@@ -57,3 +57,8 @@ Diagnose only the failed assertion or browser error and its affected transition.
 Fix output.html, or correct a demonstrably wrong scenario selector/observation. Never delete assertions, weaken expected outcomes, suppress browser errors, bypass native input, or modify the immutable acceptance runner to obtain a pass.
 Use the supplied template probe and Node tools. Do not install dependencies or replay full acceptance. The host will rerun the smoke check once and stop if it still fails.
 Update work/preview-handoff.md with the repair and affected source locations, clearly distinguishing observed results from unverified changes. Leave the corrected output.html and work/preview-scenario.mjs in place, then return the completion protocol. If no justified repair is possible, leave the files unchanged.`
+
+export const ARTIFACT_REPAIR_PROMPT = `This is the single ARTIFACT REPAIR attempt, not a new implementation.
+Read work/artifact-repair.json, then inspect the existing output.html. The platform found an external resource reference in the final single-file artifact.
+Find every non-embedded resource reference in img, audio, video, source, script, link, iframe and object attributes, plus CSS url() values. Inline required runtime resources as data: URIs and remove only metadata references that the playable does not use. Preserve the confirmed gameplay, native UI and already embedded assets.
+Do not install dependencies, rebuild from the original source, run browser acceptance, weaken the platform contract or modify immutable Skill files. Leave the corrected output.html in place and return the completion protocol. If no justified repair is possible, leave the file unchanged.`
