@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Sandbox } from '@vercel/sandbox'
+import { prepareSandboxForHarness } from '@ai-sdk/harness/agent'
+import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import { access, writeFile } from 'node:fs/promises'
 import { preparePlayableSandbox } from '../../scripts/prepare-playable-sandbox'
 
 vi.mock('dotenv', () => ({ config: vi.fn() }))
 vi.mock('@vercel/sandbox', () => ({ Sandbox: { create: vi.fn() } }))
+vi.mock('@ai-sdk/harness-codex', () => ({ createCodex: vi.fn(() => ({ harnessId: 'codex' })) }))
+vi.mock('@ai-sdk/harness/agent', () => ({ prepareSandboxForHarness: vi.fn() }))
+vi.mock('@ai-sdk/sandbox-vercel', () => ({ createVercelSandbox: vi.fn() }))
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof import('node:fs/promises')>()),
   access: vi.fn(),
@@ -17,6 +22,10 @@ beforeEach(() => {
   vi.stubEnv('SANDBOX_VERCEL_PROJECT_ID', 'test-project')
   vi.mocked(access).mockRejectedValue(new Error('missing'))
   vi.mocked(writeFile).mockResolvedValue(undefined)
+  vi.mocked(prepareSandboxForHarness).mockResolvedValue({
+    recipeIdentities: { codex: 'recipe' },
+    skippedHarnessIds: [],
+  })
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -40,11 +49,15 @@ function environments(restoredExitCode = 0) {
   vi.mocked(Sandbox.create)
     .mockResolvedValueOnce(setup as never)
     .mockResolvedValueOnce(restored as never)
-  return { snapshot, setup, restored }
+  const harnessSession = { defaultWorkingDirectory: '/vercel/sandbox' }
+  vi.mocked(createVercelSandbox).mockReturnValue({
+    createSession: vi.fn().mockResolvedValue(harnessSession),
+  } as never)
+  return { snapshot, setup, restored, harnessSession }
 }
 
 it('saves configuration only after a restored browser passes and never uploads host credentials', async () => {
-  const { setup, restored, snapshot } = environments()
+  const { setup, restored, snapshot, harnessSession } = environments()
   await preparePlayableSandbox()
   expect(Sandbox.create).toHaveBeenNthCalledWith(
     2,
@@ -64,6 +77,18 @@ it('saves configuration only after a restored browser passes and never uploads h
   )
   expect(restored.runCommand).toHaveBeenCalledWith(
     expect.objectContaining({ args: expect.arrayContaining(['--launch']) }),
+  )
+  // 预装必须落在同一个待快照环境里，而不是另外创建一个沙盒。
+  expect(createVercelSandbox).toHaveBeenCalledWith({ sandbox: setup })
+  expect(prepareSandboxForHarness).toHaveBeenCalledWith(expect.objectContaining({ session: harnessSession }))
+  // 校验必须针对本次配方的确切标记名，而不是「有没有某个标记」。
+  expect(restored.runCommand).toHaveBeenCalledWith(
+    expect.objectContaining({
+      env: {
+        HARNESS_BOOTSTRAP_DIR: '/vercel/sandbox/.harness-bootstrap/codex',
+        HARNESS_BOOTSTRAP_MARKER: '/vercel/sandbox/.harness-bootstrap/codex/.bootstrap-recipe.ok',
+      },
+    }),
   )
   expect(writeFile).toHaveBeenCalledWith(expect.any(String), 'PLAYABLE_SANDBOX_SNAPSHOT_ID=snap_verified\n', {
     flag: 'wx',
@@ -100,4 +125,22 @@ it('stops setup immediately when installation fails and does not snapshot', asyn
   expect(vi.mocked(writeFile).mock.calls.some(([file]) => String(file).endsWith('.env.playable-sandbox.local'))).toBe(
     false,
   )
+})
+
+it('does not snapshot when the harness bootstrap recipe is unavailable', async () => {
+  const { setup } = environments()
+  vi.mocked(prepareSandboxForHarness).mockResolvedValue({ recipeIdentities: {}, skippedHarnessIds: ['codex'] })
+  await expect(preparePlayableSandbox()).rejects.toThrow('Harness bootstrap recipe is unavailable')
+  expect(setup.snapshot).not.toHaveBeenCalled()
+  expect(writeFile).not.toHaveBeenCalled()
+  expect(setup.stop).toHaveBeenCalledOnce()
+})
+
+// 没有配方指纹就无法判断构建会去找哪个标记，此时快照的预装价值不可验证。
+it('does not snapshot when the recipe fingerprint is missing', async () => {
+  const { setup } = environments()
+  vi.mocked(prepareSandboxForHarness).mockResolvedValue({ recipeIdentities: {}, skippedHarnessIds: [] })
+  await expect(preparePlayableSandbox()).rejects.toThrow('Harness bootstrap recipe is unavailable')
+  expect(setup.snapshot).not.toHaveBeenCalled()
+  expect(writeFile).not.toHaveBeenCalled()
 })

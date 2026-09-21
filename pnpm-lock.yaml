@@ -9,10 +9,10 @@ importers:
   .:
     dependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.102
+        specifier: 1.0.102
         version: 1.0.102(ws@8.21.3)(zod@4.3.6)
       '@ai-sdk/harness-codex':
-        specifier: ^1.0.104
+        specifier: 1.0.104
         version: 1.0.104(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^4.0.60

@@ -20,9 +20,13 @@ It installs pinned Playwright 1.63.0 (supports Ubuntu 26.04), its Chromium binar
 Noto CJK fonts, jq, zip, unzip and ffmpeg. ffmpeg cuts Reference Keyframes out of
 reference videos; the keyframe extractor checks for it on its own, so it is not part of
 the build's tools version and an older snapshot only makes keyframes unavailable
-(ADR 0003). It checks browser launch, clicking and screenshots
-in both orientations, then repeats that check in a fresh sandbox restored from the
-snapshot. Only a verified snapshot ID is saved to `.env.playable-sandbox.local`.
+(ADR 0003). It also preinstalls the Codex Harness bridge and its dependencies, so a
+build no longer runs that install inside every task sandbox; the bootstrap marker is
+keyed by the Harness recipe, so a sandbox from an older snapshot still installs it on
+its own. It checks browser launch, clicking and screenshots
+in both orientations, then repeats that check together with the Harness runtime in a
+fresh sandbox restored from the snapshot. Only a verified snapshot ID is saved to
+`.env.playable-sandbox.local`.
 The snapshot has no automatic expiry; delete unused versions in Vercel when retired.
 Temporary sandboxes are stopped, and an unsuccessful snapshot is deleted.
 
@@ -72,7 +76,12 @@ only, never whole lines). This needs no snapshot change: the script ships with t
 ## Update
 
 Change the pinned version in `lib/playable/sandbox-tools.ts` and increment the
-recipe version when changing tools or wrapper behavior. Move the old generated
+recipe version when changing tools or wrapper behavior. `@ai-sdk/harness` and
+`@ai-sdk/harness-codex` are pinned to exact versions because their bridge assets and
+bootstrap schema decide the recipe fingerprint: a range would let a routine update
+change it silently, leaving every build to reinstall the runtime the snapshot already
+holds. Upgrading either is therefore a deliberate edit, and it needs a new snapshot —
+builds keep working without one, they just stop skipping that install. Move the old generated
 configuration file aside, run the preparation command again, then switch the
 deployment setting to the newly verified ID. The script refuses to overwrite an
 existing configuration file. Keep the previous snapshot available for rollback.

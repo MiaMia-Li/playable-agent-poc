@@ -1,4 +1,7 @@
 import { Sandbox, type Snapshot } from '@vercel/sandbox'
+import { createCodex } from '@ai-sdk/harness-codex'
+import { prepareSandboxForHarness } from '@ai-sdk/harness/agent'
+import { createVercelSandbox } from '@ai-sdk/sandbox-vercel'
 import { config } from 'dotenv'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -106,6 +109,20 @@ export async function preparePlayableSandbox() {
     console.log('Checking installed browser')
     await run('node', [`${PLAYABLE_TOOLS_ROOT}/check.cjs`, '--launch'], false, checkEnv)
     await run('rm', ['-r', '/tmp/playable-tools-bootstrap'])
+    console.log('Installing build agent harness runtime')
+    // 预装 Harness 的 bridge 及其依赖。构建时 createSession 读到同一份 bootstrap 标记即跳过，
+    // 不必每个任务在沙盒里重装一次；标记随 Harness 版本变化，对不上时仍会自动重装。
+    const harnessSession = await createVercelSandbox({ sandbox }).createSession()
+    // Bootstrap 配方与认证无关，只包含 adapter 声明的文件和安装命令。
+    const codex = createCodex()
+    const prepared = await prepareSandboxForHarness({ harnesses: [codex], session: harnessSession })
+    // 配方指纹决定构建时查找的标记文件名；缺失说明 adapter 没有声明 bootstrap，预装无从谈起。
+    const harnessRecipeIdentity = prepared.recipeIdentities[codex.harnessId]
+    if (prepared.skippedHarnessIds.length > 0 || !harnessRecipeIdentity)
+      throw new Error('Harness bootstrap recipe is unavailable')
+    // 安装目录与标记命名都是 Harness 内部约定；约定变了这里会直接失败，不会悄悄产出无效快照。
+    const harnessBootstrapDir = path.posix.join(harnessSession.defaultWorkingDirectory, '.harness-bootstrap/codex')
+    const harnessMarker = path.posix.join(harnessBootstrapDir, `.bootstrap-${harnessRecipeIdentity}.ok`)
     console.log('Saving browser tools snapshot')
     // 快照保存在 Vercel 云端且不自动过期；后续每个任务从它创建独立环境。
     snapshot = await sandbox.snapshot({ expiration: 0 })
@@ -124,6 +141,16 @@ export async function preparePlayableSandbox() {
     if (check.exitCode !== 0) throw new Error('Restored browser check failed')
     const ffmpegCheck = await restored.runCommand({ cmd: 'ffmpeg', args: ['-hide_banner', '-version'] })
     if (ffmpegCheck.exitCode !== 0) throw new Error('Restored ffmpeg check failed')
+    // 构建时按这个确切文件名判断能否跳过安装；换成任意标记只能证明装过某份配方，证明不了是这一份。
+    const harnessCheck = await restored.runCommand({
+      cmd: 'node',
+      args: [
+        '-e',
+        "const fs=require('node:fs');if(!fs.existsSync(`${process.env.HARNESS_BOOTSTRAP_DIR}/node_modules`))process.exit(1);if(!fs.existsSync(process.env.HARNESS_BOOTSTRAP_MARKER))process.exit(1)",
+      ],
+      env: { HARNESS_BOOTSTRAP_DIR: harnessBootstrapDir, HARNESS_BOOTSTRAP_MARKER: harnessMarker },
+    })
+    if (harnessCheck.exitCode !== 0) throw new Error('Restored harness runtime check failed')
     // wx 防止并发覆盖；只有恢复验证成功的快照才能进入部署配置。
     await writeFile(output, `PLAYABLE_SANDBOX_SNAPSHOT_ID=${snapshot.snapshotId}\n`, { flag: 'wx', mode: 0o600 })
     saved = true
