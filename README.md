@@ -71,6 +71,8 @@ Set `OPENROUTER_API_KEY` in `.env.local` for local server use and in the deploym
 
 The requirement agent defaults to at most 20 model decisions per user message with `high` reasoning effort, in both production and local Codex CLI mode. Set `PLAYABLE_REQUIREMENT_MAX_STEPS` to a positive safe integer and `PLAYABLE_REQUIREMENT_REASONING_EFFORT` to `low`, `medium`, or `high` to override them. Missing or invalid values fall back to the defaults. Tool-analysis steps and structured-output repair attempts share this step budget; a terminal reply ends the loop early. Higher limits and reasoning effort can increase response latency and model usage. These settings do not change build-agent reasoning effort.
 
+Requirement updates preserve unchanged fields through incremental patches. Builds receive the Requirement Brief and recent user evidence captured at confirmation. See [requirement quality and conversation replay](docs/requirement-agent-quality.md) for the handoff contract and `pnpm replay:requirements` commands.
+
 `PLAYABLE_SANDBOX_VALIDATION_ENABLED` defaults to enabled. Set it to `0` to skip the host behavioral validation command, the Codex browser-acceptance phase, and its temporary validation checklist when diagnosing build latency. The platform still checks the artifact contract, offline resources, responsive layout, and credentials before publishing an artifact.
 
 The deployment network must resolve `vercel.com` and allow outbound HTTPS traffic to `vercel.com:443`, which is the API origin used by `@vercel/sandbox` 3.x. Run the connectivity preflight inside the deployed runtime or its release job:

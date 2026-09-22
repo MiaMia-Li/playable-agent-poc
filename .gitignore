@@ -68,3 +68,6 @@ opensrc/
 
 # Private Sandbox diagnostics downloaded locally
 .sandbox-logs/
+
+# Private conversation replay datasets and reports
+.requirement-replays/
