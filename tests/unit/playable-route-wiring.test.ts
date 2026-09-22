@@ -28,6 +28,7 @@ const infrastructure = vi.hoisted(() => {
       listOwnedTasks: vi.fn(),
       saveAsset: vi.fn(),
       listAssets: vi.fn(),
+      listMessages: vi.fn(),
       findLatestVideoAnalysis: vi.fn(),
     },
     agent: {
@@ -116,6 +117,7 @@ describe('real playable task route wiring', () => {
     infrastructure.repository.failStaleBuild.mockResolvedValue(false)
     infrastructure.repository.markFailed.mockResolvedValue(true)
     infrastructure.repository.listAssets.mockResolvedValue([])
+    infrastructure.repository.listMessages.mockResolvedValue([])
     infrastructure.repository.findLatestVideoAnalysis.mockResolvedValue(undefined)
     infrastructure.agent.build.mockResolvedValue({
       html: '<script>window.__PLAYABLE__={}</script>',
@@ -186,6 +188,14 @@ describe('real playable task route wiring', () => {
       apiKey: 'sk-shared-key',
       confirmation,
       assets: [],
+      requirementContext: {
+        version: 1,
+        authority: 'confirmed_config_and_revision',
+        requirementBrief: null,
+        userMessages: [],
+        historyTruncated: false,
+        acceptanceTargets: [{ kind: 'gameplay', requirement: confirmation.gameplay }],
+      },
     })
     expect(infrastructure.artifactStore.put).toHaveBeenCalledTimes(4)
     expect(infrastructure.repository.publishArtifact).toHaveBeenCalledWith(
