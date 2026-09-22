@@ -1,4 +1,5 @@
 import { SandboxDiagnostics } from './sandbox-diagnostics'
+import { createBuildRequirementContext, type BuildRequirementContext } from './build-requirement-context'
 import { loadTaskImports, importedSourceEvidence, attachImportedManifest, bindImportedResources } from './task-imports'
 import { bindSourceHtml, selectSourceHtml } from './source-html'
 import { hasIncompatibleModelAssets, playableResourceAssetSlots } from './asset-policy'
@@ -449,6 +450,7 @@ type MediaGenerator = (input: {
 }) => Promise<PlayableBuildAsset[]>
 
 interface ConfirmedBuildDependencies {
+  requirementContext?: BuildRequirementContext
   task: PlayableTaskRecord
   apiKey: string
   mediaApiKey?: string
@@ -1446,6 +1448,17 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       apiKey,
       confirmation: sanitizedConfirmation,
       assets,
+      requirementContext:
+        dependencies.requirementContext ??
+        createBuildRequirementContext(
+          {
+            brief: task.requirementBrief,
+            history: [{ role: 'user', content: task.prompt }],
+            confirmation: sanitizedConfirmation,
+            revision,
+          },
+          activitySecrets,
+        ),
       ...(referenceImages.length ? { referenceImages } : {}),
       ...(referenceKeyframes.length ? { referenceKeyframes } : {}),
       ...(revision ? { revision } : {}),
@@ -2993,9 +3006,10 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (needsGeneratedMedia && !mediaApiKey) {
         return jsonError(503, 'AI media service unavailable')
       }
-      const [assets, gameplayBlueprint] = await Promise.all([
+      const [assets, gameplayBlueprint, requirementMessages] = await Promise.all([
         dependencies.repository.listAssets(access.task.id, access.userId),
         gameplayBlueprintDocumentFor(access.task),
+        dependencies.repository.listMessages(access.task.id),
       ])
       sanitized = bindSourceHtmlResources(
         sanitized,
@@ -3073,6 +3087,18 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
               .length + 1,
         }
       const buildId = dependencies.generateId()
+      const requirementContext = createBuildRequirementContext(
+        {
+          brief: access.task.requirementBrief,
+          history: requirementMessages.map((message) => ({
+            role: message.role === 'agent' ? 'assistant' : 'user',
+            content: conversationContent(message, [apiKey, mediaApiKey ?? '']),
+          })),
+          confirmation: sanitized,
+          revision,
+        },
+        [apiKey, mediaApiKey ?? ''],
+      )
       const claimed = await dependencies.repository.claimBuild(
         access.task.id,
         access.userId,
@@ -3093,6 +3119,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
             dependencies.buildStartedEventTimeoutMs ?? DEFAULT_BUILD_STARTED_EVENT_TIMEOUT_MS,
           )
           return runConfirmedBuild({
+            requirementContext,
             task: claimed,
             apiKey,
             mediaApiKey,

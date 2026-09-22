@@ -58,6 +58,8 @@ import {
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { readRequirementAgentConfig, type RequirementReasoningEffort } from './requirement-agent-config'
+import { BUILD_REQUIREMENT_CONTEXT_PATH, BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
+import { redactSecrets } from './redact'
 import { marketResearchReportSchema } from './research/schemas'
 
 const DEFAULT_MODEL = 'gpt-5.6-sol'
@@ -259,6 +261,13 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     await writeFile(target, file.content)
   }
   await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation, null, 2), 'utf8')
+  if (input.requirementContext) {
+    await writeFile(
+      path.join(workspace, BUILD_REQUIREMENT_CONTEXT_PATH),
+      redactSecrets(JSON.stringify(input.requirementContext, null, 2), [input.apiKey]),
+      'utf8',
+    )
+  }
   if (input.revision) {
     await writeFile(path.join(workspace, 'revision-plan.json'), JSON.stringify(input.revision, null, 2), 'utf8')
   }
@@ -486,6 +495,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               schema: codexOutputSchema(completionSchema),
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
+                BUILD_REQUIREMENT_CONTEXT_PROMPT,
                 PLAYABLE_TOOLS_PROMPT,
                 SOURCE_HTML_BUILD_PROMPT,
                 IMPORTED_ASSETS_PROMPT,
@@ -569,6 +579,8 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         abortSignal: buildSignal,
         schema: codexOutputSchema(completionSchema),
         prompt:
+          BUILD_REQUIREMENT_CONTEXT_PROMPT +
+          '\n' +
           (input.confirmation.sourceTemplateId || input.confirmation.sourceHtmlAssetId
             ? ''
             : RENDERING_BUILD_PROMPT + '\n') +

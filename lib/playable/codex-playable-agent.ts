@@ -49,6 +49,7 @@ import {
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
 import { readRequirementAgentConfig } from './requirement-agent-config'
+import { BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
 import { marketResearchReportSchema } from './research/schemas'
 import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 import { codexValidationInstructions, isPlayableSandboxValidationEnabled } from './validation-policy'
@@ -375,6 +376,7 @@ export async function executeBuildAgent(
         session,
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
+          BUILD_REQUIREMENT_CONTEXT_PROMPT,
           PLAYABLE_TOOLS_PROMPT,
           SOURCE_HTML_BUILD_PROMPT,
           IMPORTED_ASSETS_PROMPT,

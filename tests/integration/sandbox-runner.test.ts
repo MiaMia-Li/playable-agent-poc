@@ -1,4 +1,5 @@
 import { campaignParameters } from '@/lib/playable/campaign-parameters'
+import { createBuildRequirementContext } from '@/lib/playable/build-requirement-context'
 import { createHash } from 'node:crypto'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { exec } from 'node:child_process'
@@ -265,9 +266,16 @@ describe('runPlayableBuild', () => {
       routing: { match: 'freeform', confidence: 1, differences: ['Adapt uploaded HTML'] },
     }
     input.baseHtml = await readFile('public/playable-templates/center_collision.html', 'utf8')
+    input.requirementContext = createBuildRequirementContext({
+      confirmation: input.confirmation,
+      history: [{ role: 'user', content: '保留胜利动画' }],
+    })
     const result = await runPlayableBuild(input, {
       createSandbox: async () => sandbox,
       executeAgent: async ({ workspace }) => {
+        expect(JSON.parse(await readFile(path.join(workspace, 'requirement-context.json'), 'utf8'))).toEqual(
+          input.requirementContext,
+        )
         expect(await readFile(path.join(workspace, 'output.html'), 'utf8')).toBe(input.baseHtml)
         expect(await readFile(path.join(workspace, 'current-playable.html'), 'utf8')).toBe(input.baseHtml)
       },

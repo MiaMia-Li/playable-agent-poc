@@ -3,6 +3,7 @@ import type { ImportedAssetSummary } from './task-imports'
 import type { ImportedFile } from './asset-archive'
 import type { inspectGlb } from './glb'
 import type { BuildActivityCallback } from './build-activity'
+import type { BuildRequirementContext } from './build-requirement-context'
 import type {
   ConfirmationProposal,
   ReferenceImageEvidence,
@@ -169,6 +170,7 @@ export class PlayableAgentError extends Error {
 }
 
 export interface ConfirmedBuildInput {
+  requirementContext?: BuildRequirementContext
   /** 仅取消本轮构建，避免同一任务重试时影响新的执行实例。 */
   abortSignal?: AbortSignal
   /** 远程工作开始前持久化沙箱关联；登记失败时由构建执行器清理沙箱。 */

@@ -1,4 +1,5 @@
 import { triangleGlb } from '../fixtures/glb'
+import { createBuildRequirementContext } from '@/lib/playable/build-requirement-context'
 import { sourceTemplateIds } from '@/lib/playable/types'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -374,6 +375,9 @@ describe('CodexCliPlayableAgent', () => {
   it('runs Codex with workspace writes before delegating the isolated build', async () => {
     const onActivity = vi.fn()
     const invokeCodex = vi.fn(async (invocation) => {
+      const context = JSON.parse(await readFile(path.join(invocation.workspace, 'requirement-context.json'), 'utf8'))
+      expect(context.userMessages[0].text).toBe('保留胜利动画')
+      expect(invocation.prompt).toContain('requirement-context.json')
       const references = JSON.parse(await readFile(path.join(invocation.workspace, 'reference-images.json'), 'utf8'))
       expect(references[0]).toMatchObject({
         sourceVersion: 2,
@@ -405,6 +409,10 @@ describe('CodexCliPlayableAgent', () => {
     const buildRunner = vi.fn(async () => result)
     const input: ConfirmedBuildInput = {
       taskId: 'task-cli-build',
+      requirementContext: createBuildRequirementContext({
+        confirmation: proposal,
+        history: [{ role: 'user', content: '保留胜利动画' }],
+      }),
       assets: [
         {
           id: 'model',
