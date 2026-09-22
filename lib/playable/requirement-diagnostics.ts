@@ -17,6 +17,7 @@ const rules = {
   'Confirmation still has open questions': 'open_questions_remaining',
   'No tool may run after a terminal tool': 'tool_after_terminal',
   'Brief update is missing': 'brief_missing',
+  'Brief list update cannot add and remove the same entry': 'brief_list_conflict',
   'Annotation list is missing': 'annotations_missing',
   'Terminal tool must be the final tool': 'terminal_not_last',
   'Informational response cannot run domain tools': 'informational_has_domain_tools',

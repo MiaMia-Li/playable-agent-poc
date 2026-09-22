@@ -1,4 +1,9 @@
 import { requirementDiagnostic } from './requirement-diagnostics'
+import {
+  applyRequirementBriefPatch,
+  requirementBriefPatchSchema,
+  REQUIREMENT_BRIEF_PATCH_INSTRUCTIONS,
+} from './requirement-brief-patch'
 import { GLB_MIME_TYPE, SVG_MIME_TYPE, MAX_ASSET_BYTES } from './asset-policy'
 import { SVG_ANIMATION_PROMPT } from './svg-animation-policy'
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from './native-template-ui'
@@ -27,11 +32,7 @@ import { DELIVERY_PROFILES, deliveryProfileSnapshot } from './delivery-standards
 
 export const requirementToolNames = [
   'update_requirement_brief',
-  // Separate from update_requirement_brief on purpose. A pure observation
-  // ("second 12 is a long press") changes no requirement, but the instructions
-  // demand that every brief update resend the whole brief, so folding the two
-  // together would force a full brief resend on turns where nothing changed —
-  // spreading the "full resend may silently drop a field" risk to observations.
+  // Observations about the reference stay separate from requested changes.
   'record_gameplay_annotations',
   'inspect_uploaded_assets',
   'list_playable_capabilities',
@@ -51,8 +52,12 @@ export type RequirementToolName = (typeof requirementToolNames)[number]
 export const requirementToolCallSchema = z.strictObject({
   name: z.enum(requirementToolNames),
   // 素材基底和导入清单由宿主绑定，模型工具不能自行指定或替换这些 ID。
-  brief: requirementBriefSchema
-    .omit({ sourceTemplateId: true, sourceHtmlAssetId: true, importedAssetIds: true })
+  brief: z
+    .union([
+      requirementBriefPatchSchema,
+      // Read legacy plans; new model output is restricted to incremental patches.
+      requirementBriefSchema.omit({ sourceTemplateId: true, sourceHtmlAssetId: true, importedAssetIds: true }),
+    ])
     .nullable(),
   annotations: z.array(gameplayAnnotationDraftSchema).max(MAX_GAMEPLAY_ANNOTATIONS).nullable(),
   request: requirementInputRequestSchema.nullable(),
@@ -99,12 +104,7 @@ export const requirementAgentStepOutputSchema = requirementAgentStepSchema.exten
       calls: z
         .array(
           requirementToolCallSchema.extend({
-            brief: requirementBriefSchema
-              .omit({ sourceTemplateId: true, sourceHtmlAssetId: true, importedAssetIds: true })
-              .extend({
-                assets: requirementBriefSchema.shape.assets.extend({ models: z.enum(['unknown', 'none', 'upload']) }),
-              })
-              .nullable(),
+            brief: requirementBriefPatchSchema.nullable(),
             confirmation: generatedConfirmationProposalSchema
               .safeExtend({
                 rendering: renderingDecisionSchema,
@@ -484,7 +484,10 @@ export function executeRequirementToolPlan(input: {
 
     if (call.name === 'update_requirement_brief') {
       if (!call.brief) throw new Error('Brief update is missing')
-      brief = requirementBriefSchema.parse(call.brief)
+      brief =
+        'kind' in call.brief
+          ? applyRequirementBriefPatch(brief, call.brief)
+          : requirementBriefSchema.parse({ ...brief, ...call.brief })
       routeValidated = false
       continue
     }
@@ -639,7 +642,8 @@ export const REQUIREMENT_AGENT_INSTRUCTIONS = [
   'Market research results do not update the requirement brief. Only a supplied referenceSelection represents user-approved research input.',
   'Treat referenceSelection as approved observational evidence while still excluding brands, original assets, trademarks, and original copy.',
   'Never describe public trend evidence as CTR, CVR, IPM, ROAS, conversion proof, or performance proof.',
-  'Every requirement turn must call update_requirement_brief with the full latest brief, then end with exactly one terminal call: ask_user, submit_confirmation, or submit_revision.',
+  'Every requirement turn must call update_requirement_brief with an incremental patch, then end with exactly one terminal call: ask_user, submit_confirmation, or submit_revision.',
+  REQUIREMENT_BRIEF_PATCH_INSTRUCTIONS,
   'Separate what the user says the reference video contains from what the user wants built. A statement about what objectively happens in the video is an annotation; a statement about what the result should be belongs in the brief. A timestamp makes an annotation likely but does not settle it.',
   '“第 12 秒那个不是点击，是长按 0.5 秒” is an annotation. “节奏整体要比它快一点” is a brief change. “第 12 秒那个连锁特效，我想要更夸张一点” is both: record the annotation that a chain effect occurs at 12s, and update the brief to ask for a stronger one.',
   'Call record_gameplay_annotations with the complete list of chat annotations whenever the user states something about the reference video in chat, including chat annotations already recorded in earlier turns. Omitting a previously recorded chat annotation deletes it. Each annotation needs the statement and the time range it refers to. Do not invent annotations the user did not state, and do not restate model inferences from gameplayBlueprint as annotations.',
