@@ -305,7 +305,12 @@ describe('runPlayableBuild', () => {
 
   it('retains failed workspace command diagnostics after destroying the sandbox', async () => {
     const sandbox = await createLocalSandbox()
-    vi.spyOn(sandbox, 'run').mockResolvedValue({ exitCode: 127, stdout: '', stderr: 'cp not found sk-private-test' })
+    const run = sandbox.run.bind(sandbox)
+    vi.spyOn(sandbox, 'run').mockImplementation((options) =>
+      options.command === 'cp -R skill-master work'
+        ? Promise.resolve({ exitCode: 127, stdout: '', stderr: 'cp not found sk-private-test' })
+        : run(options),
+    )
     const failure = await runPlayableBuild(buildInput('center_collision', 'sk-private-test'), {
       createSandbox: async () => sandbox,
       executeAgent: vi.fn(),
