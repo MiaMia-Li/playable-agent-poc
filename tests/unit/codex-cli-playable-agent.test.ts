@@ -99,6 +99,18 @@ afterEach(() => {
 })
 
 describe('CodexCliPlayableAgent', () => {
+  it('honors an externally cancelled requirement request before invoking Codex', async () => {
+    const invokeCodex = vi.fn()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation(
+        { taskId: 'cancelled-replay', apiKey: 'local-marker', prompt: '修改文案' },
+        { abortSignal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(invokeCodex).not.toHaveBeenCalled()
+  })
   it.each(
     [
       {
@@ -136,53 +148,57 @@ describe('CodexCliPlayableAgent', () => {
     expect(invokeCodex.mock.calls[1][0].prompt).toContain('previous plan was rejected')
   })
 
-  it('uses a read-only Codex invocation and validates the structured proposal', async () => {
-    const invokeCodex = vi.fn(async (...args: unknown[]) => {
-      const invocation = args[0] as {
-        onEvent?: (event: { type: string; item: { type: string; text: string } }) => void
-      }
-      invocation.onEvent?.({
-        type: 'item.completed',
-        item: { type: 'reasoning', text: '正在整理需求与实现路线。' },
+  it.each([undefined, 'medium'] as const)(
+    'uses configured reasoning (%s) in a read-only Codex invocation',
+    async (effort) => {
+      vi.stubEnv('PLAYABLE_REQUIREMENT_REASONING_EFFORT', effort)
+      const invokeCodex = vi.fn(async (...args: unknown[]) => {
+        const invocation = args[0] as {
+          onEvent?: (event: { type: string; item: { type: string; text: string } }) => void
+        }
+        invocation.onEvent?.({
+          type: 'item.completed',
+          item: { type: 'reasoning', text: '正在整理需求与实现路线。' },
+        })
+        return confirmationPlan
       })
-      return confirmationPlan
-    })
-    const agent = new CodexCliPlayableAgent({ invokeCodex })
-    const onProgress = vi.fn()
+      const agent = new CodexCliPlayableAgent({ invokeCodex })
+      const onProgress = vi.fn()
 
-    await expect(
-      agent.proposeConfirmation(
-        {
-          taskId: 'task-cli',
-          prompt: '做一个中心碰撞玩法',
-          apiKey: 'local-marker',
-          attachedAssetIds: ['current-video'],
-        },
-        { onProgress },
-      ),
-    ).resolves.toMatchObject(confirmationReply)
+      await expect(
+        agent.proposeConfirmation(
+          {
+            taskId: 'task-cli',
+            prompt: '做一个中心碰撞玩法',
+            apiKey: 'local-marker',
+            attachedAssetIds: ['current-video'],
+          },
+          { onProgress },
+        ),
+      ).resolves.toMatchObject(confirmationReply)
 
-    expect(invokeCodex).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sandbox: 'read-only',
-        reasoningEffort: 'low',
-        prompt: expect.stringContaining('<conversation-context>'),
-      }),
-    )
-    const calls = invokeCodex.mock.calls as unknown as Array<[{ schema: Record<string, unknown>; prompt: string }]>
-    const invocation = calls[0][0]
-    expect(JSON.stringify(invocation.schema)).not.toContain('"oneOf"')
-    expect(invocation.prompt).toContain('domain tools')
-    expect(invocation.prompt).toContain('respond_to_user')
-    expect(invocation.prompt).toContain('present_market_research')
-    expect(invocation.prompt).toContain('not from keywords or fixed query categories')
-    expect(invocation.prompt).toContain('update_requirement_brief')
-    expect(invocation.prompt).toContain('exact when a template fully covers')
-    expect(invocation.prompt).toContain('freeform')
-    expect(invocation.prompt).toContain('AI media generation is unavailable')
-    expect(invocation.prompt).toContain('"attachedAssetIds":["current-video"]')
-    expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在整理需求与实现路线。' })
-  })
+      expect(invokeCodex).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandbox: 'read-only',
+          reasoningEffort: effort ?? 'high',
+          prompt: expect.stringContaining('<conversation-context>'),
+        }),
+      )
+      const calls = invokeCodex.mock.calls as unknown as Array<[{ schema: Record<string, unknown>; prompt: string }]>
+      const invocation = calls[0][0]
+      expect(JSON.stringify(invocation.schema)).not.toContain('"oneOf"')
+      expect(invocation.prompt).toContain('domain tools')
+      expect(invocation.prompt).toContain('respond_to_user')
+      expect(invocation.prompt).toContain('present_market_research')
+      expect(invocation.prompt).toContain('not from keywords or fixed query categories')
+      expect(invocation.prompt).toContain('update_requirement_brief')
+      expect(invocation.prompt).toContain('exact when a template fully covers')
+      expect(invocation.prompt).toContain('freeform')
+      expect(invocation.prompt).toContain('AI media generation is unavailable')
+      expect(invocation.prompt).toContain('"attachedAssetIds":["current-video"]')
+      expect(onProgress).toHaveBeenCalledWith({ reasoning: '正在整理需求与实现路线。' })
+    },
+  )
 
   it('uses the same multi-step reference analysis loop and reports failed tool execution', async () => {
     const toolCall = {
@@ -302,7 +318,9 @@ describe('CodexCliPlayableAgent', () => {
     expect(calls[1][0].prompt).toContain('"runId":"cli-research-run"')
   })
 
-  it('stops after six model steps when analysis never reaches a terminal reply', async () => {
+  it.each([undefined, '3'])('stops at the configured budget (%s) without a terminal reply', async (configuredSteps) => {
+    vi.stubEnv('PLAYABLE_REQUIREMENT_MAX_STEPS', configuredSteps)
+    const expectedSteps = configuredSteps ? Number(configuredSteps) : 20
     const invokeCodex = vi.fn(async () => ({
       kind: 'tool_calls',
       message: null,
@@ -317,10 +335,40 @@ describe('CodexCliPlayableAgent', () => {
         { taskId: 'task-cli-step-limit', prompt: '持续分析', apiKey: 'local-marker' },
         { executeTool },
       ),
-    ).rejects.toMatchObject({ code: 'output_invalid' })
+    ).rejects.toMatchObject({
+      code: 'output_invalid',
+      diagnostic: { stage: 'step_limit', step: expectedSteps, rule: 'step_limit_reached' },
+    })
 
-    expect(invokeCodex).toHaveBeenCalledTimes(6)
+    expect(invokeCodex).toHaveBeenCalledTimes(expectedSteps)
     expect(executeTool).toHaveBeenCalledOnce()
+  })
+
+  it('can finish on the final allowed decision after more than six steps', async () => {
+    vi.stubEnv('PLAYABLE_REQUIREMENT_MAX_STEPS', '7')
+    let step = 0
+    const invokeCodex = vi.fn(async () =>
+      ++step === 7
+        ? confirmationPlan
+        : {
+            kind: 'tool_calls',
+            message: null,
+            reasoning: '查看参考版本',
+            plan: null,
+            toolCalls: [
+              { name: 'read_playable_version', version: step, assetIds: [], assetId: null, searchBrief: null },
+            ],
+          },
+    )
+    const executeTool = vi.fn(async () => ({ status: 'completed' }))
+    await expect(
+      new CodexCliPlayableAgent({ invokeCodex }).proposeConfirmation(
+        { taskId: 'long-requirement', prompt: '比较参考版本后整理需求', apiKey: 'local-marker' },
+        { executeTool },
+      ),
+    ).resolves.toMatchObject(confirmationReply)
+    expect(invokeCodex).toHaveBeenCalledTimes(7)
+    expect(executeTool).toHaveBeenCalledTimes(6)
   })
 
   it('runs Codex with workspace writes before delegating the isolated build', async () => {

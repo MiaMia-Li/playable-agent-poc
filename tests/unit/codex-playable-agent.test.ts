@@ -522,52 +522,56 @@ describe('CodexPlayableAgent', () => {
     ).rejects.toMatchObject({ code: 'stream_failed' })
   })
 
-  it('uses the direct Responses API with low-latency structured output and no Sandbox', async () => {
-    const apiKey = 'sk-unit-test-only'
-    const input: AgentInput = {
-      taskId: 'task-1',
-      prompt: `中心碰撞 ${apiKey}`,
-      apiKey,
-      attachedAssetIds: ['current-image'],
-    }
-    const agent = new CodexPlayableAgent()
-    const onProgress = vi.fn()
+  it.each([undefined, 'medium'] as const)(
+    'uses configured reasoning (%s) with structured output and no Sandbox',
+    async (effort) => {
+      vi.stubEnv('PLAYABLE_REQUIREMENT_REASONING_EFFORT', effort)
+      const apiKey = 'sk-unit-test-only'
+      const input: AgentInput = {
+        taskId: 'task-1',
+        prompt: `中心碰撞 ${apiKey}`,
+        apiKey,
+        attachedAssetIds: ['current-image'],
+      }
+      const agent = new CodexPlayableAgent()
+      const onProgress = vi.fn()
 
-    await expect(agent.proposeConfirmation(input, { onProgress })).resolves.toMatchObject(confirmationReply)
+      await expect(agent.proposeConfirmation(input, { onProgress })).resolves.toMatchObject(confirmationReply)
 
-    expect(responseMocks.createOpenAI).toHaveBeenCalledWith({
-      apiKey,
-      baseURL: 'https://openrouter.ai/api/v1',
-    })
-    expect(responseMocks.responses).toHaveBeenCalledWith('openai/gpt-5.6-sol')
-    const settings = responseMocks.streamText.mock.calls[0][0] as {
-      model: unknown
-      instructions: string
-      prompt: string
-      providerOptions: { openai: Record<string, unknown> }
-    }
-    expect(settings.model).toBe(responseMocks.model)
-    expect(settings.instructions).toContain('domain tools')
-    expect(settings.instructions).toContain('respond_to_user')
-    expect(settings.instructions).toContain('present_market_research')
-    expect(settings.instructions).toContain('not from keywords or fixed query categories')
-    expect(settings.instructions).toContain('update_requirement_brief')
-    expect(settings.instructions).toContain('validate_implementation_route')
-    expect(settings.instructions).toContain('freeform')
-    expect(settings.instructions).toContain('AI media generation is unavailable')
-    expect(settings.providerOptions.openai).toEqual({
-      forceReasoning: true,
-      reasoningEffort: 'low',
-      reasoningSummary: 'auto',
-      store: false,
-      strictJsonSchema: true,
-    })
-    expect(settings.prompt).not.toContain(apiKey)
-    expect(settings.prompt).toContain('"attachedAssetIds":["current-image"]')
-    expect(onProgress).toHaveBeenCalledWith({ message: confirmationOutput.message, reasoning: undefined })
-    expect(harnessMocks.createVercelSandbox).not.toHaveBeenCalled()
-    expect(harnessMocks.createSession).not.toHaveBeenCalled()
-  })
+      expect(responseMocks.createOpenAI).toHaveBeenCalledWith({
+        apiKey,
+        baseURL: 'https://openrouter.ai/api/v1',
+      })
+      expect(responseMocks.responses).toHaveBeenCalledWith('openai/gpt-5.6-sol')
+      const settings = responseMocks.streamText.mock.calls[0][0] as {
+        model: unknown
+        instructions: string
+        prompt: string
+        providerOptions: { openai: Record<string, unknown> }
+      }
+      expect(settings.model).toBe(responseMocks.model)
+      expect(settings.instructions).toContain('domain tools')
+      expect(settings.instructions).toContain('respond_to_user')
+      expect(settings.instructions).toContain('present_market_research')
+      expect(settings.instructions).toContain('not from keywords or fixed query categories')
+      expect(settings.instructions).toContain('update_requirement_brief')
+      expect(settings.instructions).toContain('validate_implementation_route')
+      expect(settings.instructions).toContain('freeform')
+      expect(settings.instructions).toContain('AI media generation is unavailable')
+      expect(settings.providerOptions.openai).toEqual({
+        forceReasoning: true,
+        reasoningEffort: effort ?? 'high',
+        reasoningSummary: 'auto',
+        store: false,
+        strictJsonSchema: true,
+      })
+      expect(settings.prompt).not.toContain(apiKey)
+      expect(settings.prompt).toContain('"attachedAssetIds":["current-image"]')
+      expect(onProgress).toHaveBeenCalledWith({ message: confirmationOutput.message, reasoning: undefined })
+      expect(harnessMocks.createVercelSandbox).not.toHaveBeenCalled()
+      expect(harnessMocks.createSession).not.toHaveBeenCalled()
+    },
+  )
 
   it('executes reference analysis tools and supplies their structured results to the next model step', async () => {
     const toolCall = {
@@ -905,7 +909,9 @@ describe('CodexPlayableAgent', () => {
   )
 
   // 持续返回合法工具调用但不结束，也应被识别为轮数耗尽，而非字段格式错误。
-  it('records step exhaustion separately from invalid output', async () => {
+  it.each([undefined, '3'])('records step exhaustion at the configured budget (%s)', async (configuredSteps) => {
+    vi.stubEnv('PLAYABLE_REQUIREMENT_MAX_STEPS', configuredSteps)
+    const expectedSteps = configuredSteps ? Number(configuredSteps) : 20
     responseMocks.streamText.mockImplementation(
       () =>
         ({
@@ -927,9 +933,40 @@ describe('CodexPlayableAgent', () => {
       ),
     ).rejects.toMatchObject({
       code: 'output_invalid',
-      diagnostic: { stage: 'step_limit', step: 6, rule: 'step_limit_reached' },
+      diagnostic: { stage: 'step_limit', step: expectedSteps, rule: 'step_limit_reached' },
     })
-    expect(responseMocks.streamText).toHaveBeenCalledTimes(6)
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(expectedSteps)
+  })
+
+  it('can finish on the final allowed decision after more than six steps', async () => {
+    vi.stubEnv('PLAYABLE_REQUIREMENT_MAX_STEPS', '7')
+    let step = 0
+    responseMocks.streamText.mockImplementation(() => ({
+      fullStream: (async function* () {})(),
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve(
+        ++step === 7
+          ? confirmationOutput
+          : {
+              kind: 'tool_calls',
+              message: null,
+              reasoning: '查看参考版本',
+              plan: null,
+              toolCalls: [
+                { name: 'read_playable_version', version: step, assetIds: [], assetId: null, searchBrief: null },
+              ],
+            },
+      ),
+    }))
+    const executeTool = vi.fn(async () => ({ status: 'completed' }))
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'long-requirement', prompt: '比较参考版本后整理需求', apiKey: 'unit-key' },
+        { executeTool },
+      ),
+    ).resolves.toMatchObject(confirmationReply)
+    expect(responseMocks.streamText).toHaveBeenCalledTimes(7)
+    expect(executeTool).toHaveBeenCalledTimes(6)
   })
 
   it('rejects an empty API key before creating an OpenAI provider', async () => {
@@ -941,6 +978,18 @@ describe('CodexPlayableAgent', () => {
       }),
     ).rejects.toThrow('API key is required')
     expect(responseMocks.createOpenAI).not.toHaveBeenCalled()
+  })
+
+  it('honors an externally cancelled requirement request before invoking the model', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      new CodexPlayableAgent().proposeConfirmation(
+        { taskId: 'cancelled-replay', apiKey: 'unit-key', prompt: '修改文案' },
+        { abortSignal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(responseMocks.streamText).not.toHaveBeenCalled()
   })
 
   it('delegates an already validated confirmation to the isolated build runner', async () => {

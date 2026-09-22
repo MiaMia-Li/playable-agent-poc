@@ -60,12 +60,16 @@ SANDBOX_VERCEL_PROJECT_ID=
 MAX_SANDBOX_DURATION=300
 OPENROUTER_API_KEY=
 PLAYABLE_AGENT_MODEL=openai/gpt-5.6-sol
+PLAYABLE_REQUIREMENT_MAX_STEPS=20
+PLAYABLE_REQUIREMENT_REASONING_EFFORT=high
 PLAYABLE_SANDBOX_VALIDATION_ENABLED=1
 LOCAL_HARNESS_MODE=0
 LOCAL_CODEX_MODE=0
 ```
 
 Set `OPENROUTER_API_KEY` in `.env.local` for local server use and in the deployment secret manager for production. Do not commit its value. Tasks and uploaded assets are intentionally shared by all visitors in this public POC.
+
+The requirement agent defaults to at most 20 model decisions per user message with `high` reasoning effort, in both production and local Codex CLI mode. Set `PLAYABLE_REQUIREMENT_MAX_STEPS` to a positive safe integer and `PLAYABLE_REQUIREMENT_REASONING_EFFORT` to `low`, `medium`, or `high` to override them. Missing or invalid values fall back to the defaults. Tool-analysis steps and structured-output repair attempts share this step budget; a terminal reply ends the loop early. Higher limits and reasoning effort can increase response latency and model usage. These settings do not change build-agent reasoning effort.
 
 `PLAYABLE_SANDBOX_VALIDATION_ENABLED` defaults to enabled. Set it to `0` to skip the host behavioral validation command, the Codex browser-acceptance phase, and its temporary validation checklist when diagnosing build latency. The platform still checks the artifact contract, offline resources, responsive layout, and credentials before publishing an artifact.
 

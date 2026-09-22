@@ -124,8 +124,6 @@ export const requirementAgentStepOutputSchema = requirementAgentStepSchema.exten
     .nullable(),
 })
 
-export const MAX_REQUIREMENT_AGENT_STEPS = 6
-
 export type RequirementAgentStep =
   | { kind: 'tool_calls'; toolCalls: RequirementAnalysisToolCall[] }
   | { kind: 'terminal'; plan: RequirementAgentPlan }
