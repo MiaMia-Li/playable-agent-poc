@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { SandboxDiagnostics } from './sandbox-diagnostics'
 import { attachImportedManifest } from './task-imports'
 import { importedRuntimePreparationCommand } from './imported-runtime'
 import { safeImportPath } from './asset-archive'
@@ -90,6 +91,7 @@ export type PlayableBuildExecutionStage =
 
 export class PlayableBuildExecutionError extends Error {
   readonly reason?: HostCheckReason
+  diagnostic?: ReturnType<SandboxDiagnostics['snapshot']>
 
   constructor(
     readonly stage: PlayableBuildExecutionStage,
@@ -198,9 +200,11 @@ export async function createPlayableSandbox(taskId: string, abortSignal?: AbortS
     // 同一任务的重试也使用独立名称，避免旧沙箱的检查或清理影响新沙箱。
     const sandbox = await provider.createSession({ sessionId: `${taskId}-${randomUUID()}`, abortSignal })
     if (snapshotId) {
+      const diagnostics = new SandboxDiagnostics()
+      const observed = diagnostics.observe(sandbox, () => 'sandbox_create')
       try {
         // 仅做轻量就绪检查，不重新安装或启动浏览器；玩法验收仍由后续 Agent 执行。
-        const check = await sandbox.run({
+        const check = await observed.run({
           command: PLAYABLE_TOOLS_CHECK,
           env: { PLAYABLE_TOOLS_EXPECTED_VERSION: PLAYABLE_SANDBOX_TOOLS_VERSION },
           abortSignal,
@@ -209,7 +213,9 @@ export async function createPlayableSandbox(taskId: string, abortSignal?: AbortS
       } catch (error) {
         // 不兼容时清理副本并报错，不静默退回重复安装，避免掩盖配置问题和构建耗时。
         await Promise.resolve(sandbox.destroy()).catch(() => undefined)
-        throw error
+        const failure = new PlayableBuildExecutionError('sandbox_create', error)
+        failure.diagnostic = diagnostics.snapshot('sandbox_create', error, sandbox.id)
+        throw failure
       }
     }
     return sandbox
@@ -252,9 +258,10 @@ export async function runPlayableBuild(
   let sandbox: PlayableSandbox | undefined
   let operationError: unknown
   let stage: PlayableBuildExecutionStage = 'sandbox_create'
+  const diagnostics = new SandboxDiagnostics([input.apiKey])
 
   try {
-    sandbox = await createSandbox(input.taskId, dependencies.abortSignal)
+    sandbox = diagnostics.observe(await createSandbox(input.taskId, dependencies.abortSignal), () => stage)
     // 先登记再执行命令；登记失败会进入 finally 销毁沙箱，避免留下未被追踪的执行实例。
     if (input.onSandboxReady) {
       if (!sandbox.id) throw new Error('Build sandbox identity is missing')
@@ -841,7 +848,9 @@ export async function runPlayableBuild(
         output: JSON.stringify({ stage, reason: error.reason, ...error.detail }, null, 2),
       })
     }
-    throw error instanceof PlayableBuildExecutionError ? error : new PlayableBuildExecutionError(stage, error)
+    const failure = error instanceof PlayableBuildExecutionError ? error : new PlayableBuildExecutionError(stage, error)
+    failure.diagnostic ??= diagnostics.snapshot(stage, error, sandbox?.id)
+    throw failure
   } finally {
     if (sandbox) {
       try {

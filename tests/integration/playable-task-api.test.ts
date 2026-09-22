@@ -4293,6 +4293,28 @@ describe('playable task API', () => {
     expect(JSON.stringify(harness.repository.events)).not.toContain('private host check details')
   })
 
+  it('still records build failure when private diagnostics cannot be saved', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'building'
+    task.confirmation = confirmation
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.mocked(harness.agent.build).mockRejectedValueOnce(
+      new PlayableBuildExecutionError('workspace', new Error('private setup failure')),
+    )
+    vi.mocked(harness.artifactStore.put).mockRejectedValueOnce(new Error('storage unavailable'))
+    await runConfirmedBuild({
+      task,
+      apiKey: 'sk-test-secret',
+      buildId: 'diagnostic-storage-failure',
+      repository: harness.repository,
+      agent: harness.agent,
+      artifactStore: harness.artifactStore,
+    })
+    expect(harness.repository.tasks.get('owned')!.phase).toBe('failed')
+    expect(JSON.stringify(harness.repository.events)).not.toContain('private setup failure')
+    expect(console.error).toHaveBeenCalledWith('Unable to save Sandbox failure diagnostics')
+  })
+
   it('logs the fixed Sandbox stage for unclassified execution failures', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'building'
@@ -4316,6 +4338,12 @@ describe('playable task API', () => {
     })
     expect(errorSpy).toHaveBeenCalledWith('Playable build failed in Sandbox stage:', 'artifact_check')
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('private read failure')
+    expect(harness.artifactStore.put).toHaveBeenCalledWith(
+      expect.stringContaining('/unclassified-sandbox-failure-build/sandbox-diagnostics.json'),
+      expect.stringContaining('private read failure'),
+      'application/json',
+    )
+    expect(JSON.stringify(harness.repository.events)).not.toContain('private read failure')
   })
 
   it('rejects credential-bearing build output before writing any artifact', async () => {

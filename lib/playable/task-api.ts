@@ -1,3 +1,4 @@
+import { SandboxDiagnostics } from './sandbox-diagnostics'
 import { loadTaskImports, importedSourceEvidence, attachImportedManifest, bindImportedResources } from './task-imports'
 import { bindSourceHtml, selectSourceHtml } from './source-html'
 import { hasIncompatibleModelAssets, playableResourceAssetSlots } from './asset-policy'
@@ -1537,6 +1538,19 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
     timing.finish()
     await activityQueue
     logConfirmedBuildFailure(stage, cause)
+    if (cause instanceof PlayableBuildExecutionError) {
+      try {
+        const diagnostic = cause.diagnostic ?? new SandboxDiagnostics(activitySecrets).snapshot(cause.stage, cause)
+        await artifactStore.put(
+          `${artifactPrefix(task, buildId)}/sandbox-diagnostics.json`,
+          JSON.stringify(diagnostic, null, 2),
+          'application/json',
+        )
+        console.error('Sandbox failure diagnostics saved to private storage')
+      } catch {
+        console.error('Unable to save Sandbox failure diagnostics')
+      }
+    }
     await recordBuildFailure(repository, task.id, buildId, buildFailureMessage(stage, cause))
   } finally {
     timing.finish()
