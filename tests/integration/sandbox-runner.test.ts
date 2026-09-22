@@ -301,6 +301,22 @@ describe('runPlayableBuild', () => {
     expect(sandbox.destroyed).toBe(false)
   })
 
+  it('retains failed workspace command diagnostics after destroying the sandbox', async () => {
+    const sandbox = await createLocalSandbox()
+    vi.spyOn(sandbox, 'run').mockResolvedValue({ exitCode: 127, stdout: '', stderr: 'cp not found sk-private-test' })
+    const failure = await runPlayableBuild(buildInput('center_collision', 'sk-private-test'), {
+      createSandbox: async () => sandbox,
+      executeAgent: vi.fn(),
+    }).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(PlayableBuildExecutionError)
+    expect((failure as PlayableBuildExecutionError).diagnostic?.commands[0]).toMatchObject({
+      stage: 'workspace',
+      exitCode: 127,
+      stderr: 'cp not found [REDACTED]',
+    })
+    expect(sandbox.destroyed).toBe(true)
+  })
+
   it.each(['center_collision', 'top_rack', 'gravity_fill', 'perspective_3d'] as const)(
     'copies and validates an isolated %s Skill build with deterministic local commands',
     async (mode) => {
