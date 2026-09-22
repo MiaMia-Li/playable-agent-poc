@@ -10,6 +10,7 @@
     "local:codex": "LOCAL_CODEX_MODE=1 next dev --webpack",
     "smoke:local-codex": "LOCAL_CODEX_MODE=1 node --env-file=.env.local --import tsx scripts/smoke-local-codex.ts",
     "check:sandbox-connectivity": "tsx scripts/check-vercel-sandbox-connectivity.ts",
+    "sandbox:logs": "node --import tsx scripts/sandbox-logs.ts",
     "sandbox:prepare-playable": "tsx scripts/prepare-playable-sandbox.ts",
     "check:gemini-video": "node --env-file=.env.local --import tsx scripts/check-gemini-video-analysis.ts",
     "check:gemini-slowed-clip": "node --env-file=.env.local --import tsx scripts/check-gemini-slowed-clip.ts",

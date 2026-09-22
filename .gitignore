@@ -65,3 +65,6 @@ Thumbs.db
 
 # opensrc - source code for packages
 opensrc/
+
+# Private Sandbox diagnostics downloaded locally
+.sandbox-logs/
