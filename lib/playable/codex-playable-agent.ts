@@ -42,13 +42,14 @@ import { PlayableBuildExecutionError, runPlayableBuild, type PlayableSandbox } f
 import {
   executeRequirementAnalysisTools,
   executeRequirementToolPlan,
-  MAX_REQUIREMENT_AGENT_STEPS,
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
   requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
+import { readRequirementAgentConfig } from './requirement-agent-config'
+import { BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
 import { marketResearchReportSchema } from './research/schemas'
 import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 import { codexValidationInstructions, isPlayableSandboxValidationEnabled } from './validation-policy'
@@ -186,6 +187,7 @@ async function createProposal(
   options?: AgentReplyOptions,
 ): Promise<PlayableAgentReply> {
   const openai = createPlayableAIProvider(input.apiKey)
+  const { maxSteps, reasoningEffort } = readRequirementAgentConfig()
   const baseContext = {
     history: input.history ?? [],
     currentConfirmation: input.confirmation ?? null,
@@ -217,7 +219,8 @@ async function createProposal(
   const toolCache = new Map<string, RequirementAnalysisToolResult>()
   let repairInstructions: string | undefined
 
-  for (let stepNumber = 0; stepNumber < MAX_REQUIREMENT_AGENT_STEPS; stepNumber += 1) {
+  for (let stepNumber = 0; stepNumber < maxSteps; stepNumber += 1) {
+    abortSignal.throwIfAborted()
     let serializedContext: string
     try {
       serializedContext = JSON.stringify({ ...baseContext, toolResults })
@@ -237,7 +240,7 @@ async function createProposal(
       providerOptions: {
         openai: {
           forceReasoning: true,
-          reasoningEffort: 'low',
+          reasoningEffort,
           reasoningSummary: 'auto',
           store: false,
           strictJsonSchema: true,
@@ -315,7 +318,7 @@ async function createProposal(
         error instanceof PlayableAgentError && error.diagnostic
           ? { ...error.diagnostic, step: stepNumber + 1 }
           : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
-      if (!repairInstructions && stepNumber + 1 < MAX_REQUIREMENT_AGENT_STEPS) {
+      if (!repairInstructions && stepNumber + 1 < maxSteps) {
         repairInstructions = requirementRepairInstructions(diagnostic)
         if (repairInstructions) continue
       }
@@ -325,7 +328,7 @@ async function createProposal(
 
   throw new PlayableAgentError(
     'output_invalid',
-    requirementDiagnostic(undefined, 'step_limit', MAX_REQUIREMENT_AGENT_STEPS, requirementAgentStepOutputSchema),
+    requirementDiagnostic(undefined, 'step_limit', maxSteps, requirementAgentStepOutputSchema),
   )
 }
 
@@ -373,6 +376,7 @@ export async function executeBuildAgent(
         session,
         // 所有远程构建路线都先告知预装入口，避免 Agent 再次下载 Playwright 和浏览器。
         prompt: [
+          BUILD_REQUIREMENT_CONTEXT_PROMPT,
           PLAYABLE_TOOLS_PROMPT,
           SOURCE_HTML_BUILD_PROMPT,
           IMPORTED_ASSETS_PROMPT,
@@ -566,7 +570,11 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
     const controller = new AbortController()
     this.activeTasks.set(input.taskId, controller)
     try {
-      return await createProposal(input, controller.signal, options)
+      const signal = options?.abortSignal
+        ? AbortSignal.any([controller.signal, options.abortSignal])
+        : controller.signal
+      signal.throwIfAborted()
+      return await createProposal(input, signal, options)
     } finally {
       this.activeTasks.delete(input.taskId)
     }

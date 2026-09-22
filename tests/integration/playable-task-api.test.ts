@@ -2906,6 +2906,25 @@ describe('playable task API', () => {
     expect(invalid.status).toBe(400)
   })
 
+  it('freezes the requirement handoff at confirmation before later messages arrive', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'awaiting_confirmation'
+    task.requirementBrief = { ...createRequirementBrief(), constraints: ['保留胜利动画'] }
+    await harness.repository.appendMessage('owned', 'user', '按钮改红，保留胜利动画 sk-test-secret')
+    const response = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', { confirmation }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(response.status).toBe(202)
+    await harness.repository.appendMessage('owned', 'user', '后续想法：全部重做')
+    task.requirementBrief.constraints.push('后续约束')
+    await harness.scheduled[0]()
+    const input = vi.mocked(harness.agent.build).mock.lastCall![0]
+    expect(input.requirementContext?.requirementBrief?.constraints).toEqual(['保留胜利动画'])
+    expect(input.requirementContext?.userMessages.at(-1)?.text).toBe('按钮改红，保留胜利动画 [REDACTED]')
+    expect(JSON.stringify(input.requirementContext)).not.toContain('后续')
+  })
+
   it('requires each 用户上传 resource to have task-owned metadata in the same explicit slot', async () => {
     const uploadedAudio = {
       ...confirmation,

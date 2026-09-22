@@ -51,13 +51,15 @@ import { logExternalRequestError } from './external-request-logging'
 import {
   executeRequirementAnalysisTools,
   executeRequirementToolPlan,
-  MAX_REQUIREMENT_AGENT_STEPS,
   parseRequirementAgentStep,
   playableCapabilitiesForAgent,
   REQUIREMENT_AGENT_INSTRUCTIONS,
   requirementAgentStepOutputSchema,
   type RequirementAnalysisToolResult,
 } from './requirement-tools'
+import { readRequirementAgentConfig, type RequirementReasoningEffort } from './requirement-agent-config'
+import { BUILD_REQUIREMENT_CONTEXT_PATH, BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
+import { redactSecrets } from './redact'
 import { marketResearchReportSchema } from './research/schemas'
 
 const DEFAULT_MODEL = 'gpt-5.6-sol'
@@ -84,7 +86,7 @@ export interface CodexInvocation {
   schema: Record<string, unknown>
   abortSignal?: AbortSignal
   sandbox: 'read-only' | 'workspace-write'
-  reasoningEffort: 'low' | 'medium'
+  reasoningEffort: RequirementReasoningEffort
   onEvent?: (event: CodexJsonEvent) => void
   images?: string[]
 }
@@ -259,6 +261,13 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     await writeFile(target, file.content)
   }
   await writeFile(path.join(workspace, 'confirmed-config.json'), JSON.stringify(input.confirmation, null, 2), 'utf8')
+  if (input.requirementContext) {
+    await writeFile(
+      path.join(workspace, BUILD_REQUIREMENT_CONTEXT_PATH),
+      redactSecrets(JSON.stringify(input.requirementContext, null, 2), [input.apiKey]),
+      'utf8',
+    )
+  }
   if (input.revision) {
     await writeFile(path.join(workspace, 'revision-plan.json'), JSON.stringify(input.revision, null, 2), 'utf8')
   }
@@ -348,19 +357,24 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
   }
 
   async proposeConfirmation(input: AgentInput, options?: AgentReplyOptions): Promise<PlayableAgentReply> {
+    const { maxSteps, reasoningEffort } = readRequirementAgentConfig()
     const controller = new AbortController()
+    const abortSignal = options?.abortSignal
+      ? AbortSignal.any([controller.signal, options.abortSignal])
+      : controller.signal
     this.activeTasks.set(input.taskId, controller)
     const workspace = await mkdtemp(path.join(os.tmpdir(), 'playable-codex-proposal-'))
     try {
       const toolResults: RequirementAnalysisToolResult[] = []
       const toolCache = new Map<string, RequirementAnalysisToolResult>()
       let repairInstructions: string | undefined
-      for (let stepNumber = 0; stepNumber < MAX_REQUIREMENT_AGENT_STEPS; stepNumber += 1) {
+      for (let stepNumber = 0; stepNumber < maxSteps; stepNumber += 1) {
+        abortSignal.throwIfAborted()
         const result = await this.invokeCodex({
           workspace,
           sandbox: 'read-only',
-          reasoningEffort: 'low',
-          abortSignal: controller.signal,
+          reasoningEffort,
+          abortSignal,
           schema: requirementPlanOutputSchema(),
           prompt: [
             createRequirementAgentPrompt(input, toolResults),
@@ -392,7 +406,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             validationStage = 'analysis_tools'
             const executed = await executeRequirementAnalysisTools({
               calls: step.toolCalls,
-              options: { ...options, abortSignal: controller.signal },
+              options: { ...options, abortSignal },
               cache: toolCache,
             })
             toolResults.push(...executed)
@@ -419,7 +433,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
             error instanceof PlayableAgentError && error.diagnostic
               ? { ...error.diagnostic, step: stepNumber + 1 }
               : requirementDiagnostic(error, validationStage, stepNumber + 1, requirementAgentStepOutputSchema)
-          if (!repairInstructions && stepNumber + 1 < MAX_REQUIREMENT_AGENT_STEPS) {
+          if (!repairInstructions && stepNumber + 1 < maxSteps) {
             repairInstructions = requirementRepairInstructions(diagnostic)
             if (repairInstructions) continue
           }
@@ -428,7 +442,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
       }
       throw new PlayableAgentError(
         'output_invalid',
-        requirementDiagnostic(undefined, 'step_limit', MAX_REQUIREMENT_AGENT_STEPS, requirementAgentStepOutputSchema),
+        requirementDiagnostic(undefined, 'step_limit', maxSteps, requirementAgentStepOutputSchema),
       )
     } finally {
       this.activeTasks.delete(input.taskId)
@@ -481,6 +495,7 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
               schema: codexOutputSchema(completionSchema),
               onEvent: (event) => reportCliBuildActivity(event, input.onActivity),
               prompt: [
+                BUILD_REQUIREMENT_CONTEXT_PROMPT,
                 PLAYABLE_TOOLS_PROMPT,
                 SOURCE_HTML_BUILD_PROMPT,
                 IMPORTED_ASSETS_PROMPT,
@@ -564,6 +579,8 @@ export class CodexCliPlayableAgent implements PlayableAgentAdapter {
         abortSignal: buildSignal,
         schema: codexOutputSchema(completionSchema),
         prompt:
+          BUILD_REQUIREMENT_CONTEXT_PROMPT +
+          '\n' +
           (input.confirmation.sourceTemplateId || input.confirmation.sourceHtmlAssetId
             ? ''
             : RENDERING_BUILD_PROMPT + '\n') +

@@ -5,6 +5,7 @@ import { importedRuntimePreparationCommand } from './imported-runtime'
 import { safeImportPath } from './asset-archive'
 import { applyRenderingBuildPolicy, renderingPreparationCommand } from './rendering-policy'
 import { referenceImageWorkspaceFiles } from './reference-images'
+import { BUILD_REQUIREMENT_CONTEXT_PATH } from './build-requirement-context'
 import {
   parseVisualComparison,
   referenceKeyframeWorkspaceFiles,
@@ -309,6 +310,13 @@ export async function runPlayableBuild(
       content: serializedConfirmation,
       abortSignal: dependencies.abortSignal,
     })
+    if (input.requirementContext) {
+      await sandbox.writeTextFile({
+        path: path.join(workspace, BUILD_REQUIREMENT_CONTEXT_PATH),
+        content: redactSecrets(JSON.stringify(input.requirementContext, null, 2), [input.apiKey]),
+        abortSignal: dependencies.abortSignal,
+      })
+    }
     if (confirmation.rendering) {
       await sandbox.writeTextFile({
         path: path.join(workspace, 'rendering-plan.json'),
