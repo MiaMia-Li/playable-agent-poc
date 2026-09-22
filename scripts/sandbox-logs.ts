@@ -6,14 +6,15 @@ import { config } from 'dotenv'
 import postgres from 'postgres'
 import { get } from '@vercel/blob'
 
-interface FailedBuild {
+interface TaskBuildLookup {
   userId: string
   taskId: string
-  buildId: string
+  failedBuildId: string | null
+  latestBuildStatus: 'building' | 'failed' | 'succeeded' | null
 }
 
 export interface SandboxLogsDependencies {
-  findLatestFailedBuild(taskId: string): Promise<FailedBuild | undefined>
+  findTaskBuilds(taskId: string): Promise<TaskBuildLookup | undefined>
   download(key: string): Promise<string | undefined>
   save(taskId: string, text: string): Promise<void>
 }
@@ -25,9 +26,26 @@ export async function downloadTaskSandboxLogs(args: string[], dependencies: Sand
   if (args.length !== 1 || !taskId || !/^[A-Za-z0-9_-]{1,200}$/.test(taskId)) {
     throw new SandboxLogsError('Usage: pnpm sandbox:logs <taskId>')
   }
-  const build = await dependencies.findLatestFailedBuild(taskId)
-  if (!build) throw new SandboxLogsError('Task not found or no failed build exists for this task')
-  const key = `users/${build.userId}/tasks/${build.taskId}/${build.buildId}/sandbox-diagnostics.json`
+  const task = await dependencies.findTaskBuilds(taskId)
+  if (!task) {
+    throw new SandboxLogsError(
+      'Task not found in the configured database. Check the task ID and POSTGRES_URL environment.',
+    )
+  }
+  if (!task.failedBuildId) {
+    if (task.latestBuildStatus === 'succeeded') {
+      throw new SandboxLogsError(
+        'This task has no failed builds; its latest build succeeded. sandbox:logs only downloads failed-build diagnostics, not general Sandbox logs.',
+      )
+    }
+    if (task.latestBuildStatus === 'building') {
+      throw new SandboxLogsError(
+        'This task has no failed builds; its latest build is still marked as building. sandbox:logs only downloads failed-build diagnostics, not live Sandbox logs.',
+      )
+    }
+    throw new SandboxLogsError('This task has no builds yet. Sandbox diagnostics are only saved after a build fails.')
+  }
+  const key = `users/${task.userId}/tasks/${task.taskId}/${task.failedBuildId}/sandbox-diagnostics.json`
   const text = await dependencies.download(key)
   if (text === undefined) {
     throw new SandboxLogsError(
@@ -40,19 +58,28 @@ export async function downloadTaskSandboxLogs(args: string[], dependencies: Sand
 async function main(): Promise<void> {
   config({ path: '.env.local', quiet: true })
   await downloadTaskSandboxLogs(process.argv.slice(2), {
-    async findLatestFailedBuild(taskId) {
+    async findTaskBuilds(taskId) {
       if (!process.env.POSTGRES_URL || !process.env.BLOB_READ_WRITE_TOKEN) {
         throw new SandboxLogsError('Set POSTGRES_URL and BLOB_READ_WRITE_TOKEN in .env.local or the environment')
       }
       const sql = postgres(process.env.POSTGRES_URL, { max: 1, connect_timeout: 10 })
       try {
-        const rows = await sql<FailedBuild[]>`
-          SELECT tasks.user_id AS "userId", builds.task_id AS "taskId", builds.id AS "buildId"
-          FROM playable_task_builds AS builds
-          JOIN tasks ON tasks.id = builds.task_id
-          WHERE builds.task_id = ${taskId} AND builds.status = 'failed'
-          ORDER BY builds.created_at DESC, builds.id DESC
-          LIMIT 1
+        const rows = await sql<TaskBuildLookup[]>`
+          SELECT tasks.user_id AS "userId", tasks.id AS "taskId",
+            (
+              SELECT builds.id FROM playable_task_builds AS builds
+              WHERE builds.task_id = tasks.id AND builds.status = 'failed'
+              ORDER BY builds.created_at DESC, builds.id DESC
+              LIMIT 1
+            ) AS "failedBuildId",
+            (
+              SELECT builds.status FROM playable_task_builds AS builds
+              WHERE builds.task_id = tasks.id
+              ORDER BY builds.created_at DESC, builds.id DESC
+              LIMIT 1
+            ) AS "latestBuildStatus"
+          FROM tasks
+          WHERE tasks.id = ${taskId}
         `
         return rows[0]
       } finally {
