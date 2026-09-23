@@ -4848,6 +4848,30 @@ describe('playable task API', () => {
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
   })
 
+  // 编辑功能只改变预览响应，存储的 HTML 与下载文件必须保持原样。
+  it('adds the capture bridge only to editor previews and leaves downloads unchanged', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build/playable.html'
+    const original = '<!doctype html><html><head><script>window.game = true</script></head><body>Game</body></html>'
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode(original))
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const preview = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&feedback=1'),
+      context,
+    )
+    const html = await preview.text()
+    expect(html).toContain('playable:capture-result')
+    expect(html.indexOf('preserveDrawingBuffer')).toBeLessThan(html.indexOf('window.game'))
+    expect(preview.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    expect(preview.headers.get('content-security-policy')).not.toContain('allow-same-origin')
+    const download = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&feedback=1&download=1'),
+      context,
+    )
+    expect(await download.text()).toBe(original)
+  })
+
   it('allows embedded 3D model fetches in the opaque preview without enabling external network access', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'ready'

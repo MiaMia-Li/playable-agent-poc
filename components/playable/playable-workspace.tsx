@@ -50,6 +50,7 @@ import { PLAYABLE_TEMPLATES, templatePrompts, type PlayableTemplateId } from '@/
 import { usePlayableRecentTasks } from './recent-tasks-context'
 import { TemplatePreview } from './template-preview'
 import { TemplatePreviewDialog } from './template-preview-dialog'
+import type { PreviewFeedback } from '@/lib/playable/preview-feedback'
 import { watchPlayableBuild } from '@/lib/playable/build-notifications'
 
 interface PlayableWorkspaceProps {
@@ -144,6 +145,7 @@ export function PlayableWorkspace({
 }: PlayableWorkspaceProps) {
   const [buildEvents, setBuildEvents] = useState<BuildTimelineEvent[]>([])
   const [phase, setPhase] = useState<PlayableTaskPhase>(initialPhase)
+  const [previewFeedback, setPreviewFeedback] = useState<PreviewFeedback>()
   // 只在进入构建阶段时登记；building → validating 不重复登记，下一轮构建仍可重新监听。
   const watchingBuild = useRef(false)
   useEffect(() => {
@@ -544,6 +546,7 @@ export function PlayableWorkspace({
     <main className="bg-background flex h-full min-h-0 flex-col overflow-hidden">
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[2fr_3fr]">
         <ChatWorkspace
+          previewFeedback={previewFeedback}
           buildEvents={buildEvents}
           taskId={taskId}
           initialPrompt={initialPrompt}
@@ -584,6 +587,7 @@ export function PlayableWorkspace({
           onCorrectTimeline={handleCorrectTimeline}
         />
         <PlayablePreview
+          onFeedback={setPreviewFeedback}
           taskId={taskId}
           phase={phase}
           hasArtifact={hasArtifact}

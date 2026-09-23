@@ -18,6 +18,8 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { PreviewFeedbackEditor } from './preview-feedback-editor'
+import type { PreviewFeedback } from '@/lib/playable/preview-feedback'
 
 interface PlayablePreviewProps {
   taskId: string
@@ -34,6 +36,7 @@ interface PlayablePreviewProps {
   failureMessage?: string
   initialValidation?: PlayableValidationSummary | null
   onRequestCompression?: () => void
+  onFeedback?: (feedback: PreviewFeedback) => void
 }
 
 interface PlayableBuildSummary {
@@ -59,6 +62,7 @@ export function PlayablePreview({
   failureMessage,
   initialValidation,
   onRequestCompression,
+  onFeedback,
 }: PlayablePreviewProps) {
   const [builds, setBuilds] = useState<PlayableBuildSummary[]>([])
   const [selectedBuildId, setSelectedBuildId] = useState<string>()
@@ -260,6 +264,16 @@ export function PlayablePreview({
               <Download />
             </Button>
           )}
+          {/* 仅对已保存版本反馈；更换画面时重建编辑器，丢弃旧截图和未完成的捕获请求。 */}
+          {onFeedback && !showingPreview && selectedBuild && (
+            <PreviewFeedbackEditor
+              key={frameKey}
+              frame={iframeRef}
+              buildId={selectedBuild.id}
+              version={selectedBuild.version}
+              onFeedback={onFeedback}
+            />
+          )}
         </div>
       </div>
       {showingPreview && (
@@ -345,7 +359,7 @@ export function PlayablePreview({
               className="size-full border-0"
               title="Playable preview"
               sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-              src={authenticatedArtifactUrl}
+              src={onFeedback ? `${authenticatedArtifactUrl}&feedback=1` : authenticatedArtifactUrl}
               onLoad={() => postMute(muted)}
             />
           ) : (

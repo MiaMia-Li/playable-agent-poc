@@ -66,6 +66,7 @@ import { ResearchResultCard } from './research-result-card'
 import { GameplayAnnotationList } from './gameplay-annotation-list'
 import { GameplayTimeline, type TimelineCorrection } from './gameplay-timeline'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
+import { previewFeedbackFile, previewFeedbackMessage, type PreviewFeedback } from '@/lib/playable/preview-feedback'
 import type { QueuedRequirement } from '@/lib/playable/queued-requirements'
 import { useQueuedRequirements } from './use-queued-requirements'
 import { BuildNotificationButton } from './build-notifications'
@@ -214,6 +215,7 @@ interface ChatWorkspaceProps {
   referenceVideoUrl?: string
   /** Stores a timeline correction as an annotation. Resolves false when it was not stored. */
   onCorrectTimeline?: (correction: TimelineCorrection) => Promise<boolean>
+  previewFeedback?: PreviewFeedback
 }
 
 interface ConversationAttachment {
@@ -414,6 +416,7 @@ export function ChatWorkspace({
   deletingAnnotationId,
   referenceVideoUrl,
   onCorrectTimeline,
+  previewFeedback,
 }: ChatWorkspaceProps) {
   const { queue, updateQueue, loaded: queueLoaded, storageError } = useQueuedRequirements(taskId)
   const drainingQueue = useRef(false)
@@ -490,6 +493,20 @@ export function ChatWorkspace({
     'building',
     'validating',
   ].includes(phase)
+  // 同一反馈只加入草稿一次；此处不上传或发送，保留用户检查和继续编辑的机会。
+  const appliedFeedback = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!previewFeedback || sending || appliedFeedback.current === previewFeedback.id) return
+    appliedFeedback.current = previewFeedback.id
+    const file = previewFeedbackFile(previewFeedback)
+    setBaseBuildId(previewFeedback.buildId)
+    setMessage((draft) => [draft, previewFeedbackMessage(previewFeedback)].filter(Boolean).join('\n\n'))
+    setComposerAttachments((items) => [
+      ...items,
+      { id: previewFeedback.id, file, filename: file.name, mimeType: file.type, status: 'staged' },
+    ])
+    document.querySelector<HTMLTextAreaElement>('[aria-label="试玩需求"]')?.focus()
+  }, [previewFeedback, sending])
   const currentStage =
     phase === 'building' || phase === 'validating' || phase === 'failed'
       ? 'generating'

@@ -1,5 +1,6 @@
 import { resolveBuildBaseline } from './build-baseline'
 import { SandboxDiagnostics } from './sandbox-diagnostics'
+import { withPreviewFeedbackBridge } from './preview-feedback-bridge'
 import { createBuildRequirementContext, type BuildRequirementContext } from './build-requirement-context'
 import { loadTaskImports, importedSourceEvidence, attachImportedManifest, bindImportedResources } from './task-imports'
 import { bindSourceHtml, selectSourceHtml } from './source-html'
@@ -3360,6 +3361,8 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!artifactKey) return jsonError(404, 'Not found')
       const kind = url.searchParams.get('kind')
       const download = url.searchParams.get('download') === '1'
+      // 截图桥仅用于显式开启的编辑预览；下载和其他 sidecar 响应始终读取原始产物。
+      const feedback = kind === 'playable' && !download && url.searchParams.get('feedback') === '1'
       const prefix = artifactKey.slice(0, artifactKey.lastIndexOf('/'))
       // 预览和正式产物各自读取对应的配置与报告，防止展示尚未通过的正式验收结果。
       const sidecarPrefix = artifactKey.endsWith('/preview.html') ? 'preview-' : ''
@@ -3397,12 +3400,17 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       if (!artifact) return jsonError(404, 'Not found')
 
       const disposition = download ? 'attachment' : 'inline'
-      return new Response(artifact, {
+      const content = feedback
+        ? await withPreviewFeedbackBridge(new TextDecoder().decode(await readAll(artifact)))
+        : artifact
+      return new Response(content, {
         headers: {
           'Content-Type': descriptor.contentType,
           'Content-Disposition': `${disposition}; filename="${descriptor.filename}"`,
           ...(kind === 'playable'
-            ? { 'Content-Security-Policy': disposition === 'inline' ? previewCsp(artifactConfirmation) : ARTIFACT_CSP }
+            ? {
+                'Content-Security-Policy': disposition === 'inline' ? previewCsp(artifactConfirmation) : ARTIFACT_CSP,
+              }
             : {}),
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'private, no-store',

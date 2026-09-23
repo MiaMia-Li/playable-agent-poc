@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { StrictMode } from 'react'
+import { createRef, StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
+import { PreviewFeedbackEditor } from '@/components/playable/preview-feedback-editor'
 import { BuildNotifications } from '@/components/playable/build-notifications'
 import { watchPlayableBuild, BUILD_WATCH_KEY } from '@/lib/playable/build-notifications'
 import { queueStorageKey } from '@/lib/playable/queued-requirements'
+import type { PreviewFeedback } from '@/lib/playable/preview-feedback'
 
 const { push, success, error } = vi.hoisted(() => ({ push: vi.fn(), success: vi.fn(), error: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }))
@@ -86,6 +88,80 @@ describe('queued requirements', () => {
     await screen.findByText('已收到修改')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(JSON.parse(fetchMock.mock.calls[1][1]!.body as string).baseBuildId).toBe('build-2')
+  })
+})
+
+describe('preview feedback', () => {
+  it('accepts capture responses only from the requested iframe and binds feedback to the captured version', async () => {
+    const frame = createRef<HTMLIFrameElement>()
+    const onFeedback = vi.fn()
+    render(
+      <>
+        <iframe title="fixture" ref={frame} />
+        <PreviewFeedbackEditor frame={frame} buildId="build-2" version={2} onFeedback={onFeedback} />
+      </>,
+    )
+    const post = vi.spyOn(frame.current!.contentWindow!, 'postMessage')
+    fireEvent.click(screen.getByRole('button', { name: '框选画面提出修改' }))
+    const id = (post.mock.calls[0][0] as { id: string }).id
+    const data = { type: 'playable:capture-result', id, image: 'data:image/png;base64,AA==', width: 360, height: 640 }
+    // 分别模拟其他窗口和旧请求的伪响应；只有当前 iframe 的本次响应能打开反馈弹窗。
+    fireEvent(window, new MessageEvent('message', { data, source: window }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent(
+      window,
+      new MessageEvent('message', { data: { ...data, id: 'stale' }, source: frame.current!.contentWindow }),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent(window, new MessageEvent('message', { data, source: frame.current!.contentWindow }))
+    await screen.findByRole('dialog', { name: '修改 v2 的画面' })
+    fireEvent.click(screen.getByRole('button', { name: '选择整张画面' }))
+    fireEvent.change(screen.getByLabelText('画面修改要求'), { target: { value: '按钮大一点' } })
+    fireEvent.click(screen.getByRole('button', { name: '加入需求' }))
+    expect(onFeedback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buildId: 'build-2',
+        version: 2,
+        message: '按钮大一点',
+        region: { x: 0, y: 0, width: 1, height: 1 },
+      }),
+    )
+  })
+
+  it('stages feedback as a screenshot attachment and sends its locked base version', async () => {
+    const feedback: PreviewFeedback = {
+      id: 'capture-1',
+      buildId: 'build-2',
+      version: 2,
+      image: 'data:image/png;base64,AA==',
+      width: 360,
+      height: 640,
+      region: { x: 0.2, y: 0.3, width: 0.2, height: 0.1 },
+      message: '放大按钮',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).endsWith('/assets'))
+        return Response.json({
+          asset: {
+            id: 'snapshot-1',
+            taskId: props.taskId,
+            slot: 'referenceImage',
+            filename: 'preview.png',
+            mimeType: 'image/png',
+            sizeBytes: 1,
+          },
+        })
+      return reply()
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ChatWorkspace {...props} phase="ready" previewFeedback={feedback} />)
+    expect((screen.getByLabelText('试玩需求') as HTMLTextAreaElement).value).toContain('左 20%，上 30%')
+    fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
+    await screen.findByText('已收到修改')
+    const request = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/messages'))!
+    expect(JSON.parse(request[1]!.body as string)).toEqual(
+      expect.objectContaining({ baseBuildId: 'build-2', attachmentIds: ['snapshot-1'] }),
+    )
   })
 })
 
