@@ -45,3 +45,7 @@ jobs:
 
       - name: Run build
         run: pnpm build
+
+      # 编译成功不代表函数包可部署；提前拦截符号链接目录下的重复打包路径。
+      - name: Check deployment file traces
+        run: pnpm check:build-traces

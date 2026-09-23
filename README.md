@@ -40,11 +40,13 @@ corepack enable
 pnpm install
 pnpm type-check
 pnpm build
+pnpm check:build-traces
 ```
 
 Production builds use webpack, matching the development scripts. With Next.js 16.0.10,
 Turbopack can trace both pnpm directory symlinks and files beneath those same paths;
 Vercel rejects the resulting function packages even when compilation succeeds.
+The trace check detects these conflicts before deployment.
 
 Copy the checked-in environment template and fill in the infrastructure values. GitHub OAuth values are not required for Playable Studio:
 

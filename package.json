@@ -17,6 +17,7 @@
     "check:gemini-video": "node --env-file=.env.local --import tsx scripts/check-gemini-video-analysis.ts",
     "check:gemini-slowed-clip": "node --env-file=.env.local --import tsx scripts/check-gemini-slowed-clip.ts",
     "build": "next build --webpack",
+    "check:build-traces": "node scripts/check-build-traces.mjs",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
