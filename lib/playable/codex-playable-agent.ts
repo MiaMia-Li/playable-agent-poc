@@ -4,7 +4,7 @@ import {
   type RequirementDiagnosticStage,
 } from './requirement-diagnostics'
 import { IMPORTED_ASSETS_PROMPT } from './task-imports'
-import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT } from './source-html'
+import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT, HTML_ATTACHMENTS_BUILD_PROMPT } from './source-html'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
@@ -53,6 +53,7 @@ import { BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
 import { marketResearchReportSchema } from './research/schemas'
 import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 import { codexValidationInstructions, isPlayableSandboxValidationEnabled } from './validation-policy'
+import { classifyCodexFailure } from './codex-errors'
 
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
@@ -90,34 +91,12 @@ export interface CodexPlayableAgentDependencies {
   skillRoot?: string
 }
 
-function errorMessages(error: unknown): string[] {
-  const messages: string[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = error
-
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    seen.add(current)
-    if (typeof current === 'string') {
-      messages.push(current)
-      break
-    }
-    if (typeof current !== 'object') break
-    const candidate = current as { cause?: unknown; message?: unknown }
-    if (typeof candidate.message === 'string') messages.push(candidate.message)
-    current = candidate.cause
-  }
-
-  return messages
-}
-
 function isRetryableCodexBuildFailure(error: unknown): boolean {
   if (!(error instanceof PlayableBuildExecutionError) || error.stage !== 'agent') return false
-  const message = errorMessages(error).join('\n').toLowerCase()
-  return (
-    message.includes('reconnecting...') &&
-    message.includes('stream disconnected before completion') &&
-    message.includes('servers are currently overloaded')
-  )
+  const kind = classifyCodexFailure(error)
+  // 请求和流的重试先由 Codex 完成；最终仍失败时，宿主只对容量或连接故障
+  // 额外重跑一次隔离构建，并且必须尚未开始保存预览。
+  return kind === 'capacity' || kind === 'connection'
 }
 
 function waitForBuildRetry(delayMs: number, abortSignal: AbortSignal): Promise<void> {
@@ -194,6 +173,7 @@ async function createProposal(
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
     sourceHtml: input.sourceHtml ?? null,
+    htmlAttachments: input.htmlAttachments ?? [],
     importedAssets: input.importedAssets ?? [],
     importedSourceFiles: input.importedSourceFiles ?? [],
     importedAssetsInstructions: IMPORTED_ASSETS_PROMPT,
@@ -349,6 +329,7 @@ export async function executeBuildAgent(
   /** From `referenceVisualsBuildPrompt`; sent in every phase, since the self-comparison follows acceptance. */
   visualPrompt = '',
   sourceHtmlAssetId?: string,
+  baseline?: ConfirmedBuildInput['confirmation']['baseline'],
 ) {
   const validationEnabled = isPlayableSandboxValidationEnabled()
   const skill = await loadSkill(skillRoot, {
@@ -379,6 +360,7 @@ export async function executeBuildAgent(
           BUILD_REQUIREMENT_CONTEXT_PROMPT,
           PLAYABLE_TOOLS_PROMPT,
           SOURCE_HTML_BUILD_PROMPT,
+          HTML_ATTACHMENTS_BUILD_PROMPT,
           IMPORTED_ASSETS_PROMPT,
           ...(sourceTemplateId || sourceHtmlAssetId ? [] : [RENDERING_BUILD_PROMPT]),
           NATIVE_TEMPLATE_UI_PROMPT,
@@ -395,6 +377,7 @@ export async function executeBuildAgent(
                   : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, {
                       validationEnabled,
                       sourceHtmlAssetId,
+                      baseline,
                     }),
         ]
           .filter(Boolean)
@@ -403,8 +386,11 @@ export async function executeBuildAgent(
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
       const progress = createHarnessActivityReporter(onActivity)
+      let completed = false
       try {
         for await (const event of result.fullStream) {
+          // 取消优先于已缓冲的完成事件，避免停止后仍上报执行成功。
+          input.abortSignal?.throwIfAborted()
           if (event.type === 'error') {
             // 保留提供方错误，供已有脱敏日志和失败分类使用；不能用通用文案覆盖根因。
             throw event.error instanceof Error
@@ -413,12 +399,20 @@ export async function executeBuildAgent(
                   cause: event.error,
                 })
           }
+          if (event.type === 'abort') throw new DOMException('Codex execution was aborted', 'AbortError')
+          if (event.type === 'finish') {
+            // 非正常终态与断流分开处理，不能把长度耗尽等情况归入连接故障后重跑。
+            if (event.finishReason !== 'stop') throw new Error('Codex turn did not complete successfully')
+            completed = true
+          }
           progress.accept(event)
         }
       } finally {
         progress.flush()
       }
       input.abortSignal?.throwIfAborted()
+      // 迭代器结束不代表模型完成；必须收到补丁在 turn.completed 后发出的成功终态。
+      if (!completed) throw new Error('Codex stream closed before turn.completed')
       onActivity?.('agent_completed')
     } catch (error) {
       executionFailed = true
@@ -457,9 +451,23 @@ export function createCodexBuildPrompt(
   revision?: RevisionProposal,
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
-  options: { validationEnabled?: boolean; sourceHtmlAssetId?: string } = {},
+  options: {
+    validationEnabled?: boolean
+    sourceHtmlAssetId?: string
+    baseline?: ConfirmedBuildInput['confirmation']['baseline']
+  } = {},
 ): string {
   const validationEnabled = options.validationEnabled ?? true
+  // 版本基底优先于原始模板来源；即使重新制作，也必须保留该版本已完成的改动作为起点。
+  if (options.baseline?.kind === 'version')
+    return [
+      HTML_ATTACHMENTS_BUILD_PROMPT,
+      'Read SKILL.md, confirmed-config.json, revision-plan.json, asset-manifest.json and current-playable.html. Apply the confirmed revision plan to the seeded output.html; preserve everything listed as unchanged.',
+      ...codexValidationInstructions(
+        buildValidationCommand({ routing: { match: route, confidence: 1, differences: [] }, sourceTemplateId }),
+        validationEnabled,
+      ),
+    ].join('\n')
   // 上传 HTML 的修改指令优先于模板和重新生成路径，防止原实现被默认脚手架覆盖。
   if (options.sourceHtmlAssetId)
     return [
@@ -559,6 +567,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
                 patch: input.revision?.strategy === 'patch',
               }),
               input.confirmation.sourceHtmlAssetId,
+              input.confirmation.baseline,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,
@@ -589,14 +598,31 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
     const buildSignal = input.abortSignal ? AbortSignal.any([controller.signal, input.abortSignal]) : controller.signal
     buildSignal.throwIfAborted()
     this.activeTasks.set(input.taskId, controller)
+    let previewStarted = false
+    const onPreview = input.onPreview
+      ? async (html: string) => {
+          // 保存失败也可能已写入部分数据，因此在调用前封闭整次重跑入口。
+          // 仅配置了 onPreview、尚未实际调用时，仍允许对临时故障重试。
+          previewStarted = true
+          await input.onPreview!(html)
+        }
+      : undefined
     try {
       for (let attempt = 1; attempt <= CODEX_BUILD_MAX_ATTEMPTS; attempt += 1) {
-        const attemptInput = attempt === 1 ? input : { ...input, taskId: `${input.taskId}-retry-${attempt}` }
+        // 重试等待期间也可能取消；开始下一次构建前再次检查，避免创建多余 Sandbox。
+        buildSignal.throwIfAborted()
+        const attemptInput = {
+          ...input,
+          ...(onPreview ? { onPreview } : {}),
+          taskId: attempt === 1 ? input.taskId : `${input.taskId}-retry-${attempt}`,
+        }
         try {
           return await this.buildRunner(attemptInput, { abortSignal: buildSignal })
         } catch (error) {
-          if (input.onPreview || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
+          buildSignal.throwIfAborted()
+          if (previewStarted || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
             throw error
+          input.onActivity?.('agent_retrying')
           await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, buildSignal)
         }
       }

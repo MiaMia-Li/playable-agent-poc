@@ -383,6 +383,30 @@ describe('CodexPlayableAgent', () => {
     )
   })
 
+  // 即使保留原模板来源，重新制作的实际起点也应是选定版本，不能退回模板原件。
+  it('keeps a confirmed version as the baseline during regeneration even with a template origin', () => {
+    const prompt = createCodexBuildPrompt(
+      'freeform',
+      {
+        id: 'revision',
+        baseBuildId: 'v2',
+        baseVersion: 2,
+        targetVersion: 3,
+        strategy: 'regenerate',
+        summary: 'Redesign the layout',
+        changes: ['Layout'],
+        preserved: ['Gameplay'],
+      },
+      'dragon_slots',
+      'perspective_3d',
+      { baseline: { kind: 'version', buildId: 'v2', version: 2 } },
+    )
+    expect(prompt).toContain('current-playable.html')
+    expect(prompt).toContain('Do not copy a reference HTML wholesale')
+    expect(prompt).toContain('including for regenerate')
+    expect(prompt).not.toContain('already seeded from that source')
+  })
+
   it('tells patch revisions to preserve the final artifact and use adapted validation', () => {
     const prompt = createCodexBuildPrompt('approximate', {
       id: 'revision-1',
@@ -1054,6 +1078,106 @@ describe('CodexPlayableAgent', () => {
     expect(buildRetryDelay).not.toHaveBeenCalled()
   })
 
+  // 正常入口始终配置 onPreview；配置回调本身不应阻止尚未保存预览的构建重试。
+  it.each([
+    'Selected model is at capacity. Please try a different model.',
+    'stream disconnected before completion: stream closed before response.completed',
+    'codex bridge closed before the turn finished.',
+    'unexpected status 502 Bad Gateway',
+  ])('retries before publishing a preview even with onPreview configured: %s', async (message) => {
+    const result = { html: 'preview' } as BuildResult
+    const failure = new PlayableBuildExecutionError('agent', new Error(message))
+    const onPreview = vi.fn(async () => undefined)
+    const onActivity = vi.fn()
+    const buildRunner = vi
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockImplementationOnce(async (input: ConfirmedBuildInput) => {
+        await input.onPreview?.(result.html)
+        return result
+      })
+    const buildRetryDelay = vi.fn(async () => undefined)
+    await expect(
+      new CodexPlayableAgent({ buildRunner, buildRetryDelay }).build({
+        taskId: 'retry-preview',
+        apiKey: 'test-key',
+        confirmation: validProposal,
+        onPreview,
+        onActivity,
+      }),
+    ).resolves.toBe(result)
+    expect(buildRunner).toHaveBeenCalledTimes(2)
+    expect(buildRetryDelay).toHaveBeenCalledOnce()
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(result.html)
+    expect(onActivity).toHaveBeenCalledExactlyOnceWith('agent_retrying')
+  })
+
+  it.each([
+    'stream disconnected before completion: insufficient_quota',
+    'Reconnecting... 1/5 (stream disconnected before completion: invalid_api_key)',
+    'stream disconnected before completion: model_not_found',
+    'rate_limit_exceeded',
+  ])('does not restart the build for an actionable permanent or exhausted rate-limit failure: %s', async (message) => {
+    const failure = new PlayableBuildExecutionError('agent', new Error(message))
+    const buildRunner = vi.fn().mockRejectedValue(failure)
+    const buildRetryDelay = vi.fn(async () => undefined)
+    await expect(
+      new CodexPlayableAgent({ buildRunner, buildRetryDelay }).build({
+        taskId: 'no-retry',
+        apiKey: 'test-key',
+        confirmation: validProposal,
+      }),
+    ).rejects.toBe(failure)
+    expect(buildRunner).toHaveBeenCalledOnce()
+    expect(buildRetryDelay).not.toHaveBeenCalled()
+  })
+
+  it('does not restart after preview publication begins, including a publication failure', async () => {
+    const failure = new PlayableBuildExecutionError('agent', new Error('model is at capacity'))
+    const buildRetryDelay = vi.fn(async () => undefined)
+    // 两种结果都可能已有持久化副作用，不能在回调失败时误以为可以安全重跑。
+    for (const publicationFails of [false, true]) {
+      const onPreview = vi.fn(async () => {
+        if (publicationFails) throw failure
+      })
+      const buildRunner = vi.fn(async (input: ConfirmedBuildInput) => {
+        await input.onPreview?.('saved preview')
+        throw failure
+      })
+      await expect(
+        new CodexPlayableAgent({ buildRunner, buildRetryDelay }).build({
+          taskId: 'published-preview',
+          apiKey: 'test-key',
+          confirmation: validProposal,
+          onPreview,
+        }),
+      ).rejects.toBe(failure)
+      expect(buildRunner).toHaveBeenCalledOnce()
+    }
+    expect(buildRetryDelay).not.toHaveBeenCalled()
+  })
+
+  it('bounds extra build attempts and honors cancellation during the retry delay', async () => {
+    const failure = new PlayableBuildExecutionError('agent', new Error('model is at capacity'))
+    const buildRunner = vi.fn().mockRejectedValue(failure)
+    const buildRetryDelay = vi.fn(async () => undefined)
+    const input = { taskId: 'bounded-retry', apiKey: 'test-key', confirmation: validProposal }
+    await expect(new CodexPlayableAgent({ buildRunner, buildRetryDelay }).build(input)).rejects.toBe(failure)
+    expect(buildRunner).toHaveBeenCalledTimes(2)
+    expect(buildRetryDelay).toHaveBeenCalledOnce()
+    buildRunner.mockClear()
+    const controller = new AbortController()
+    // 模拟等待已结束但信号同时取消，确认下一轮入口自身也会检查取消。
+    buildRetryDelay.mockImplementationOnce(async () => {
+      controller.abort()
+      return undefined
+    })
+    await expect(
+      new CodexPlayableAgent({ buildRunner, buildRetryDelay }).build({ ...input, abortSignal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(buildRunner).toHaveBeenCalledOnce()
+  })
+
   it('instructs the build agent to generate output directly for a freeform route', async () => {
     const freeformProposal = {
       ...validProposal,
@@ -1098,7 +1222,100 @@ describe('CodexPlayableAgent', () => {
 
     await agent.cancel('task-cancel')
 
-    await expect(build).rejects.toThrow('build aborted')
+    await expect(build).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+// 宿主必须同时防住“重连被提前判失败”和“流提前关闭却被判成功”。
+describe('Codex build stream outcomes', () => {
+  beforeEach(() => {
+    harnessMocks.destroy.mockClear()
+    harnessMocks.stream.mockClear()
+  })
+
+  const run = (onActivity = vi.fn(), abortSignal?: AbortSignal) =>
+    executeBuildAgent(
+      {
+        taskId: 'stream-test',
+        sandbox: {} as PlayableSandbox,
+        abortSignal,
+        authEnvironment: { CODEX_API_KEY: 'test-key', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' },
+      },
+      `${process.cwd()}/skills/mahjong-pair-match-playable`,
+      'exact',
+      undefined,
+      undefined,
+      undefined,
+      onActivity,
+    )
+
+  it('keeps retry notices alive, reports safe progress, and then completes', async () => {
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 1/5 (private test-key)' } }
+        expect(harnessMocks.destroy).not.toHaveBeenCalled()
+        yield {
+          type: 'raw',
+          rawValue: { type: 'codex.error', message: 'Previous response was not found. Retrying the full request.' },
+        }
+        yield { type: 'finish', finishReason: 'stop' }
+      })(),
+    } as never)
+    await expect(run(onActivity)).resolves.toBeUndefined()
+    expect(onActivity.mock.calls).toEqual([
+      ['agent_started'],
+      ['agent_reconnecting'],
+      ['agent_retrying'],
+      ['agent_completed'],
+    ])
+    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a terminal capacity failure after retry notices', async () => {
+    const message = 'Selected model is at capacity. Please try a different model.'
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 5/5' } }
+        yield { type: 'error', error: message }
+        throw new Error('must not consume past the terminal error')
+      })(),
+    } as never)
+    await expect(run(onActivity)).rejects.toMatchObject({ message, cause: message })
+    expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
+    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
+  })
+
+  it.each([undefined, 'error', 'length'])(
+    'rejects a stream without a successful terminal event (%s)',
+    async (reason) => {
+      const onActivity = vi.fn()
+      harnessMocks.stream.mockResolvedValueOnce({
+        fullStream: (async function* () {
+          yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 1/5' } }
+          if (reason) yield { type: 'finish', finishReason: reason }
+        })(),
+      } as never)
+      await expect(run(onActivity)).rejects.toThrow(
+        reason ? 'Codex turn did not complete successfully' : 'Codex stream closed before turn.completed',
+      )
+      expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
+    },
+  )
+
+  it('does not report success when cancelled while reconnecting', async () => {
+    const controller = new AbortController()
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... waiting for network' } }
+        controller.abort()
+        yield { type: 'abort' }
+      })(),
+    } as never)
+    await expect(run(onActivity, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
   })
 })
 

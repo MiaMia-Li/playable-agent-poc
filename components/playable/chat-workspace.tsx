@@ -1,5 +1,7 @@
 'use client'
 
+import { buildBaselineLabel } from '@/lib/playable/build-baseline'
+
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { FolderUploadButton } from './folder-upload-button'
 import { BuildTimeline } from './build-timeline'
@@ -39,7 +41,6 @@ import type { PlayableAssetSlot } from '@/lib/playable/asset-policy'
 import {
   isPlayableResourceAssetSlot,
   PLAYABLE_ATTACHMENT_ACCEPT,
-  PLAYABLE_IMAGE_MIME_TYPES,
   maxAssetBytesForSlot,
   playableAssetAccept,
   referenceSlotForMimeType,
@@ -65,6 +66,10 @@ import { ResearchResultCard } from './research-result-card'
 import { GameplayAnnotationList } from './gameplay-annotation-list'
 import { GameplayTimeline, type TimelineCorrection } from './gameplay-timeline'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
+import { previewFeedbackFile, previewFeedbackMessage, type PreviewFeedback } from '@/lib/playable/preview-feedback'
+import type { QueuedRequirement } from '@/lib/playable/queued-requirements'
+import { useQueuedRequirements } from './use-queued-requirements'
+import { BuildNotificationButton } from './build-notifications'
 
 const stages = [
   ['plan', '方案'],
@@ -93,7 +98,7 @@ const requirementToolLabels: Record<string, string> = {
   ask_user: '请求补充',
   submit_confirmation: '提交方案',
   submit_revision: '提交修改计划',
-  inspect_reference_images: '分析参考图片',
+  inspect_reference_images: '查看图片',
   analyze_reference_video: '分析参考视频',
   offer_market_research: '建议市场搜索',
   search_market_references: '搜索市场参考',
@@ -210,6 +215,7 @@ interface ChatWorkspaceProps {
   referenceVideoUrl?: string
   /** Stores a timeline correction as an annotation. Resolves false when it was not stored. */
   onCorrectTimeline?: (correction: TimelineCorrection) => Promise<boolean>
+  previewFeedback?: PreviewFeedback
 }
 
 interface ConversationAttachment {
@@ -313,7 +319,14 @@ function DynamicRequestActions({
   )
 }
 
-function RevisionSummary({ revision }: { revision: RevisionPlan | RevisionProposal }) {
+function RevisionSummary({
+  revision,
+  baselineLabel,
+}: {
+  revision: RevisionPlan | RevisionProposal
+  baselineLabel?: string
+}) {
+  // 上传 HTML 也能成为修改基底，不能仅凭版本沿袭信息把它显示成基于旧产物。
   const resolved = 'baseVersion' in revision && 'targetVersion' in revision
   return (
     <section aria-label="修改计划" className="mt-4 space-y-3 rounded-xl border p-4">
@@ -322,13 +335,13 @@ function RevisionSummary({ revision }: { revision: RevisionPlan | RevisionPropos
           <h2 className="font-semibold">确认本次修改</h2>
           {resolved && (
             <p className="text-muted-foreground mt-1 text-xs">
-              基于 v{revision.baseVersion} 生成候选 v{revision.targetVersion}
+              {baselineLabel ?? `基于 v${revision.baseVersion}`} 生成候选 v{revision.targetVersion}
             </p>
           )}
         </div>
         <Badge variant="secondary">
           {revision.strategy === 'patch' ? <PencilLine aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
-          {revision.strategy === 'patch' ? '基于当前版本修改' : '从原始方案重新生成'}
+          {revision.strategy === 'patch' ? '局部修改' : '重新制作'}
         </Badge>
       </div>
       <p className="text-sm font-medium">{revision.summary}</p>
@@ -403,13 +416,14 @@ export function ChatWorkspace({
   deletingAnnotationId,
   referenceVideoUrl,
   onCorrectTimeline,
+  previewFeedback,
 }: ChatWorkspaceProps) {
+  const { queue, updateQueue, loaded: queueLoaded, storageError } = useQueuedRequirements(taskId)
+  const drainingQueue = useRef(false)
+  const [editingQueuedId, setEditingQueuedId] = useState<string>()
+  const [queuedEdit, setQueuedEdit] = useState('')
   const [message, setMessage] = useState('')
   const [baseBuildId, setBaseBuildId] = useState('auto')
-  const [activeReferences, setActiveReferences] = useState<ReferenceImageEvidence[]>(
-    initialConversation.findLast((turn) => turn.role === 'user')?.referenceImages ?? [],
-  )
-  const [referencesChanged, setReferencesChanged] = useState(false)
   const [baseVersions, setBaseVersions] = useState<
     { id: string; version: number; current: boolean; status?: string }[]
   >([])
@@ -446,9 +460,6 @@ export function ChatWorkspace({
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
-  const composerHasNewImages = composerAttachments.some((asset) =>
-    (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType),
-  )
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
@@ -472,9 +483,30 @@ export function ChatWorkspace({
   const composerAttachmentSequence = useRef(0)
   const selectedAssetsRef = useRef(initialAssets)
   const autoSubmitted = useRef(false)
-  const canCompose = ['draft', 'awaiting_confirmation', 'awaiting_revision_confirmation', 'ready', 'failed'].includes(
-    phase,
-  )
+  const buildInProgress = phase === 'building' || phase === 'validating'
+  const canCompose = [
+    'draft',
+    'awaiting_confirmation',
+    'awaiting_revision_confirmation',
+    'ready',
+    'failed',
+    'building',
+    'validating',
+  ].includes(phase)
+  // 同一反馈只加入草稿一次；此处不上传或发送，保留用户检查和继续编辑的机会。
+  const appliedFeedback = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!previewFeedback || sending || appliedFeedback.current === previewFeedback.id) return
+    appliedFeedback.current = previewFeedback.id
+    const file = previewFeedbackFile(previewFeedback)
+    setBaseBuildId(previewFeedback.buildId)
+    setMessage((draft) => [draft, previewFeedbackMessage(previewFeedback)].filter(Boolean).join('\n\n'))
+    setComposerAttachments((items) => [
+      ...items,
+      { id: previewFeedback.id, file, filename: file.name, mimeType: file.type, status: 'staged' },
+    ])
+    document.querySelector<HTMLTextAreaElement>('[aria-label="试玩需求"]')?.focus()
+  }, [previewFeedback, sending])
   const currentStage =
     phase === 'building' || phase === 'validating' || phase === 'failed'
       ? 'generating'
@@ -502,10 +534,11 @@ export function ChatWorkspace({
       appendToConversation = true,
       existingAttachmentIds: string[] = [],
       referenceSelection?: ReferenceSelectionInput,
+      queued?: QueuedRequirement,
     ) => {
-      const attachmentSnapshot = appendToConversation
-        ? composerAttachments.map((attachment) => ({ ...attachment }))
-        : []
+      // 队列项使用入队时的附件和基底，不能带走输入框中新写的草稿或后来选择的文件。
+      const attachmentSnapshot =
+        appendToConversation && !queued ? composerAttachments.map((attachment) => ({ ...attachment })) : []
       const enteredContent = (contentOverride ?? message).trim()
       const content =
         enteredContent ||
@@ -514,6 +547,11 @@ export function ChatWorkspace({
           : '')
       // 点击和键盘提交都经过此处，打包未完成时不能生成缺少文件夹附件的需求。
       if (!content || sending || packingFolder || !canCompose) return false
+      if (buildInProgress && (queue.length >= 20 || content.length > 20000)) {
+        setError('最多保留 20 条排队需求，每条不超过 20000 字。请先编辑或撤回已有需求。')
+        return false
+      }
+      const requestBaseBuildId = queued?.baseBuildId ?? baseBuildId
       const id = crypto.randomUUID()
       const assistantId = `assistant-${id}`
       const controller = new AbortController()
@@ -599,20 +637,32 @@ export function ChatWorkspace({
         }
         if (uploadFailed) return false
 
-        const attachments = resolvedAttachments.flatMap((attachment): ConversationAttachment[] =>
-          attachment.asset
-            ? [
-                {
-                  id: attachment.asset.id,
-                  filename: attachment.asset.filename,
-                  mimeType: attachment.asset.mimeType,
-                },
-              ]
-            : [],
-        )
+        const attachments =
+          queued?.attachments ??
+          resolvedAttachments.flatMap((attachment): ConversationAttachment[] =>
+            attachment.asset
+              ? [
+                  {
+                    id: attachment.asset.id,
+                    filename: attachment.asset.filename,
+                    mimeType: attachment.asset.mimeType,
+                  },
+                ]
+              : [],
+          )
         const attachmentIds = appendToConversation
           ? attachments.map((attachment) => attachment.id)
           : existingAttachmentIds
+        // 附件已上传成功才入队，sessionStorage 只存稳定的素材 ID，不存 File 或图片字节。
+        if (buildInProgress && !queued) {
+          updateQueue((items) => [
+            ...items,
+            { id, content, baseBuildId: requestBaseBuildId, attachments, status: 'pending' },
+          ])
+          setMessage('')
+          setComposerAttachments([])
+          return true
+        }
         if (appendToConversation) {
           setConversation((items) => [...items, { id, role: 'user', content, status: 'sending', attachments }])
         }
@@ -627,21 +677,13 @@ export function ChatWorkspace({
           })
           if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
         }
-        const newImageIds = attachments
-          .filter((asset) => (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType))
-          .map((asset) => asset.id)
-        // 新上传图片替换沿用图片；显式清空仍发送空数组，阻止服务端自动继承旧截图。
-        const referenceImageIds = [
-          ...new Set([...(newImageIds.length ? newImageIds : activeReferences.map((ref) => ref.assetId))]),
-        ]
         requestSent = true
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: content,
-            ...(referenceImageIds.length || referencesChanged ? { referenceImageIds } : {}),
-            ...(baseBuildId !== 'auto' ? { baseBuildId } : {}),
+            ...(requestBaseBuildId !== 'auto' ? { baseBuildId: requestBaseBuildId } : {}),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
             ...(referenceSelection ? { referenceSelection } : {}),
           }),
@@ -685,8 +727,6 @@ export function ChatWorkspace({
             throw new Error('响应数据格式错误，请重试')
           }
           if (event.type === 'reference_images' && event.referenceImages) {
-            setActiveReferences(event.referenceImages)
-            setReferencesChanged(true)
             setConversation((items) =>
               items.map((item) => (item.id === id ? { ...item, referenceImages: event.referenceImages } : item)),
             )
@@ -782,26 +822,36 @@ export function ChatWorkspace({
             break
           }
         }
-        setMessage('')
-        setComposerAttachments([])
+        // 收到终态事件才视为发送成功；队列发送完成也不能清空用户正在编辑的独立草稿。
+        if (!queued && terminalEventReceived) {
+          setMessage('')
+          setComposerAttachments([])
+        }
+        if (!terminalEventReceived) throw new Error('回复已中断，请检查对话后重试。')
         return terminalEventReceived
       } catch (cause) {
         if (terminalEventReceived) {
-          setMessage('')
-          setComposerAttachments([])
+          if (!queued) {
+            setMessage('')
+            setComposerAttachments([])
+          }
         } else {
           if (controller.signal.aborted) setError('已停止生成确认方案')
           else setError(cause instanceof Error ? cause.message : '请求失败，请稍后重试')
           setConversation((items) =>
             requestSent
-              ? items.map((item) => (item.id === assistantId ? { ...item, status: 'failed' } : item))
+              ? items.map((item) =>
+                  item.id === assistantId || (item.id === id && item.status === 'sending')
+                    ? { ...item, status: 'failed' }
+                    : item,
+                )
               : // Stopped while waiting for the analysis: nothing reached the agent.
                 items.flatMap((item) =>
                   item.id === assistantId ? [] : item.id === id ? [{ ...item, status: 'failed' as const }] : [item],
                 ),
           )
         }
-        return false
+        return terminalEventReceived
       } finally {
         if (streamController.current === controller) streamController.current = undefined
         setSending(false)
@@ -809,9 +859,10 @@ export function ChatWorkspace({
     },
     [
       canCompose,
+      buildInProgress,
+      queue.length,
+      updateQueue,
       baseBuildId,
-      activeReferences,
-      referencesChanged,
       composerAttachments,
       hasArtifact,
       message,
@@ -828,6 +879,42 @@ export function ChatWorkspace({
       waitForVideoAnalysis,
     ],
   )
+
+  const dispatchQueued = useCallback(
+    async (item: QueuedRequirement) => {
+      if (drainingQueue.current || sending || buildInProgress || !canCompose) return
+      // ref 同步加锁，防止连续渲染或 StrictMode 在状态更新前重复发起同一条需求。
+      drainingQueue.current = true
+      updateQueue((items) => items.map((entry) => (entry.id === item.id ? { ...entry, status: 'sending' } : entry)))
+      try {
+        const sent = await sendMessage(item.content, true, [], undefined, item)
+        updateQueue((items) =>
+          sent
+            ? items.filter((entry) => entry.id !== item.id)
+            : items.map((entry) => (entry.id === item.id ? { ...entry, status: 'failed' } : entry)),
+        )
+      } finally {
+        drainingQueue.current = false
+      }
+    },
+    [buildInProgress, canCompose, sending, sendMessage, updateQueue],
+  )
+
+  useEffect(() => {
+    if (
+      !queueLoaded ||
+      sending ||
+      confirming ||
+      editingQueuedId ||
+      phase === 'failed' ||
+      buildInProgress ||
+      !canCompose
+    )
+      return
+    // 只自动处理队首；失败项由用户显式重试，避免后续需求越过它改变执行顺序。
+    const next = queue[0]
+    if (next?.status === 'pending') void dispatchQueued(next)
+  }, [queueLoaded, queue, sending, confirming, editingQueuedId, phase, buildInProgress, canCompose, dispatchQueued])
 
   useEffect(() => {
     if (!autoSubmitInitialPrompt || !initialPrompt || phase !== 'draft' || autoSubmitted.current) return
@@ -1013,6 +1100,8 @@ export function ChatWorkspace({
   }
 
   async function confirm() {
+    // 待处理需求可能改变 Confirmation Proposal，队列未清空时不能确认旧方案。
+    if (queue.length > 0) return
     const confirmsRevision = Boolean(hasArtifact && revision)
     const canConfirmPhase = confirmsRevision
       ? phase === 'awaiting_revision_confirmation' || phase === 'failed'
@@ -1045,12 +1134,12 @@ export function ChatWorkspace({
   const showsInitialConfirmation = Boolean(proposal && !hasArtifact)
   const showsRevisionConfirmation = Boolean(proposal && hasArtifact && revision)
   const initialConfirmationReady = proposal ? isConfirmationReady(proposal, selectedAssets) : false
-  const buildInProgress = phase === 'building' || phase === 'validating'
   const confirmActionVisible = showsInitialConfirmation || showsRevisionConfirmation
   const confirmablePhase = showsRevisionConfirmation
     ? phase === 'awaiting_revision_confirmation' || phase === 'failed'
     : phase === 'awaiting_confirmation' || phase === 'failed'
   const confirmActionDisabled =
+    queue.length > 0 ||
     confirming ||
     sending ||
     buildInProgress ||
@@ -1092,6 +1181,7 @@ export function ChatWorkspace({
           <p className="mt-2 text-sm" aria-live="polite">
             当前状态：{phaseNames[phase]}
           </p>
+          <BuildNotificationButton />
         </section>
 
         {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
@@ -1243,17 +1333,6 @@ export function ChatWorkspace({
                   ))}
                 </div>
               )}
-              {Boolean(item.referenceImages?.length) && (
-                <p className="mt-1 text-xs opacity-80">
-                  本轮参考：
-                  {item.referenceImages
-                    ?.map(
-                      (ref) =>
-                        `${ref.filename}（${ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} / ${ref.purpose === 'problem' ? '问题' : '目标'}）`,
-                    )
-                    .join('、')}
-                </p>
-              )}
               {item.status !== 'sent' && (
                 <span className="mt-1 block text-xs opacity-75">
                   {item.status === 'sending' ? '发送中…' : '发送失败'}
@@ -1315,7 +1394,12 @@ export function ChatWorkspace({
                     />
                   )}
                   {item.revision && (
-                    <RevisionSummary revision={index === latestProposalIndex && revision ? revision : item.revision} />
+                    <RevisionSummary
+                      revision={index === latestProposalIndex && revision ? revision : item.revision}
+                      baselineLabel={
+                        item.confirmation ? buildBaselineLabel(item.confirmation, selectedAssets) : undefined
+                      }
+                    />
                   )}
                   {item.confirmation &&
                     (index === latestProposalIndex && confirmActionVisible ? (
@@ -1460,9 +1544,7 @@ export function ChatWorkspace({
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {showsRevisionConfirmation
-                  ? `基于 v${revision?.baseVersion} → v${revision?.targetVersion} 修改计划待确认`
-                  : '最新方案待确认'}
+                {showsRevisionConfirmation ? `候选 v${revision?.targetVersion} 修改计划待确认` : '最新方案待确认'}
               </p>
               <p className="text-muted-foreground truncate text-xs">
                 {sending
@@ -1471,7 +1553,9 @@ export function ChatWorkspace({
                     ? phase === 'building'
                       ? 'Codex 正在构建试玩…'
                       : '正在验证并发布试玩…'
-                    : '确认后才会开始耗时构建'}
+                    : queue.length > 0
+                      ? '请先处理或撤回排队需求'
+                      : '确认后才会开始耗时构建'}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -1488,29 +1572,100 @@ export function ChatWorkspace({
         </section>
       )}
 
-      {/* 构建和验收期间隐藏输入区，保留组件与草稿状态，结束或失败后自动恢复。 */}
-      <div hidden={buildInProgress} className="bg-background shrink-0 border-t p-4">
+      <div className="bg-background max-h-[50%] shrink-0 overflow-y-auto border-t p-4">
+        {(buildInProgress || queue.length > 0) && (
+          <section aria-label="排队需求" className="mb-3 space-y-2">
+            <p className="text-muted-foreground text-xs">
+              构建期间可追加需求。保存在此标签页，打开此任务时会在构建完成后依次发送，确认后才开始下一次构建。
+            </p>
+            {storageError && (
+              <p role="alert" className="text-destructive text-xs">
+                浏览器暂时无法保存队列，请保持页面打开。
+              </p>
+            )}
+            {queue.map((item, index) => (
+              <div key={item.id} className="rounded-lg border p-2 text-xs">
+                <p className="text-muted-foreground mb-1">
+                  {item.status === 'sending'
+                    ? '正在发送'
+                    : item.status === 'failed'
+                      ? '发送未完成，请检查对话后重试'
+                      : `排队 ${index + 1}`}
+                  {item.baseBuildId !== 'auto'
+                    ? ` · 基于 v${baseVersions.find((version) => version.id === item.baseBuildId)?.version ?? '?'}`
+                    : ''}
+                </p>
+                {editingQueuedId === item.id ? (
+                  <>
+                    <Textarea
+                      aria-label="编辑排队需求"
+                      value={queuedEdit}
+                      onChange={(event) => setQueuedEdit(event.target.value)}
+                      maxLength={20000}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!queuedEdit.trim()}
+                      onClick={() => {
+                        updateQueue((items) =>
+                          items.map((entry) =>
+                            entry.id === item.id ? { ...entry, content: queuedEdit.trim() } : entry,
+                          ),
+                        )
+                        setEditingQueuedId(undefined)
+                      }}
+                    >
+                      保存修改
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingQueuedId(undefined)}>
+                      取消编辑
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="line-clamp-3 whitespace-pre-wrap break-words">{item.content}</p>
+                    {item.attachments.length > 0 && (
+                      <p className="text-muted-foreground mt-1">{item.attachments.length} 个附件已保存</p>
+                    )}
+                    <div className="mt-1 flex gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={item.status === 'sending'}
+                        onClick={() => {
+                          setEditingQueuedId(item.id)
+                          setQueuedEdit(item.content)
+                        }}
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={item.status === 'sending'}
+                        onClick={() => updateQueue((items) => items.filter((entry) => entry.id !== item.id))}
+                      >
+                        撤回
+                      </Button>
+                      {(item.status === 'failed' || phase === 'failed') && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={buildInProgress || sending}
+                          onClick={() => void dispatchQueued(item)}
+                        >
+                          重新发送
+                        </Button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
-          {!composerHasNewImages && activeReferences.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1 px-1" aria-label="本轮参考截图">
-              {(composerHasNewImages ? [] : activeReferences).map((ref) => (
-                <Button
-                  key={ref.assetId}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={sending}
-                  onClick={() => {
-                    setActiveReferences((items) => items.filter((item) => item.assetId !== ref.assetId))
-                    setReferencesChanged(true)
-                  }}
-                >
-                  {ref.filename} · {ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} ·{' '}
-                  {ref.purpose === 'problem' ? '问题' : '目标'} <X aria-label="移除本轮引用" />
-                </Button>
-              ))}
-            </div>
-          )}
           {composerAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-2 pt-1" aria-live="polite">
               {composerAttachments.map((attachment) => (
@@ -1550,8 +1705,6 @@ export function ChatWorkspace({
                 value={baseBuildId}
                 onValueChange={(value) => {
                   setBaseBuildId(value)
-                  setActiveReferences([])
-                  setReferencesChanged(true)
                 }}
                 disabled={!canCompose || sending || confirming}
               >
@@ -1583,9 +1736,11 @@ export function ChatWorkspace({
               aria-label="试玩需求"
               placeholder={
                 canCompose
-                  ? hasArtifact
-                    ? '描述你想修改的内容…'
-                    : '描述你想制作的试玩…'
+                  ? buildInProgress
+                    ? '补充下一步要求，构建完成后发送…'
+                    : hasArtifact
+                      ? '描述你想修改的内容…'
+                      : '描述你想制作的试玩…'
                   : '当前阶段不可继续输入，请新建试玩'
               }
               className="min-h-20 min-w-0 flex-1 resize-none border-0 shadow-none focus-visible:ring-0"
@@ -1642,8 +1797,14 @@ export function ChatWorkspace({
               <Button
                 type="button"
                 size="icon"
-                aria-label="发送需求"
-                disabled={(!message.trim() && composerAttachments.length === 0) || !canCompose || packingFolder}
+                aria-label={buildInProgress ? '加入排队需求' : '发送需求'}
+                disabled={
+                  (!message.trim() && composerAttachments.length === 0) ||
+                  !canCompose ||
+                  packingFolder ||
+                  confirming ||
+                  !queueLoaded
+                }
                 onClick={() => void sendMessage()}
               >
                 <ArrowUp aria-hidden="true" />

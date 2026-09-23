@@ -7,6 +7,7 @@ import { JotaiProvider } from '@/components/providers/jotai-provider'
 import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/next'
 import { PlayableRecentTasksProvider } from '@/components/playable/recent-tasks-context'
+import { BuildNotifications } from '@/components/playable/build-notifications'
 
 export const metadata: Metadata = {
   title: 'Playable Studio',
@@ -28,6 +29,8 @@ export default function RootLayout({
               <AppLayoutWrapper>{children}</AppLayoutWrapper>
             </PlayableRecentTasksProvider>
             <Toaster />
+            {/* 监听器跨任务页面保留，离开当前任务后仍能收到构建结果。 */}
+            <BuildNotifications />
           </ThemeProvider>
         </JotaiProvider>
         <Analytics />

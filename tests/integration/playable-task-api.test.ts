@@ -1066,7 +1066,7 @@ describe('playable task API', () => {
     )
   })
 
-  it('replaces screenshot batches, inherits a follow-up, reuses selected history and freezes the build snapshot', async () => {
+  it('retains conversation images without purpose or version, reuses history and freezes the build snapshot', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'ready'
     task.confirmation = confirmation
@@ -1111,16 +1111,16 @@ describe('playable task API', () => {
     await send({ message: '最底部多出红中', attachmentIds: ['a', 'b'] })
     expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b'])
     await send({ message: '看新的顶部问题', attachmentIds: ['c'] })
-    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['c'])
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b', 'c'])
     await send({ message: '这个问题仍在' })
     expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        attachedAssetIds: ['c'],
+        attachedAssetIds: [],
         referenceImages: [
+          expect.objectContaining({ assetId: 'a' }),
+          expect.objectContaining({ assetId: 'b' }),
           expect.objectContaining({
             assetId: 'c',
-            sourceVersion: 1,
-            purpose: 'problem',
             description: '看新的顶部问题',
           }),
         ],
@@ -1130,7 +1130,7 @@ describe('playable task API', () => {
     await send({ message: '再对照第一张', referenceImageIds: ['a', 'c'] })
     const frozen = task.confirmation!.referenceImages!
     expect(frozen.map((ref) => ref.assetId)).toEqual(['a', 'c'])
-    expect(frozen[0].description).toBe('最底部多出红中')
+    expect(frozen[0]).toEqual({ assetId: 'a', filename: 'a.png', description: '最底部多出红中' })
     const confirmed = await harness.handlers.confirm(
       request('/api/playable-tasks/owned/confirm', 'POST', {
         revisionId: task.pendingRevision!.id,
@@ -1153,12 +1153,130 @@ describe('playable task API', () => {
       harness.repository.messages
         .filter((message) => message.role === 'user')
         .map((message) => JSON.parse(message.content).referenceImages.map((ref: { assetId: string }) => ref.assetId)),
-    ).toEqual([['a', 'b'], ['c'], ['c'], ['a', 'c']])
+    ).toEqual([
+      ['a', 'b'],
+      ['a', 'b', 'c'],
+      ['a', 'b', 'c'],
+      ['a', 'c'],
+    ])
     await send({ message: '新的修改不参考截图', referenceImageIds: [] })
     expect(task.confirmation!.referenceImages).toBeUndefined()
   })
 
-  it('rejects a reference screenshot owned by a different task', async () => {
+  it('binds a conversation logo to an uploaded HTML build and delivers the original bytes', async () => {
+    const html = new TextEncoder().encode('<html><body>Original layout</body></html>')
+    const logo = new Uint8Array([137, 80, 78, 71])
+    for (const [id, slot, filename, mimeType, bytes] of [
+      ['html', 'sourceHtml', 'layout.html', 'text/html', html],
+      ['logo', 'referenceImage', 'logo.png', 'image/png', logo],
+    ] as const) {
+      harness.repository.assets.push({
+        id,
+        slot,
+        filename,
+        mimeType,
+        taskId: 'owned',
+        userId: 'user-1',
+        size: bytes.byteLength,
+        storageKey: id,
+        durationSeconds: null,
+        createdAt: new Date(),
+      })
+      harness.artifacts.set(id, bytes)
+    }
+    const withLogo: ConfirmationProposal = {
+      ...confirmation,
+      baseline: { kind: 'uploaded_html', assetId: 'html' },
+      resources: {
+        ...confirmation.resources,
+        endCard: { status: '用户上传', treatment: '使用 logo.png 作为品牌标志' },
+      },
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValue({ ...confirmationReply, confirmation: withLogo })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '参考这个 HTML 的横竖屏 layout，把 logo 塞进去',
+        attachmentIds: ['html', 'logo'],
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"confirmation"')
+    const task = harness.repository.tasks.get('owned')!
+    expect(task.confirmation?.referenceImages).toEqual([
+      { assetId: 'logo', filename: 'logo.png', description: '参考这个 HTML 的横竖屏 layout，把 logo 塞进去' },
+    ])
+    expect(task.confirmation?.resourceBindings?.endCard).toEqual([
+      { kind: 'imageAttachment', assetId: 'logo', filename: 'logo.png' },
+    ])
+    // 服务端依据已确认用途重新解析资源绑定，不能信任客户端自带的绑定结果。
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        confirmation: { ...task.confirmation, resourceBindings: undefined },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(confirmed.status, await confirmed.clone().text()).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        baseHtml: new TextDecoder().decode(html),
+        assets: [expect.objectContaining({ id: 'logo', slot: 'endCard', filename: 'logo.png', bytes: logo })],
+        referenceImages: [expect.objectContaining({ assetId: 'logo', bytes: logo })],
+      }),
+    )
+  })
+
+  it('can inspect an earlier attachment after a text follow-up without restoring obsolete screenshot labels', async () => {
+    harness.repository.assets.push({
+      id: 'image-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'logo.png',
+      mimeType: 'image/png',
+      size: 2,
+      storageKey: 'logo',
+      durationSeconds: null,
+      createdAt: new Date(),
+    })
+    harness.artifacts.set('logo', new Uint8Array([1, 2]))
+    await harness.repository.appendMessage(
+      'owned',
+      'user',
+      JSON.stringify({
+        kind: 'playable-user-turn',
+        text: '这是 logo',
+        attachments: [{ id: 'image-1', filename: 'logo.png', mimeType: 'image/png' }],
+        referenceImages: [
+          {
+            assetId: 'image-1',
+            filename: 'logo.png',
+            description: '这是 logo',
+            purpose: 'problem',
+            sourceBuildId: 'old-build',
+            sourceVersion: 2,
+          },
+        ],
+      }),
+    )
+    let result: unknown
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (input, options) => {
+      expect(input.attachedAssetIds).toEqual([])
+      expect(input.referenceImages).toEqual([{ assetId: 'image-1', filename: 'logo.png', description: '这是 logo' }])
+      expect(input.history?.[0].content).toContain('logo.png')
+      result = await options?.executeTool?.({ name: 'inspect_reference_images', assetIds: ['image-1'], assetId: null })
+      return confirmationReply
+    })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '把前面那张 logo 放到右上角' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"confirmation"')
+    expect(result).toEqual(referenceImageAnalysis)
+    expect(harness.imageAnalyst.analyze).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an image attachment owned by a different task', async () => {
     harness.repository.assets.push({
       id: 'foreign-image',
       taskId: 'other',
@@ -1229,8 +1347,8 @@ describe('playable task API', () => {
       }),
     )
     expect(events.filter((event) => String(event.type).startsWith('tool_'))).toEqual([
-      { type: 'tool_started', tool: 'inspect_reference_images', message: '正在分析参考图片' },
-      { type: 'tool_completed', tool: 'inspect_reference_images', message: '参考图片分析完成' },
+      { type: 'tool_started', tool: 'inspect_reference_images', message: '正在查看图片' },
+      { type: 'tool_completed', tool: 'inspect_reference_images', message: '图片查看完成' },
       { type: 'tool_completed', tool: 'respond_to_user' },
     ])
     expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain('image-1')
@@ -1435,7 +1553,7 @@ describe('playable task API', () => {
     )
     const body = await response.text()
 
-    expect(body).toContain('{"type":"tool_failed","tool":"inspect_reference_images","message":"参考图片分析暂不可用"}')
+    expect(body).toContain('{"type":"tool_failed","tool":"inspect_reference_images","message":"图片查看暂不可用"}')
     expect(body).not.toContain('secret-asset-id')
     expect(body).not.toContain('secret-filename.png')
     expect(body).not.toContain('secret-storage-path')
@@ -2078,7 +2196,7 @@ describe('playable task API', () => {
     expect(body).not.toContain('sk-test-secret')
     expect(body).not.toContain('sk-leaked1234')
     expect(harness.repository.tasks.get('owned')?.phase).toBe('awaiting_confirmation')
-    expect(harness.repository.tasks.get('owned')?.confirmation).toEqual(confirmation)
+    expect(harness.repository.tasks.get('owned')?.confirmation).toMatchObject(confirmation)
     expect(harness.repository.messages.map(({ role }) => role)).toEqual(['user', 'agent'])
     expect(JSON.stringify(harness.repository.messages)).not.toContain('sk-test-secret')
   })
@@ -2219,7 +2337,7 @@ describe('playable task API', () => {
       expect(savedTask?.phase).toBe('awaiting_revision_confirmation')
       expect(savedTask?.pendingRevision?.id).toBe(task.pendingRevision?.id)
       const savedReply = (await harness.repository.listMessages('owned')).findLast((item) => item.role === 'agent')
-      expect(JSON.parse(savedReply!.content).confirmation).toEqual(confirmation)
+      expect(JSON.parse(savedReply!.content).confirmation).toMatchObject(confirmation)
 
       const editedConfirmation = {
         ...confirmation,
@@ -2237,7 +2355,7 @@ describe('playable task API', () => {
 
       expect(harness.agent.build).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          confirmation: editedConfirmation,
+          confirmation: expect.objectContaining(editedConfirmation),
           revision: expect.objectContaining({ strategy: 'patch', baseBuildId: 'build-1' }),
           baseHtml: '<html>version one</html>',
         }),
@@ -2297,7 +2415,7 @@ describe('playable task API', () => {
         baseBuildId: 'build-2',
         baseVersion: 2,
         targetVersion: 6,
-        strategy: 'patch',
+        strategy: 'regenerate',
       })
       const confirmed = await harness.handlers.confirm(
         request('/api/playable-tasks/owned/confirm', 'POST', {
@@ -2312,7 +2430,7 @@ describe('playable task API', () => {
         expect.objectContaining({
           baseHtml: '<html>version 2</html>',
           baseConfirmation: historical,
-          revision: expect.objectContaining({ baseBuildId: 'build-2', strategy: 'patch' }),
+          revision: expect.objectContaining({ baseBuildId: 'build-2', strategy: 'regenerate' }),
         }),
       )
     },
@@ -3579,7 +3697,7 @@ describe('playable task API', () => {
     expect(task.confirmation).toMatchObject({ mode: 'gravity_fill', sourceTemplateId: null })
   })
 
-  it('regenerates from the newly selected template when a patch changes templates', async () => {
+  it('rejects a template change instead of silently converting a confirmed patch', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'awaiting_revision_confirmation'
     task.confirmation = confirmation
@@ -3605,15 +3723,9 @@ describe('playable task API', () => {
       }),
       { params: Promise.resolve({ taskId: 'owned' }) },
     )
-    expect(response.status).toBe(202)
-    expect(harness.repository.builds.at(-1)?.revision?.strategy).toBe('regenerate')
-    await harness.scheduled.at(-1)!()
-    expect(harness.agent.build).toHaveBeenCalledWith(
-      expect.objectContaining({
-        revision: expect.objectContaining({ strategy: 'regenerate' }),
-        baseHtml: await readFile(sourceTemplateFile('balloon_master'), 'utf8'),
-      }),
-    )
+    expect(response.status).toBe(409)
+    expect(task.pendingRevision?.strategy).toBe('patch')
+    expect(harness.agent.build).not.toHaveBeenCalled()
   })
 
   it('passes ZIP HTML and relative assets from requirements through the confirmed build', async () => {
@@ -3633,6 +3745,10 @@ describe('playable task API', () => {
     }
     harness.repository.assets.push(asset)
     harness.artifacts.set(asset.storageKey, bytes)
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      ...confirmationReply,
+      confirmation: { ...confirmation, baseline: { kind: 'uploaded_html', assetId: asset.id } },
+    })
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
     await (
       await harness.handlers.message(
@@ -3642,7 +3758,7 @@ describe('playable task API', () => {
     ).text()
     expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
       expect.objectContaining({
-        sourceHtml: expect.objectContaining({ html }),
+        htmlAttachments: [expect.objectContaining({ html })],
         importedAssets: [expect.objectContaining({ entrypoint: 'game/index.html' })],
       }),
       expect.anything(),
@@ -3735,6 +3851,174 @@ describe('playable task API', () => {
     }
   })
 
+  it('does not restore the original template when the user explicitly requests a fresh implementation', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.confirmation = { ...confirmation, sourceTemplateId: 'dragon_slots' }
+    task.latestArtifactKey = 'existing-html'
+    harness.repository.builds.push({
+      id: 'existing-build',
+      taskId: 'owned',
+      status: 'succeeded',
+      confirmation: task.confirmation,
+      artifactKey: task.latestArtifactKey,
+      createdAt: new Date(),
+    })
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'revision',
+      message: '重新制作',
+      reasoning: '用户明确从头开始',
+      confirmation: {
+        ...confirmation,
+        baseline: { kind: 'new' },
+        routing: { match: 'freeform', confidence: 1, differences: ['新玩法'] },
+      },
+      revision: { ...patchRevision, strategy: 'regenerate' },
+    })
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '从头制作新玩法，不用原来的模板' }),
+      context,
+    )
+    expect(await response.text()).toContain('"type":"revision"')
+    expect(task.confirmation).toMatchObject({ baseline: { kind: 'new' }, sourceTemplateId: null })
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        confirmation: task.confirmation,
+        revisionId: task.pendingRevision!.id,
+      }),
+      context,
+    )
+    expect(confirmed.status).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenCalled()
+    expect(vi.mocked(harness.agent.build).mock.calls.at(-1)![0].baseHtml).toBeUndefined()
+  })
+
+  // 将参考文件用途与修改策略交叉验证，防止某一条确认/构建分支再次把参考 HTML 当成基底。
+  it.each([
+    ['reference', 'patch'],
+    ['reference', 'regenerate'],
+    ['baseline', 'patch'],
+    ['baseline', 'regenerate'],
+  ] as const)('keeps HTML %s separate from the %s strategy through confirmation and build', async (usage, strategy) => {
+    const task = harness.repository.tasks.get('owned')!
+    const original = {
+      ...confirmation,
+      sourceHtmlAssetId: 'original',
+      sourceTemplateId: null,
+      routing: { match: 'freeform' as const, confidence: 1, differences: ['Original game'] },
+    }
+    task.phase = 'ready'
+    task.confirmation = original
+    task.latestArtifactKey = 'v2-html'
+    for (const version of [1, 2]) {
+      harness.repository.builds.push({
+        id: `build-${version}`,
+        taskId: 'owned',
+        status: 'succeeded',
+        confirmation: original,
+        artifactKey: `v${version}-html`,
+        createdAt: new Date(version),
+      })
+      harness.artifacts.set(
+        `v${version}-html`,
+        new TextEncoder().encode(`<html>Phaser game v${version}: Einstein, furry balls, existing assets</html>`),
+      )
+    }
+    const source = '<html>Original v1 source</html>'
+    const reference = '<html>Different ball-sort game with portrait and landscape layout</html>'
+    for (const [id, html] of [
+      ['original', source],
+      ['layout', reference],
+    ]) {
+      harness.repository.assets.push({
+        id,
+        taskId: 'owned',
+        userId: 'user-1',
+        slot: 'sourceHtml',
+        filename: `${id}.html`,
+        mimeType: 'text/html',
+        size: html.length,
+        storageKey: id,
+        durationSeconds: null,
+        createdAt: new Date(),
+      })
+      harness.artifacts.set(id, new TextEncoder().encode(html))
+    }
+    const logo = new Uint8Array([137, 80, 78, 71])
+    harness.repository.assets.push({
+      id: 'logo',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'logo.png',
+      mimeType: 'image/png',
+      size: logo.length,
+      storageKey: 'logo',
+      durationSeconds: null,
+      createdAt: new Date(),
+    })
+    harness.artifacts.set('logo', logo)
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      kind: 'revision',
+      message: '已整理',
+      reasoning: '按指令使用附件',
+      confirmation: {
+        ...original,
+        baseline: usage === 'baseline' ? { kind: 'uploaded_html', assetId: 'layout' } : undefined,
+        resources: { ...original.resources, endCard: { status: '用户上传', treatment: '使用 logo.png 作为品牌标志' } },
+      },
+      revision: { ...patchRevision, strategy },
+    })
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message:
+          usage === 'reference'
+            ? '参考这个 html 的横竖屏 layout，把 logo 放进去，保留原玩法'
+            : '换成上传的 layout.html 作为基底，把 logo 放进去',
+        attachmentIds: ['layout', 'logo'],
+      }),
+      context,
+    )
+    expect(await response.text()).toContain('"type":"revision"')
+    expect(task.confirmation?.baseline).toEqual(
+      usage === 'reference'
+        ? { kind: 'version', version: 2, buildId: 'build-2' }
+        : { kind: 'uploaded_html', assetId: 'layout' },
+    )
+    expect(task.confirmation?.sourceHtmlAssetId).toBe(usage === 'reference' ? 'original' : 'layout')
+    expect(task.pendingRevision?.strategy).toBe(strategy)
+    expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        htmlAttachments: expect.arrayContaining([expect.objectContaining({ assetId: 'layout', html: reference })]),
+      }),
+      expect.anything(),
+    )
+    // 确认请求即使携带另一份基底和附件列表，也必须沿用服务端已冻结的方案。
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        revisionId: task.pendingRevision!.id,
+        confirmation: { ...task.confirmation, baseline: { kind: 'new' }, htmlAttachmentIds: [] },
+      }),
+      context,
+    )
+    expect(confirmed.status, await confirmed.clone().text()).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseHtml:
+          usage === 'reference' ? '<html>Phaser game v2: Einstein, furry balls, existing assets</html>' : reference,
+        revision: expect.objectContaining({ strategy }),
+        htmlAttachments: expect.arrayContaining([
+          expect.objectContaining({ assetId: 'layout', bytes: new TextEncoder().encode(reference) }),
+        ]),
+        assets: expect.arrayContaining([expect.objectContaining({ id: 'logo', bytes: logo })]),
+      }),
+    )
+  })
+
   it('reads uploaded HTML for requirements, pins confirmation and builds the exact source', async () => {
     const html = '<!doctype html><html><body><button>Spin</button></body></html>'
     const asset: PlayableAsset = {
@@ -3751,6 +4035,10 @@ describe('playable task API', () => {
     }
     harness.repository.assets.push(asset)
     harness.artifacts.set(asset.storageKey, new TextEncoder().encode(html))
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValueOnce({
+      ...confirmationReply,
+      confirmation: { ...confirmation, baseline: { kind: 'uploaded_html', assetId: asset.id } },
+    })
     const context = { params: Promise.resolve({ taskId: 'owned' }) }
     const response = await harness.handlers.message(
       request('/api/playable-tasks/owned/messages', 'POST', {
@@ -3761,7 +4049,9 @@ describe('playable task API', () => {
     )
     await response.text()
     expect(harness.agent.proposeConfirmation).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceHtml: { assetId: asset.id, filename: asset.filename, html, truncated: false } }),
+      expect.objectContaining({
+        htmlAttachments: [{ assetId: asset.id, filename: asset.filename, html, truncated: false }],
+      }),
       expect.anything(),
     )
     const task = harness.repository.tasks.get('owned')!
@@ -3774,7 +4064,12 @@ describe('playable task API', () => {
     // 客户端即使篡改确认请求，也不能替换服务端锁定的 HTML 基底。
     const confirmed = await harness.handlers.confirm(
       request('/api/playable-tasks/owned/confirm', 'POST', {
-        confirmation: { ...task.confirmation, sourceHtmlAssetId: 'other-source' },
+        confirmation: {
+          ...task.confirmation,
+          sourceHtmlAssetId: 'other-source',
+          baseline: { kind: 'uploaded_html', assetId: 'other-source' },
+          htmlAttachmentIds: ['other-source'],
+        },
       }),
       context,
     )
@@ -4161,7 +4456,7 @@ describe('playable task API', () => {
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: 'Codex 服务当前繁忙，自动重试后仍未完成，请稍后再试。',
+      message: 'Codex 服务当前繁忙，未完成构建，请稍后再试。',
     })
     expect(JSON.stringify(harness.repository.events)).not.toContain('Reconnecting')
     expect(JSON.stringify(harness.repository.events)).not.toContain('servers are currently overloaded')
@@ -4190,9 +4485,18 @@ describe('playable task API', () => {
       message: 'Codex 请求频率已达到限制，请稍后再试。',
     },
     {
+      name: 'model capacity',
+      // 容量不足属于服务繁忙；公开失败文案不应落回通用错误或包含提供方原文。
+      failure: new PlayableBuildExecutionError(
+        'agent',
+        new Error('Selected model is at capacity. Please try a different model.'),
+      ),
+      message: 'Codex 服务当前繁忙，未完成构建，请稍后再试。',
+    },
+    {
       name: 'connection interruption',
       failure: new PlayableBuildExecutionError('agent', new Error('stream disconnected before completion')),
-      message: 'Codex 连接中断，自动重试后仍未完成，请稍后再试。',
+      message: 'Codex 连接中断，未完成构建，请稍后再试。',
     },
   ])('reports a specific safe Codex error for $name', async ({ failure, message }) => {
     const task = harness.repository.tasks.get('owned')!
@@ -4551,6 +4855,30 @@ describe('playable task API', () => {
     )
     expect(await download.text()).toBe('<html>safe</html>')
     expect(JSON.stringify([...inline.headers])).not.toContain('blob.vercel-storage.com')
+  })
+
+  // 编辑功能只改变预览响应，存储的 HTML 与下载文件必须保持原样。
+  it('adds the capture bridge only to editor previews and leaves downloads unchanged', async () => {
+    const task = harness.repository.tasks.get('owned')!
+    task.phase = 'ready'
+    task.latestArtifactKey = 'users/user-1/tasks/owned/build/playable.html'
+    const original = '<!doctype html><html><head><script>window.game = true</script></head><body>Game</body></html>'
+    harness.artifacts.set(task.latestArtifactKey, new TextEncoder().encode(original))
+    const context = { params: Promise.resolve({ taskId: 'owned' }) }
+    const preview = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&feedback=1'),
+      context,
+    )
+    const html = await preview.text()
+    expect(html).toContain('playable:capture-result')
+    expect(html.indexOf('preserveDrawingBuffer')).toBeLessThan(html.indexOf('window.game'))
+    expect(preview.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    expect(preview.headers.get('content-security-policy')).not.toContain('allow-same-origin')
+    const download = await harness.handlers.artifact(
+      request('/api/playable-tasks/owned/artifact?kind=playable&feedback=1&download=1'),
+      context,
+    )
+    expect(await download.text()).toBe(original)
   })
 
   it('allows embedded 3D model fetches in the opaque preview without enabling external network access', async () => {

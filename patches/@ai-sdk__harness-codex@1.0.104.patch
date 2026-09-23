@@ -1,0 +1,111 @@
+diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
+index 199355b9dd3ffac5a76edd5b04b162527dcf466a..f2685c255dafb57f11b6cf9245cb910fd99868a9 100644
+--- a/dist/bridge/index.mjs
++++ b/dist/bridge/index.mjs
+@@ -930,9 +930,10 @@ function createEmitStreamEvent({
+       return;
+     }
+     if (event.type === "error") {
+-      emitError({
+-        error: event.message ?? "codex error",
+-        message: "codex stream error"
++      // 原生 error 也可能是重连通知，作为 raw 转发，等待本轮最终结果。
++      send({
++        type: "raw",
++        rawValue: { type: "codex.error", message: event.message ?? "codex error" }
+       });
+       return;
+     }
+@@ -1415,6 +1416,9 @@ async function runTurn(start, turn) {
+   emit({ type: "stream-start" });
+   const userMessage = start.prompt;
+   let turnUsage;
++  // 流自然结束也可能是断线；只有原生完成事件才能授权输出成功终态。
++  let turnCompleted = false;
++  let lastStreamError;
+   const stepTracker = createCodexStepTracker({ send: emit });
+   const emitStreamEvent = createEmitStreamEvent({
+     send: emit,
+@@ -1430,7 +1434,9 @@ async function runTurn(start, turn) {
+       ...start.responseFormat?.type === "json" && start.responseFormat.schema != null ? { outputSchema: start.responseFormat.schema } : {}
+     });
+     for await (const event of events) {
+-      if (turn.abortSignal.aborted) break;
++      turn.abortSignal.throwIfAborted();
++      if (event.type === "turn.completed") turnCompleted = true;
++      if (event.type === "error") lastStreamError = event.message;
+       if (cliShimPath && event.item?.type === "command_execution") {
+         const relayCalls = typeof event.item.command === "string" ? parseToolRelayCommands({
+           command: event.item.command,
+@@ -1447,6 +1453,13 @@ async function runTurn(start, turn) {
+         }
+       }
+       emitStreamEvent(event);
++      // 失败已经上报，立即返回，避免随后继续发出成功的 finish。
++      if (event.type === "turn.failed") return;
++    }
++    // 即使未产生后续事件，流结束时也要保留取消原因；断流则优先保留最后的异常文案。
++    turn.abortSignal.throwIfAborted();
++    if (!turnCompleted) {
++      throw new Error(lastStreamError ?? "Codex stream closed before turn.completed");
+     }
+   } catch (err) {
+     turn.emitError({ error: err, message: "codex turn failed" });
+diff --git a/src/bridge/create-emit-stream-event.ts b/src/bridge/create-emit-stream-event.ts
+index 7fd6d8a27c91ed7fe8d456a37db274479be5a180..fc1525adeb24103d9c9a39e2ff81d847b654d58a 100644
+--- a/src/bridge/create-emit-stream-event.ts
++++ b/src/bridge/create-emit-stream-event.ts
+@@ -96,9 +96,11 @@ export function createEmitStreamEvent({
+       return;
+     }
+     if (event.type === 'error') {
+-      emitError({
+-        error: event.message ?? 'codex error',
+-        message: 'codex stream error',
++      // 原生 error 也承载重连和重试通知，不能在此关闭上层事件订阅。
++      // 最终失败由 turn.failed 或未收到完成事件的流结束统一处理。
++      send({
++        type: 'raw',
++        rawValue: { type: 'codex.error', message: event.message ?? 'codex error' },
+       });
+       return;
+     }
+diff --git a/src/bridge/index.ts b/src/bridge/index.ts
+index 62f9727993aeb1165c9d2827e5fe4413a6258fb9..524791cc4f6812d4ab1b595c538695c73bf8b332 100644
+--- a/src/bridge/index.ts
++++ b/src/bridge/index.ts
+@@ -221,6 +221,9 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+ 
+   const userMessage = start.prompt;
+   let turnUsage: Record<string, unknown> | undefined;
++  // 流自然结束也可能是断线；只有原生完成事件才能授权输出成功终态。
++  let turnCompleted = false;
++  let lastStreamError: string | undefined;
+   const stepTracker = createCodexStepTracker({ send: emit });
+   const emitStreamEvent = createEmitStreamEvent({
+     send: emit,
+@@ -240,7 +243,9 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+         : {}),
+     });
+     for await (const event of events as AsyncIterable<CodexEvent>) {
+-      if (turn.abortSignal.aborted) break;
++      turn.abortSignal.throwIfAborted();
++      if (event.type === 'turn.completed') turnCompleted = true;
++      if (event.type === 'error') lastStreamError = event.message;
+       // Temporary workaround for upstream codex MCP-tool bug — see ./cli-relay.ts
+       if (cliShimPath && event.item?.type === 'command_execution') {
+         const relayCalls =
+@@ -261,6 +266,13 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+         }
+       }
+       emitStreamEvent(event);
++      // 失败已经上报，立即返回，避免随后继续发出成功的 finish。
++      if (event.type === 'turn.failed') return;
++    }
++    // 即使未产生后续事件，流结束时也要保留取消原因；断流则优先保留最后的异常文案。
++    turn.abortSignal.throwIfAborted();
++    if (!turnCompleted) {
++      throw new Error(lastStreamError ?? 'Codex stream closed before turn.completed');
+     }
+   } catch (err) {
+     turn.emitError({ error: err, message: 'codex turn failed' });

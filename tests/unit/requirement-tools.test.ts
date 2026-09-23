@@ -682,6 +682,8 @@ it('requires an explicit rendering decision in new model output while accepting 
     requirementAgentStepOutputSchema.safeParse(
       output({
         ...legacy,
+        // 新模型输出要求显式提供键；null 表示采用默认基底，不代表读取上传顺序。
+        baseline: null,
         resources: { ...legacy.resources, models: { status: '内置默认', treatment: '不使用额外 3D 模型' } },
         rendering: { renderer: 'threejs', physics: 'rapier', reason: '独立积木需要空间碰撞和坍塌' },
       }),

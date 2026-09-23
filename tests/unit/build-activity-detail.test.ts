@@ -7,6 +7,36 @@ import {
 } from '@/lib/playable/build-activity-detail'
 
 describe('公开构建事件', () => {
+  it('将 CLI 和 Harness 的重连、回退、异常通知显示为固定状态，不暴露提供方载荷', () => {
+    const report = vi.fn()
+    const stream = createHarnessActivityReporter(report)
+    const notices = [
+      ['Reconnecting... 1/5 (private sk-private-token)', 'agent_reconnecting'],
+      ['Reconnecting... waiting for network', 'agent_reconnecting'],
+      ['Falling back from WebSockets to HTTPS transport. private', 'agent_transport_fallback'],
+      ['Previous response was not found. Retrying the full request.', 'agent_retrying'],
+      ['Selected model is at capacity. Please try a different model.', 'agent_warning'],
+    ]
+    for (const [message, activity] of notices) {
+      reportCliBuildActivity({ type: 'error', message }, report)
+      stream.accept({ type: 'raw', rawValue: { type: 'codex.error', message } })
+      expect(report.mock.calls.slice(-2)).toEqual([[activity], [activity]])
+    }
+    expect(JSON.stringify(report.mock.calls)).not.toContain('private')
+  })
+
+  it('重连通知不会截断仍在接收的文本，避免跨片段脱敏失效', () => {
+    const report = vi.fn()
+    const stream = createHarnessActivityReporter(report)
+    // 故意把同一密钥拆到重连前后，完整段落保存后才能进行精确替换。
+    stream.accept({ type: 'text-delta', id: 't1', text: 'sk-pri' })
+    stream.accept({ type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 1/5' } })
+    expect(report.mock.calls).toEqual([['agent_reconnecting']])
+    stream.accept({ type: 'text-delta', id: 't1', text: 'vate-token' })
+    stream.accept({ type: 'text-end', id: 't1' })
+    expect(sanitizeBuildActivityDetail(report.mock.calls[1][1], ['sk-private-token']).text).toBe('[已隐藏]')
+  })
+
   it('隐藏 CLI 和分段 Harness 的内部完成协议，保留正常说明', () => {
     const report = vi.fn()
     reportCliBuildActivity(

@@ -380,13 +380,20 @@ describe('CodexCliPlayableAgent', () => {
       expect(invocation.prompt).toContain('requirement-context.json')
       const references = JSON.parse(await readFile(path.join(invocation.workspace, 'reference-images.json'), 'utf8'))
       expect(references[0]).toMatchObject({
-        sourceVersion: 2,
-        purpose: 'problem',
+        filename: 'ref.png',
+        description: 'Extra row',
         workspacePath: 'reference-images/1.png',
       })
       expect(new Uint8Array(await readFile(path.join(invocation.workspace, 'reference-images/1.png')))).toEqual(
         new Uint8Array([1, 2]),
       )
+      // 参考 HTML 原件独立落盘，CLI 通道应能读取它而不把它自动设为游戏基底。
+      const htmlFiles = JSON.parse(await readFile(path.join(invocation.workspace, 'html-attachments.json'), 'utf8'))
+      expect(htmlFiles).toEqual([{ assetId: 'layout', filename: 'layout.html', path: 'html-attachments/1.html' }])
+      expect(await readFile(path.join(invocation.workspace, htmlFiles[0].path), 'utf8')).toBe(
+        '<html>Layout reference</html>',
+      )
+      expect(invocation.prompt).toContain('Do not copy a reference HTML wholesale')
       const resources = await readFile(path.join(invocation.workspace, 'asset-manifest.json'), 'utf8')
       expect(resources).not.toContain('reference-images')
       expect(JSON.parse(resources).assets[0]).toMatchObject({
@@ -397,7 +404,8 @@ describe('CodexCliPlayableAgent', () => {
       expect(await readFile(path.join(invocation.workspace, 'user-assets/tileFaces/model-block.glb'))).toEqual(
         Buffer.from(triangleGlb()),
       )
-      expect(invocation.prompt).toContain('not game assets')
+      expect(invocation.prompt).toContain('embed the original file offline when requested')
+      expect(invocation.prompt).not.toContain('never embed them in the deliverable')
       invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
       invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
       return { completed: true }
@@ -426,14 +434,18 @@ describe('CodexCliPlayableAgent', () => {
       onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
+      htmlAttachments: [
+        {
+          assetId: 'layout',
+          filename: 'layout.html',
+          bytes: new TextEncoder().encode('<html>Layout reference</html>'),
+        },
+      ],
       referenceImages: [
         {
           assetId: 'ref',
           filename: 'ref.png',
           mimeType: 'image/png',
-          sourceBuildId: 'v2',
-          sourceVersion: 2,
-          purpose: 'problem',
           description: 'Extra row',
           bytes: new Uint8Array([1, 2]),
         },

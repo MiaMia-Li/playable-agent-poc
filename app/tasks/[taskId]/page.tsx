@@ -67,8 +67,10 @@ export default async function TaskPage({ params, searchParams }: TaskPageProps) 
   const initialBuildFailureMessage =
     task.phase === 'failed' ? events.findLast((event) => event.type === 'build_failed')?.message : undefined
 
+  // 切换任务时重建工作区，避免草稿、排队需求和截图反馈沿用上一个任务的状态。
   return (
     <PlayableWorkspace
+      key={task.id}
       taskId={task.id}
       initialPrompt={task.prompt}
       initialPhase={task.phase}

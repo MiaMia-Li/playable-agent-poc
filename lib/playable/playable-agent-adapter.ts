@@ -94,6 +94,8 @@ export interface AgentInput {
   // 需求阶段只传有截断标记的摘录；ConfirmedBuildInput.importedFiles 才承载完整源码和二进制。
   importedSourceFiles?: { path: string; text: string; truncated: boolean }[]
   sourceHtml?: { assetId: string; filename: string; html: string; truncated: boolean }
+  /** 对话中的 HTML 摘录；可供理解布局或源码，用途与是否选为基底分别确定。 */
+  htmlAttachments?: { assetId: string; filename: string; html: string; truncated: boolean }[]
   attachedAssetIds?: string[]
   referenceImages?: ReferenceImageEvidence[]
   gameplayBlueprint?: GameplayBlueprintDocument
@@ -186,6 +188,8 @@ export interface ConfirmedBuildInput {
   confirmation: ConfirmationProposal
   assets?: PlayableBuildAsset[]
   referenceImages?: (ReferenceImageEvidence & { mimeType: string; bytes: Uint8Array })[]
+  /** 确认时冻结的 HTML 附件原文；实际修改起点单独放在 baseHtml。 */
+  htmlAttachments?: { assetId: string; filename: string; bytes: Uint8Array }[]
   gameplayBlueprint?: GameplayBlueprintDocument
   /** Only when the confirmation matches the reference's look (spec §5). */
   referenceKeyframes?: ReferenceKeyframeBuildInput[]

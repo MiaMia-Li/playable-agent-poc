@@ -257,6 +257,39 @@ describe('runPlayableBuild', () => {
     expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
   })
 
+  // 直接检查沙箱内的初始输出与参考附件，覆盖只验证方案字段却漏掉文件替换的回归。
+  it('seeds the selected version during regeneration and keeps HTML references separate', async () => {
+    const sandbox = await createLocalSandbox()
+    const input = buildInput('center_collision', 'sk-version-baseline')
+    input.confirmation.baseline = { kind: 'version', buildId: 'base', version: 2 }
+    input.revision = {
+      id: 'revision',
+      baseBuildId: 'base',
+      baseVersion: 2,
+      targetVersion: 3,
+      strategy: 'regenerate',
+      summary: '调整布局',
+      changes: ['横竖屏布局'],
+      preserved: ['原游戏玩法'],
+    }
+    input.baseHtml = await readFile('public/playable-templates/center_collision.html', 'utf8')
+    input.htmlAttachments = [
+      { assetId: 'reference', filename: 'layout.html', bytes: new TextEncoder().encode('<html>Different game</html>') },
+    ]
+    const result = await runPlayableBuild(input, {
+      createSandbox: async () => sandbox,
+      executeAgent: async ({ workspace }) => {
+        expect(await readFile(path.join(workspace, 'output.html'), 'utf8')).toBe(input.baseHtml)
+        expect(await readFile(path.join(workspace, 'current-playable.html'), 'utf8')).toBe(input.baseHtml)
+        const files = JSON.parse(await readFile(path.join(workspace, 'html-attachments.json'), 'utf8'))
+        expect(files[0]).toMatchObject({ assetId: 'reference', filename: 'layout.html' })
+        expect(await readFile(path.join(workspace, files[0].path), 'utf8')).toBe('<html>Different game</html>')
+      },
+    })
+    expect(result.html).toBe(input.baseHtml)
+    expect(sandbox.commands.some(({ command }) => command.includes('build-playable.mjs'))).toBe(false)
+  })
+
   it('seeds uploaded HTML without running a registered template build', async () => {
     const sandbox = await createLocalSandbox()
     const input = buildInput('center_collision', 'sk-uploaded-html')

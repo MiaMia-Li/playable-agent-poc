@@ -314,6 +314,11 @@ const resourceSchema = z.strictObject({
 
 const resourceBindingSchema = z.discriminatedUnion('kind', [
   z.strictObject({
+    kind: z.literal('imageAttachment'),
+    assetId: z.string().min(1).max(200),
+    filename: z.string().min(1).max(500),
+  }),
+  z.strictObject({
     kind: z.literal('sourceHtml'),
     assetId: z.string().min(1).max(200),
     filename: z.string().min(1).max(500),
@@ -531,13 +536,11 @@ function validateConfirmationPresentation(
   }
 }
 
-// 截图来源与修改基线独立：跨版本图片可作对照，但不能自动成为构建起点。
-export const referenceImageEvidenceSchema = z.strictObject({
+// referenceImage 保留为存储兼容名称；图片用途由对话决定。
+// 读取历史记录时丢弃旧版自动推断的 purpose/sourceVersion/sourceBuildId。
+export const referenceImageEvidenceSchema = z.object({
   assetId: z.string().min(1),
   filename: z.string(),
-  sourceBuildId: z.string().nullable(),
-  sourceVersion: z.number().int().positive().nullable(),
-  purpose: z.enum(['problem', 'target']),
   description: z.string().max(4000),
 })
 export type ReferenceImageEvidence = z.infer<typeof referenceImageEvidenceSchema>
@@ -572,15 +575,27 @@ function validateRenderingDecision(
     })
 }
 
+// 基底与修改策略分别确认；上传附件本身不选择基底。
+export const buildBaselineSchema = z.union([
+  z.strictObject({ kind: z.literal('version'), buildId: z.string().min(1), version: z.number().int().positive() }),
+  z.strictObject({ kind: z.literal('uploaded_html'), assetId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal('new') }),
+])
+export type BuildBaseline = z.infer<typeof buildBaselineSchema>
+
 export const confirmationProposalSchema = z
   .strictObject({
+    // 旧记录可缺省或为 null；新方案在提交给用户前由宿主解析成真实基底。
+    baseline: buildBaselineSchema.nullable().optional(),
     rendering: renderingDecisionSchema.optional(),
     // 宿主绑定的源码素材 ID（也可指向带 HTML 入口的压缩包），以及确认时锁定的导入集合。
     sourceHtmlAssetId: z.string().min(1).max(200).optional(),
     importedAssetIds: z.array(z.string().min(1).max(200)).optional(),
+    // 冻结本次构建可读取的 HTML 附件集合，不表示这些文件都是实现基底。
+    htmlAttachmentIds: z.array(z.string().min(1).max(200)).optional(),
     // 宿主解析的字段级来源；模型不能伪造源 HTML 或压缩包内路径。
     resourceBindings: resourceBindingsSchema.optional(),
-    referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
+    referenceImages: z.array(referenceImageEvidenceSchema).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),
@@ -596,6 +611,7 @@ export const confirmationProposalSchema = z
 
 export const generatedConfirmationProposalSchema = z
   .strictObject({
+    baseline: buildBaselineSchema.nullable().optional(),
     rendering: renderingDecisionSchema.optional(),
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,

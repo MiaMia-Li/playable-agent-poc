@@ -1,5 +1,7 @@
 'use client'
 
+import { buildBaselineLabel } from '@/lib/playable/build-baseline'
+
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { useId, useRef, useState } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
@@ -206,13 +208,12 @@ export function ConfirmationTable({
         </div>
       )}
       {Boolean(proposal.referenceImages?.length) && (
-        <section aria-label="本次构建参考截图" className="rounded-xl border p-3 text-sm">
-          <h3 className="font-medium">本次构建参考截图</h3>
+        <section aria-label="本次构建图片附件" className="rounded-xl border p-3 text-sm">
+          <h3 className="font-medium">本次构建图片附件</h3>
           <ul className="mt-1 space-y-1">
             {proposal.referenceImages?.map((ref) => (
               <li key={ref.assetId}>
-                {ref.filename} · {ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} ·{' '}
-                {ref.purpose === 'problem' ? '问题截图' : '目标效果'}
+                {ref.filename}
                 <p className="text-muted-foreground whitespace-pre-wrap text-xs">{ref.description}</p>
               </li>
             ))}
@@ -244,9 +245,15 @@ export function ConfirmationTable({
                     : '实现方式'}
               </th>
               <td className="space-y-2 px-3 py-2">
+                {/* baseline 表示实际修改起点；sourceHtmlAssetId 可能只是该版本的原始来源。 */}
+                {proposal.baseline && (
+                  <p className="text-sm font-medium">修改基底：{buildBaselineLabel(proposal, uploadedAssets)}</p>
+                )}
                 {proposal.sourceHtmlAssetId ? (
                   <>
-                    <Badge variant="secondary">基于上传 HTML 修改</Badge>
+                    <Badge variant="secondary">
+                      {proposal.baseline?.kind === 'version' ? '保留版本原有实现' : '基于上传 HTML 修改'}
+                    </Badge>
                     <p className="text-muted-foreground text-xs">
                       {uploadedAssets.find((asset) => asset.id === proposal.sourceHtmlAssetId)?.filename ??
                         '已确认的 HTML 源文件'}
@@ -317,8 +324,13 @@ export function ConfirmationTable({
             </tr>
             {assetFields.map(({ slot, label }) => {
               const resource = confirmationResource(proposal, slot)
-              const slotAssets = uploadedAssets.filter((asset) => asset.slot === slot)
               const bindings = proposal.resourceBindings?.[slot] ?? []
+              // 对话图片可被明确用作资源；展示已绑定的原文件，不要求用户再次上传到资源槽。
+              const slotAssets = uploadedAssets.filter(
+                (asset) =>
+                  asset.slot === slot ||
+                  bindings.some((binding) => binding.kind === 'imageAttachment' && binding.assetId === asset.id),
+              )
               const importedBindings = bindings.filter((binding) => binding.kind === 'import')
               const sourceHtmlBindings = bindings.filter((binding) => binding.kind === 'sourceHtml')
               const importedBindingsExpanded = expandedImportedSlots.has(slot)

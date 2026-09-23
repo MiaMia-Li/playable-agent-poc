@@ -1,3 +1,4 @@
+import { htmlAttachmentWorkspaceFiles } from './source-html'
 import { randomUUID } from 'node:crypto'
 import { SandboxDiagnostics } from './sandbox-diagnostics'
 import { attachImportedManifest } from './task-imports'
@@ -365,8 +366,11 @@ export async function runPlayableBuild(
         abortSignal: dependencies.abortSignal,
       })
     }
-    // 使用与本地 CLI 相同的清单格式，让构建 Agent 能读取图片本身而非仅看到文件名。
-    for (const file of referenceImageWorkspaceFiles(input.referenceImages)) {
+    // 与本地 CLI 共用附件清单；HTML 和图片原件单独落盘，不覆盖已选基底。
+    for (const file of [
+      ...htmlAttachmentWorkspaceFiles(input.htmlAttachments),
+      ...referenceImageWorkspaceFiles(input.referenceImages),
+    ]) {
       await sandbox.writeBinaryFile({
         path: path.join(workspace, file.path),
         content: file.bytes,
@@ -431,10 +435,12 @@ export async function runPlayableBuild(
         abortSignal: dependencies.abortSignal,
       })
     } else if (
+      input.baseHtml ||
       confirmation.sourceHtmlAssetId ||
       confirmation.sourceTemplateId ||
       input.revision?.strategy === 'patch'
     ) {
+      // 基底存在时必须直接种入输出，不能因 regenerate 而再次执行默认模板构建。
       if (!input.baseHtml) throw new Error('Template source is missing')
       await sandbox.writeTextFile({
         path: path.join(workspace, 'output.html'),
@@ -462,10 +468,12 @@ export async function runPlayableBuild(
     await dependencies.logger?.info('Running playable agent')
     stage = 'agent'
     const earlyPreview = Boolean(sandboxValidationEnabled && input.onPreview && supportsFastPreview(confirmation))
+    // 参数替换快路只适用于已确认的 patch；不能借 parameterOnly 跳过用户要求的重新制作。
     let parameterPatched = false
     if (
       earlyPreview &&
-      input.revision?.parameterOnly &&
+      input.revision?.strategy === 'patch' &&
+      input.revision.parameterOnly &&
       input.baseHtml &&
       input.baseConfirmation &&
       input.reusableScenarios

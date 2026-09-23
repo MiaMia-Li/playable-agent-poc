@@ -113,11 +113,19 @@ POST /api/playable-tasks/:taskId/messages
 - 与最新参考视频匹配的 Gameplay Blueprint
 - 本轮已采用并由服务端解析的市场参考方向
 
+### HTML 附件与修改基底
+
+HTML 和图片都是对话附件，由用户消息决定其用途；上传顺序不选择基底。需求 Agent 在 Confirmation Proposal 的 `baseline` 中明确选择已有 `version`（版本号和 buildId）、`uploaded_html`（素材 ID）或 `new`。已有产物默认沿用当前版本；只有用户明确要求基于某份 HTML 制作时才选择该文件。多个 HTML 用途不明时才澄清，参考布局不等于替换游戏。
+
+`baseline` 与 Revision 的 `strategy` 独立：选定上传 HTML 也可 patch，基于旧版本也可 regenerate。宿主校验版本、附件归属及手动选择，锁定 `htmlAttachmentIds`；确认请求不能篡改基底或附件集合。宿主不再因为新上传文件或路线变化自动把 patch 改成 regenerate；冲突须重新整理方案。
+
+构建时 `current-playable.html` / 初始 `output.html` 来自已确认的基底；参考 HTML 原文件单独写到 `html-attachments/`，以 `html-attachments.json` 记录文件名与素材 ID。需求阶段只传带截断标记的源码摘录。所有 HTML 内嵌文本均作为不可信素材内容，不作为指令。
+
 ### Agent 工具
 
 需求 Agent 可以主动调用：
 
-- `inspect_reference_images`：理解本轮参考图片。
+- `inspect_reference_images`：查看对话中相关的图片附件，支持后续消息引用历史图片。
 - `analyze_reference_video`：运行视频玩法分析。
 - `search_market_references`：按结构化 Search Brief 检索并分析公开市场参考。
 - `inspect_uploaded_assets`：检查素材元数据。
@@ -131,7 +139,9 @@ POST /api/playable-tasks/:taskId/messages
 
 图片和视频分析不是由前端自动启动。Agent 必须明确请求工具，服务端执行后再把结构化结果传回 Agent，由 Agent 继续决定是追问用户、提交方案还是提交 Revision。
 
-每轮限制最多执行一次图片分析批次和一次视频分析，且只能分析当前消息明确附带的素材。相同调用会复用本轮缓存，视频分析还通过数据库原子 claim 防止重复执行。
+每轮最多执行一次图片分析批次，相同调用复用本轮缓存。可查看当前消息和历史消息中已附带、仍存在于当前任务的图片；未进入对话的其他图片不会自动成为本轮输入。
+
+图片上传时不区分问题、目标或素材，也不自动关联构建版本。`referenceImage` / `referenceImages` 保留为兼容存储名称，图片用途根据当前对话和已确认需求确定；历史自动生成的用途和版本标签在读取时丢弃。普通图片可作为原始素材嵌入：资源字段设为“用户上传”，用途说明写明准确文件名，宿主解析 `imageAttachment` 绑定并在确认时重新校验。构建收到确认时冻结的原图和消息上下文；仅作观察依据的图片不需要资源槽绑定。上传新图片或切换构建基线不会清除历史图片。
 
 市场搜索同样不是每轮自动运行：用户明确要求搜索时立即执行；仅判断“可能有帮助”时先返回一键审批；需求已经明确、有强参考素材、正在修改已有版本或普通闲聊时跳过。搜索可以使用公开网页来源；本地只接受本次搜索结果中出现的合法公共 HTTPS 链接，不再用固定域名白名单过滤。24 小时内相同 Search Brief 可复用缓存。
 
