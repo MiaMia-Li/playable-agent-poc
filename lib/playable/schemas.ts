@@ -314,6 +314,11 @@ const resourceSchema = z.strictObject({
 
 const resourceBindingSchema = z.discriminatedUnion('kind', [
   z.strictObject({
+    kind: z.literal('imageAttachment'),
+    assetId: z.string().min(1).max(200),
+    filename: z.string().min(1).max(500),
+  }),
+  z.strictObject({
     kind: z.literal('sourceHtml'),
     assetId: z.string().min(1).max(200),
     filename: z.string().min(1).max(500),
@@ -531,13 +536,11 @@ function validateConfirmationPresentation(
   }
 }
 
-// 截图来源与修改基线独立：跨版本图片可作对照，但不能自动成为构建起点。
-export const referenceImageEvidenceSchema = z.strictObject({
+// referenceImage 保留为存储兼容名称；图片用途由对话决定。
+// 读取历史记录时丢弃旧版自动推断的 purpose/sourceVersion/sourceBuildId。
+export const referenceImageEvidenceSchema = z.object({
   assetId: z.string().min(1),
   filename: z.string(),
-  sourceBuildId: z.string().nullable(),
-  sourceVersion: z.number().int().positive().nullable(),
-  purpose: z.enum(['problem', 'target']),
   description: z.string().max(4000),
 })
 export type ReferenceImageEvidence = z.infer<typeof referenceImageEvidenceSchema>
@@ -580,7 +583,7 @@ export const confirmationProposalSchema = z
     importedAssetIds: z.array(z.string().min(1).max(200)).optional(),
     // 宿主解析的字段级来源；模型不能伪造源 HTML 或压缩包内路径。
     resourceBindings: resourceBindingsSchema.optional(),
-    referenceImages: z.array(referenceImageEvidenceSchema).max(10).optional(),
+    referenceImages: z.array(referenceImageEvidenceSchema).optional(),
     sourceTemplateId: z.enum(sourceTemplateIds).nullable().optional(),
     routing: routingDecisionSchema.default({ match: 'exact', confidence: 1, differences: [] }),
     presentation: confirmationPresentationSchema.optional(),

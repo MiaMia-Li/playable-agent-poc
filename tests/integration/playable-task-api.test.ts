@@ -1066,7 +1066,7 @@ describe('playable task API', () => {
     )
   })
 
-  it('replaces screenshot batches, inherits a follow-up, reuses selected history and freezes the build snapshot', async () => {
+  it('retains conversation images without purpose or version, reuses history and freezes the build snapshot', async () => {
     const task = harness.repository.tasks.get('owned')!
     task.phase = 'ready'
     task.confirmation = confirmation
@@ -1111,16 +1111,16 @@ describe('playable task API', () => {
     await send({ message: '最底部多出红中', attachmentIds: ['a', 'b'] })
     expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b'])
     await send({ message: '看新的顶部问题', attachmentIds: ['c'] })
-    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['c'])
+    expect(task.confirmation!.referenceImages?.map((ref) => ref.assetId)).toEqual(['a', 'b', 'c'])
     await send({ message: '这个问题仍在' })
     expect(harness.agent.proposeConfirmation).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        attachedAssetIds: ['c'],
+        attachedAssetIds: [],
         referenceImages: [
+          expect.objectContaining({ assetId: 'a' }),
+          expect.objectContaining({ assetId: 'b' }),
           expect.objectContaining({
             assetId: 'c',
-            sourceVersion: 1,
-            purpose: 'problem',
             description: '看新的顶部问题',
           }),
         ],
@@ -1130,7 +1130,7 @@ describe('playable task API', () => {
     await send({ message: '再对照第一张', referenceImageIds: ['a', 'c'] })
     const frozen = task.confirmation!.referenceImages!
     expect(frozen.map((ref) => ref.assetId)).toEqual(['a', 'c'])
-    expect(frozen[0].description).toBe('最底部多出红中')
+    expect(frozen[0]).toEqual({ assetId: 'a', filename: 'a.png', description: '最底部多出红中' })
     const confirmed = await harness.handlers.confirm(
       request('/api/playable-tasks/owned/confirm', 'POST', {
         revisionId: task.pendingRevision!.id,
@@ -1153,12 +1153,129 @@ describe('playable task API', () => {
       harness.repository.messages
         .filter((message) => message.role === 'user')
         .map((message) => JSON.parse(message.content).referenceImages.map((ref: { assetId: string }) => ref.assetId)),
-    ).toEqual([['a', 'b'], ['c'], ['c'], ['a', 'c']])
+    ).toEqual([
+      ['a', 'b'],
+      ['a', 'b', 'c'],
+      ['a', 'b', 'c'],
+      ['a', 'c'],
+    ])
     await send({ message: '新的修改不参考截图', referenceImageIds: [] })
     expect(task.confirmation!.referenceImages).toBeUndefined()
   })
 
-  it('rejects a reference screenshot owned by a different task', async () => {
+  it('binds a conversation logo to an uploaded HTML build and delivers the original bytes', async () => {
+    const html = new TextEncoder().encode('<html><body>Original layout</body></html>')
+    const logo = new Uint8Array([137, 80, 78, 71])
+    for (const [id, slot, filename, mimeType, bytes] of [
+      ['html', 'sourceHtml', 'layout.html', 'text/html', html],
+      ['logo', 'referenceImage', 'logo.png', 'image/png', logo],
+    ] as const) {
+      harness.repository.assets.push({
+        id,
+        slot,
+        filename,
+        mimeType,
+        taskId: 'owned',
+        userId: 'user-1',
+        size: bytes.byteLength,
+        storageKey: id,
+        durationSeconds: null,
+        createdAt: new Date(),
+      })
+      harness.artifacts.set(id, bytes)
+    }
+    const withLogo: ConfirmationProposal = {
+      ...confirmation,
+      resources: {
+        ...confirmation.resources,
+        endCard: { status: '用户上传', treatment: '使用 logo.png 作为品牌标志' },
+      },
+    }
+    vi.mocked(harness.agent.proposeConfirmation).mockResolvedValue({ ...confirmationReply, confirmation: withLogo })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', {
+        message: '参考这个 HTML 的横竖屏 layout，把 logo 塞进去',
+        attachmentIds: ['html', 'logo'],
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"confirmation"')
+    const task = harness.repository.tasks.get('owned')!
+    expect(task.confirmation?.referenceImages).toEqual([
+      { assetId: 'logo', filename: 'logo.png', description: '参考这个 HTML 的横竖屏 layout，把 logo 塞进去' },
+    ])
+    expect(task.confirmation?.resourceBindings?.endCard).toEqual([
+      { kind: 'imageAttachment', assetId: 'logo', filename: 'logo.png' },
+    ])
+    // 服务端依据已确认用途重新解析资源绑定，不能信任客户端自带的绑定结果。
+    const confirmed = await harness.handlers.confirm(
+      request('/api/playable-tasks/owned/confirm', 'POST', {
+        confirmation: { ...task.confirmation, resourceBindings: undefined },
+      }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(confirmed.status, await confirmed.clone().text()).toBe(202)
+    await harness.scheduled.at(-1)!()
+    expect(harness.agent.build).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        baseHtml: new TextDecoder().decode(html),
+        assets: [expect.objectContaining({ id: 'logo', slot: 'endCard', filename: 'logo.png', bytes: logo })],
+        referenceImages: [expect.objectContaining({ assetId: 'logo', bytes: logo })],
+      }),
+    )
+  })
+
+  it('can inspect an earlier attachment after a text follow-up without restoring obsolete screenshot labels', async () => {
+    harness.repository.assets.push({
+      id: 'image-1',
+      taskId: 'owned',
+      userId: 'user-1',
+      slot: 'referenceImage',
+      filename: 'logo.png',
+      mimeType: 'image/png',
+      size: 2,
+      storageKey: 'logo',
+      durationSeconds: null,
+      createdAt: new Date(),
+    })
+    harness.artifacts.set('logo', new Uint8Array([1, 2]))
+    await harness.repository.appendMessage(
+      'owned',
+      'user',
+      JSON.stringify({
+        kind: 'playable-user-turn',
+        text: '这是 logo',
+        attachments: [{ id: 'image-1', filename: 'logo.png', mimeType: 'image/png' }],
+        referenceImages: [
+          {
+            assetId: 'image-1',
+            filename: 'logo.png',
+            description: '这是 logo',
+            purpose: 'problem',
+            sourceBuildId: 'old-build',
+            sourceVersion: 2,
+          },
+        ],
+      }),
+    )
+    let result: unknown
+    vi.mocked(harness.agent.proposeConfirmation).mockImplementationOnce(async (input, options) => {
+      expect(input.attachedAssetIds).toEqual([])
+      expect(input.referenceImages).toEqual([{ assetId: 'image-1', filename: 'logo.png', description: '这是 logo' }])
+      expect(input.history?.[0].content).toContain('logo.png')
+      result = await options?.executeTool?.({ name: 'inspect_reference_images', assetIds: ['image-1'], assetId: null })
+      return confirmationReply
+    })
+    const response = await harness.handlers.message(
+      request('/api/playable-tasks/owned/messages', 'POST', { message: '把前面那张 logo 放到右上角' }),
+      { params: Promise.resolve({ taskId: 'owned' }) },
+    )
+    expect(await response.text()).toContain('"type":"confirmation"')
+    expect(result).toEqual(referenceImageAnalysis)
+    expect(harness.imageAnalyst.analyze).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an image attachment owned by a different task', async () => {
     harness.repository.assets.push({
       id: 'foreign-image',
       taskId: 'other',
@@ -1229,8 +1346,8 @@ describe('playable task API', () => {
       }),
     )
     expect(events.filter((event) => String(event.type).startsWith('tool_'))).toEqual([
-      { type: 'tool_started', tool: 'inspect_reference_images', message: '正在分析参考图片' },
-      { type: 'tool_completed', tool: 'inspect_reference_images', message: '参考图片分析完成' },
+      { type: 'tool_started', tool: 'inspect_reference_images', message: '正在查看图片' },
+      { type: 'tool_completed', tool: 'inspect_reference_images', message: '图片查看完成' },
       { type: 'tool_completed', tool: 'respond_to_user' },
     ])
     expect(JSON.stringify(events.filter((event) => String(event.type).startsWith('tool_')))).not.toContain('image-1')
@@ -1435,7 +1552,7 @@ describe('playable task API', () => {
     )
     const body = await response.text()
 
-    expect(body).toContain('{"type":"tool_failed","tool":"inspect_reference_images","message":"参考图片分析暂不可用"}')
+    expect(body).toContain('{"type":"tool_failed","tool":"inspect_reference_images","message":"图片查看暂不可用"}')
     expect(body).not.toContain('secret-asset-id')
     expect(body).not.toContain('secret-filename.png')
     expect(body).not.toContain('secret-storage-path')

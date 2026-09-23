@@ -380,8 +380,8 @@ describe('CodexCliPlayableAgent', () => {
       expect(invocation.prompt).toContain('requirement-context.json')
       const references = JSON.parse(await readFile(path.join(invocation.workspace, 'reference-images.json'), 'utf8'))
       expect(references[0]).toMatchObject({
-        sourceVersion: 2,
-        purpose: 'problem',
+        filename: 'ref.png',
+        description: 'Extra row',
         workspacePath: 'reference-images/1.png',
       })
       expect(new Uint8Array(await readFile(path.join(invocation.workspace, 'reference-images/1.png')))).toEqual(
@@ -397,7 +397,8 @@ describe('CodexCliPlayableAgent', () => {
       expect(await readFile(path.join(invocation.workspace, 'user-assets/tileFaces/model-block.glb'))).toEqual(
         Buffer.from(triangleGlb()),
       )
-      expect(invocation.prompt).toContain('not game assets')
+      expect(invocation.prompt).toContain('embed the original file offline when requested')
+      expect(invocation.prompt).not.toContain('never embed them in the deliverable')
       invocation.onEvent?.({ type: 'item.started', item: { type: 'command_execution', command: 'private command' } })
       invocation.onEvent?.({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } })
       return { completed: true }
@@ -431,9 +432,6 @@ describe('CodexCliPlayableAgent', () => {
           assetId: 'ref',
           filename: 'ref.png',
           mimeType: 'image/png',
-          sourceBuildId: 'v2',
-          sourceVersion: 2,
-          purpose: 'problem',
           description: 'Extra row',
           bytes: new Uint8Array([1, 2]),
         },

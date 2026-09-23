@@ -111,7 +111,7 @@ describe('PlayableWorkspace', () => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/playable-tasks/task-7/messages',
         expect.objectContaining({
-          body: JSON.stringify({ message: '只删掉多余一行', referenceImageIds: [], baseBuildId: 'build-2' }),
+          body: JSON.stringify({ message: '只删掉多余一行', baseBuildId: 'build-2' }),
         }),
       ),
     )
@@ -123,7 +123,7 @@ describe('PlayableWorkspace', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/playable-tasks/task-7/messages',
-        expect.objectContaining({ body: JSON.stringify({ message: '调整标题', referenceImageIds: [] }) }),
+        expect.objectContaining({ body: JSON.stringify({ message: '调整标题' }) }),
       ),
     )
   })
@@ -247,7 +247,7 @@ describe('PlayableWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送需求' }))
 
     const tools = await screen.findByRole('region', { name: '本轮 Agent 工具' })
-    expect(tools).toHaveTextContent('分析参考图片失败')
+    expect(tools).toHaveTextContent('查看图片失败')
     expect(tools).toHaveTextContent('分析参考视频失败')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(1, 'started')
     expect(onVideoAnalysisToolStatus).toHaveBeenNthCalledWith(2, 'failed')
@@ -1386,9 +1386,6 @@ describe('PlayableWorkspace', () => {
               {
                 assetId: 'old-image',
                 filename: 'old.png',
-                sourceBuildId: null,
-                sourceVersion: null,
-                purpose: 'target',
                 description: '旧参考',
               },
             ],
@@ -1414,6 +1411,8 @@ describe('PlayableWorkspace', () => {
     expect(await screen.findByText('gameplay.mp4')).toBeInTheDocument()
     expect(screen.getAllByText('待上传')).toHaveLength(2)
     expect(screen.queryByLabelText('本轮参考截图')).not.toBeInTheDocument()
+    // 附件直接随对话使用，不再让历史自动推断的用途或版本标签出现在界面中。
+    expect(screen.queryByText(/本轮参考：|版本未知|问题截图/)).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByLabelText('试玩需求'), { target: { value: '参考这些素材制作' } })
@@ -1433,7 +1432,6 @@ describe('PlayableWorkspace', () => {
       expect.objectContaining({
         body: JSON.stringify({
           message: '参考这些素材制作',
-          referenceImageIds: ['image-1'],
           attachmentIds: ['image-1', 'video-1'],
         }),
       }),
@@ -1510,7 +1508,6 @@ describe('PlayableWorkspace', () => {
       expect.objectContaining({
         body: JSON.stringify({
           message: '带附件重试',
-          referenceImageIds: ['image-success'],
           attachmentIds: ['image-success', 'video-retry'],
         }),
       }),

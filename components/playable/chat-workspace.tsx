@@ -39,7 +39,6 @@ import type { PlayableAssetSlot } from '@/lib/playable/asset-policy'
 import {
   isPlayableResourceAssetSlot,
   PLAYABLE_ATTACHMENT_ACCEPT,
-  PLAYABLE_IMAGE_MIME_TYPES,
   maxAssetBytesForSlot,
   playableAssetAccept,
   referenceSlotForMimeType,
@@ -93,7 +92,7 @@ const requirementToolLabels: Record<string, string> = {
   ask_user: '请求补充',
   submit_confirmation: '提交方案',
   submit_revision: '提交修改计划',
-  inspect_reference_images: '分析参考图片',
+  inspect_reference_images: '查看图片',
   analyze_reference_video: '分析参考视频',
   offer_market_research: '建议市场搜索',
   search_market_references: '搜索市场参考',
@@ -406,10 +405,6 @@ export function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('')
   const [baseBuildId, setBaseBuildId] = useState('auto')
-  const [activeReferences, setActiveReferences] = useState<ReferenceImageEvidence[]>(
-    initialConversation.findLast((turn) => turn.role === 'user')?.referenceImages ?? [],
-  )
-  const [referencesChanged, setReferencesChanged] = useState(false)
   const [baseVersions, setBaseVersions] = useState<
     { id: string; version: number; current: boolean; status?: string }[]
   >([])
@@ -446,9 +441,6 @@ export function ChatWorkspace({
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [selectedAssets, setSelectedAssets] = useState<SafePlayableAsset[]>(initialAssets)
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
-  const composerHasNewImages = composerAttachments.some((asset) =>
-    (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType),
-  )
   const [completedTools, setCompletedTools] = useState<string[]>([])
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({})
   const [error, setError] = useState('')
@@ -627,20 +619,12 @@ export function ChatWorkspace({
           })
           if (waited) setConversation((items) => items.filter((item) => item.id !== assistantId))
         }
-        const newImageIds = attachments
-          .filter((asset) => (PLAYABLE_IMAGE_MIME_TYPES as readonly string[]).includes(asset.mimeType))
-          .map((asset) => asset.id)
-        // 新上传图片替换沿用图片；显式清空仍发送空数组，阻止服务端自动继承旧截图。
-        const referenceImageIds = [
-          ...new Set([...(newImageIds.length ? newImageIds : activeReferences.map((ref) => ref.assetId))]),
-        ]
         requestSent = true
         const response = await fetch(`/api/playable-tasks/${encodeURIComponent(taskId)}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: content,
-            ...(referenceImageIds.length || referencesChanged ? { referenceImageIds } : {}),
             ...(baseBuildId !== 'auto' ? { baseBuildId } : {}),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
             ...(referenceSelection ? { referenceSelection } : {}),
@@ -685,8 +669,6 @@ export function ChatWorkspace({
             throw new Error('响应数据格式错误，请重试')
           }
           if (event.type === 'reference_images' && event.referenceImages) {
-            setActiveReferences(event.referenceImages)
-            setReferencesChanged(true)
             setConversation((items) =>
               items.map((item) => (item.id === id ? { ...item, referenceImages: event.referenceImages } : item)),
             )
@@ -810,8 +792,6 @@ export function ChatWorkspace({
     [
       canCompose,
       baseBuildId,
-      activeReferences,
-      referencesChanged,
       composerAttachments,
       hasArtifact,
       message,
@@ -1243,17 +1223,6 @@ export function ChatWorkspace({
                   ))}
                 </div>
               )}
-              {Boolean(item.referenceImages?.length) && (
-                <p className="mt-1 text-xs opacity-80">
-                  本轮参考：
-                  {item.referenceImages
-                    ?.map(
-                      (ref) =>
-                        `${ref.filename}（${ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} / ${ref.purpose === 'problem' ? '问题' : '目标'}）`,
-                    )
-                    .join('、')}
-                </p>
-              )}
               {item.status !== 'sent' && (
                 <span className="mt-1 block text-xs opacity-75">
                   {item.status === 'sending' ? '发送中…' : '发送失败'}
@@ -1491,26 +1460,6 @@ export function ChatWorkspace({
       {/* 构建和验收期间隐藏输入区，保留组件与草稿状态，结束或失败后自动恢复。 */}
       <div hidden={buildInProgress} className="bg-background shrink-0 border-t p-4">
         <div className="focus-within:ring-ring/40 rounded-2xl border p-2 shadow-sm focus-within:ring-2">
-          {!composerHasNewImages && activeReferences.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1 px-1" aria-label="本轮参考截图">
-              {(composerHasNewImages ? [] : activeReferences).map((ref) => (
-                <Button
-                  key={ref.assetId}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={sending}
-                  onClick={() => {
-                    setActiveReferences((items) => items.filter((item) => item.assetId !== ref.assetId))
-                    setReferencesChanged(true)
-                  }}
-                >
-                  {ref.filename} · {ref.sourceVersion ? `v${ref.sourceVersion}` : '版本未知'} ·{' '}
-                  {ref.purpose === 'problem' ? '问题' : '目标'} <X aria-label="移除本轮引用" />
-                </Button>
-              ))}
-            </div>
-          )}
           {composerAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-2 pt-1" aria-live="polite">
               {composerAttachments.map((attachment) => (
@@ -1550,8 +1499,6 @@ export function ChatWorkspace({
                 value={baseBuildId}
                 onValueChange={(value) => {
                   setBaseBuildId(value)
-                  setActiveReferences([])
-                  setReferencesChanged(true)
                 }}
                 disabled={!canCompose || sending || confirming}
               >

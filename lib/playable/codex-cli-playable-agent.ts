@@ -288,7 +288,7 @@ async function prepareLocalWorkspace(input: ConfirmedBuildInput, skillRoot: stri
     )
   }
 
-  // 与云端共用截图打包规则，避免运行模式切换后参考图丢失或语义不一致。
+  // 与云端共用图片附件打包规则，保留原图供查看和使用。
   for (const file of [
     ...referenceImageWorkspaceFiles(input.referenceImages),
     ...referenceKeyframeWorkspaceFiles(input.referenceKeyframes),
