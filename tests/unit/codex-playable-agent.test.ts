@@ -1126,6 +1126,99 @@ describe('CodexPlayableAgent', () => {
   })
 })
 
+// 宿主必须同时防住“重连被提前判失败”和“流提前关闭却被判成功”。
+describe('Codex build stream outcomes', () => {
+  beforeEach(() => {
+    harnessMocks.destroy.mockClear()
+    harnessMocks.stream.mockClear()
+  })
+
+  const run = (onActivity = vi.fn(), abortSignal?: AbortSignal) =>
+    executeBuildAgent(
+      {
+        taskId: 'stream-test',
+        sandbox: {} as PlayableSandbox,
+        abortSignal,
+        authEnvironment: { CODEX_API_KEY: 'test-key', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' },
+      },
+      `${process.cwd()}/skills/mahjong-pair-match-playable`,
+      'exact',
+      undefined,
+      undefined,
+      undefined,
+      onActivity,
+    )
+
+  it('keeps retry notices alive, reports safe progress, and then completes', async () => {
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 1/5 (private test-key)' } }
+        expect(harnessMocks.destroy).not.toHaveBeenCalled()
+        yield {
+          type: 'raw',
+          rawValue: { type: 'codex.error', message: 'Previous response was not found. Retrying the full request.' },
+        }
+        yield { type: 'finish', finishReason: 'stop' }
+      })(),
+    } as never)
+    await expect(run(onActivity)).resolves.toBeUndefined()
+    expect(onActivity.mock.calls).toEqual([
+      ['agent_started'],
+      ['agent_reconnecting'],
+      ['agent_retrying'],
+      ['agent_completed'],
+    ])
+    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a terminal capacity failure after retry notices', async () => {
+    const message = 'Selected model is at capacity. Please try a different model.'
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 5/5' } }
+        yield { type: 'error', error: message }
+        throw new Error('must not consume past the terminal error')
+      })(),
+    } as never)
+    await expect(run(onActivity)).rejects.toMatchObject({ message, cause: message })
+    expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
+    expect(harnessMocks.destroy).toHaveBeenCalledOnce()
+  })
+
+  it.each([undefined, 'error', 'length'])(
+    'rejects a stream without a successful terminal event (%s)',
+    async (reason) => {
+      const onActivity = vi.fn()
+      harnessMocks.stream.mockResolvedValueOnce({
+        fullStream: (async function* () {
+          yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... 1/5' } }
+          if (reason) yield { type: 'finish', finishReason: reason }
+        })(),
+      } as never)
+      await expect(run(onActivity)).rejects.toThrow(
+        reason ? 'Codex turn did not complete successfully' : 'Codex stream closed before turn.completed',
+      )
+      expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
+    },
+  )
+
+  it('does not report success when cancelled while reconnecting', async () => {
+    const controller = new AbortController()
+    const onActivity = vi.fn()
+    harnessMocks.stream.mockResolvedValueOnce({
+      fullStream: (async function* () {
+        yield { type: 'raw', rawValue: { type: 'codex.error', message: 'Reconnecting... waiting for network' } }
+        controller.abort()
+        yield { type: 'abort' }
+      })(),
+    } as never)
+    await expect(run(onActivity, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(onActivity).not.toHaveBeenCalledWith('agent_completed')
+  })
+})
+
 it('preserves the execution timeout when session cleanup also fails', async () => {
   const original = new DOMException('Timed out', 'TimeoutError')
   harnessMocks.stream.mockRejectedValueOnce(original)

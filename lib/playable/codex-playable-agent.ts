@@ -407,8 +407,11 @@ export async function executeBuildAgent(
       })
       // 工具步骤即时上报，公开文本按段落输出；失败时也保留已收到的说明。
       const progress = createHarnessActivityReporter(onActivity)
+      let completed = false
       try {
         for await (const event of result.fullStream) {
+          // 取消优先于已缓冲的完成事件，避免停止后仍上报执行成功。
+          input.abortSignal?.throwIfAborted()
           if (event.type === 'error') {
             // 保留提供方错误，供已有脱敏日志和失败分类使用；不能用通用文案覆盖根因。
             throw event.error instanceof Error
@@ -417,12 +420,20 @@ export async function executeBuildAgent(
                   cause: event.error,
                 })
           }
+          if (event.type === 'abort') throw new DOMException('Codex execution was aborted', 'AbortError')
+          if (event.type === 'finish') {
+            // 非正常终态与断流分开处理，不能把长度耗尽等情况归入连接故障后重跑。
+            if (event.finishReason !== 'stop') throw new Error('Codex turn did not complete successfully')
+            completed = true
+          }
           progress.accept(event)
         }
       } finally {
         progress.flush()
       }
       input.abortSignal?.throwIfAborted()
+      // 迭代器结束不代表模型完成；必须收到补丁在 turn.completed 后发出的成功终态。
+      if (!completed) throw new Error('Codex stream closed before turn.completed')
       onActivity?.('agent_completed')
     } catch (error) {
       executionFailed = true

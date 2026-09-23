@@ -18,6 +18,11 @@ export const buildActivityLabels = {
   reasoning_summary: '思考摘要',
   preparing: '正在准备构建环境',
   agent_started: 'Agent 已开始执行',
+  // 恢复过程和中途异常不是构建终态，不能据此停止执行或标记整次构建失败。
+  agent_reconnecting: '连接中断，正在重连',
+  agent_retrying: '服务暂时不可用，正在重试',
+  agent_transport_fallback: '正在切换连接方式',
+  agent_warning: 'Agent 报告异常，等待本轮结果',
   command_started: '正在执行命令',
   command_completed: '命令已完成',
   command_failed: '命令执行失败，等待 Agent 处理',

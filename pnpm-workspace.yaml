@@ -7,3 +7,8 @@ allowBuilds:
   protobufjs: false
   sharp: true
   unrs-resolver: true
+
+# 与 package.json 的精确版本绑定；升级时需同步核对补丁和实际 bootstrap 回归测试。
+# pnpm-lock.yaml 中的补丁哈希由 pnpm 生成，修改补丁后必须重新同步。
+patchedDependencies:
+  '@ai-sdk/harness-codex@1.0.104': patches/@ai-sdk__harness-codex@1.0.104.patch

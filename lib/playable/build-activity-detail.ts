@@ -1,5 +1,6 @@
 import { cliBuildActivity, harnessBuildActivity, type BuildActivityCallback } from './build-activity'
 import { readBuildTiming, type BuildTiming } from './build-timing'
+import { codexNoticeActivity } from './codex-errors'
 
 /** 仅保存公开的执行信息，不接受原始模型载荷、隐藏推理或进程环境。 */
 export interface BuildActivityDetail {
@@ -41,6 +42,11 @@ export function isBuildCompletionMessage(value?: string): boolean {
 export function reportCliBuildActivity(value: unknown, report?: BuildActivityCallback) {
   const event = record(value)
   const item = record(event.item)
+  // CLI 的 error 也承载重连通知；这里只更新步骤，失败仍由执行器的终态处理。
+  if (event.type === 'error' && typeof event.message === 'string') {
+    report?.(codexNoticeActivity(event.message))
+    return
+  }
   if (!String(event.type).startsWith('item.')) return
   const id = typeof item.id === 'string' ? item.id : undefined
   // Codex JSON 事件中的 reasoning 是提供方公开的推理摘要，不是隐藏思维链。
@@ -77,6 +83,14 @@ export function createHarnessActivityReporter(report?: BuildActivityCallback) {
     flush,
     accept(value: unknown) {
       const event = record(value)
+      const raw = record(event.rawValue)
+      if (event.type === 'raw' && raw.type === 'codex.error' && typeof raw.message === 'string') {
+        // 依赖补丁把中途异常转换为此类 raw 事件；公开时间线只保留固定状态，
+        // 不转发可能含请求地址、凭据或内部诊断的原始文案。
+        // 此处也不能 flush：重连后文本仍可能续传，提前拆段会破坏完整密钥的脱敏。
+        report?.(codexNoticeActivity(raw.message))
+        return
+      }
       const id = String(event.id ?? event.type)
       if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
         const type = event.type === 'text-delta' ? 'agent_message' : 'reasoning_summary'

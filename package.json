@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@ai-sdk/harness": "^1.0.102",
-    "@ai-sdk/harness-codex": "^1.0.104",
+    "@ai-sdk/harness-codex": "1.0.104",
     "@ai-sdk/openai": "^4.0.60",
     "@ai-sdk/sandbox-vercel": "^1.0.102",
     "@git-diff-view/file": "^0.0.32",

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@ai-sdk/harness-codex@1.0.104': 3ca0a4129438dda89b22e53d6779fe2dc6adaf4cea50b51eb48c41cf51189816
+
 importers:
 
   .:
@@ -12,8 +15,8 @@ importers:
         specifier: ^1.0.102
         version: 1.0.102(ws@8.21.3)(zod@4.3.6)
       '@ai-sdk/harness-codex':
-        specifier: ^1.0.104
-        version: 1.0.104(zod@4.3.6)
+        specifier: 1.0.104
+        version: 1.0.104(patch_hash=3ca0a4129438dda89b22e53d6779fe2dc6adaf4cea50b51eb48c41cf51189816)(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^4.0.60
         version: 4.0.60(zod@4.3.6)
@@ -5873,7 +5876,7 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.3.6
 
-  '@ai-sdk/harness-codex@1.0.104(zod@4.3.6)':
+  '@ai-sdk/harness-codex@1.0.104(patch_hash=3ca0a4129438dda89b22e53d6779fe2dc6adaf4cea50b51eb48c41cf51189816)(zod@4.3.6)':
     dependencies:
       '@ai-sdk/harness': 1.0.102(ws@8.21.3)(zod@4.3.6)
       '@ai-sdk/provider-utils': 5.0.36(zod@4.3.6)
