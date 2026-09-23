@@ -53,6 +53,7 @@ import { BUILD_REQUIREMENT_CONTEXT_PROMPT } from './build-requirement-context'
 import { marketResearchReportSchema } from './research/schemas'
 import { OPENROUTER_BASE_URL, createPlayableAIProvider, readPlayableAgentModel } from './shared-ai-key'
 import { codexValidationInstructions, isPlayableSandboxValidationEnabled } from './validation-policy'
+import { classifyCodexFailure } from './codex-errors'
 
 const SKILL_ROOT = path.join(process.cwd(), 'skills/mahjong-pair-match-playable')
 
@@ -90,34 +91,12 @@ export interface CodexPlayableAgentDependencies {
   skillRoot?: string
 }
 
-function errorMessages(error: unknown): string[] {
-  const messages: string[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = error
-
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    seen.add(current)
-    if (typeof current === 'string') {
-      messages.push(current)
-      break
-    }
-    if (typeof current !== 'object') break
-    const candidate = current as { cause?: unknown; message?: unknown }
-    if (typeof candidate.message === 'string') messages.push(candidate.message)
-    current = candidate.cause
-  }
-
-  return messages
-}
-
 function isRetryableCodexBuildFailure(error: unknown): boolean {
   if (!(error instanceof PlayableBuildExecutionError) || error.stage !== 'agent') return false
-  const message = errorMessages(error).join('\n').toLowerCase()
-  return (
-    message.includes('reconnecting...') &&
-    message.includes('stream disconnected before completion') &&
-    message.includes('servers are currently overloaded')
-  )
+  const kind = classifyCodexFailure(error)
+  // 请求和流的重试先由 Codex 完成；最终仍失败时，宿主只对容量或连接故障
+  // 额外重跑一次隔离构建，并且必须尚未开始保存预览。
+  return kind === 'capacity' || kind === 'connection'
 }
 
 function waitForBuildRetry(delayMs: number, abortSignal: AbortSignal): Promise<void> {
@@ -619,14 +598,31 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
     const buildSignal = input.abortSignal ? AbortSignal.any([controller.signal, input.abortSignal]) : controller.signal
     buildSignal.throwIfAborted()
     this.activeTasks.set(input.taskId, controller)
+    let previewStarted = false
+    const onPreview = input.onPreview
+      ? async (html: string) => {
+          // 保存失败也可能已写入部分数据，因此在调用前封闭整次重跑入口。
+          // 仅配置了 onPreview、尚未实际调用时，仍允许对临时故障重试。
+          previewStarted = true
+          await input.onPreview!(html)
+        }
+      : undefined
     try {
       for (let attempt = 1; attempt <= CODEX_BUILD_MAX_ATTEMPTS; attempt += 1) {
-        const attemptInput = attempt === 1 ? input : { ...input, taskId: `${input.taskId}-retry-${attempt}` }
+        // 重试等待期间也可能取消；开始下一次构建前再次检查，避免创建多余 Sandbox。
+        buildSignal.throwIfAborted()
+        const attemptInput = {
+          ...input,
+          ...(onPreview ? { onPreview } : {}),
+          taskId: attempt === 1 ? input.taskId : `${input.taskId}-retry-${attempt}`,
+        }
         try {
           return await this.buildRunner(attemptInput, { abortSignal: buildSignal })
         } catch (error) {
-          if (input.onPreview || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
+          buildSignal.throwIfAborted()
+          if (previewStarted || attempt === CODEX_BUILD_MAX_ATTEMPTS || !isRetryableCodexBuildFailure(error))
             throw error
+          input.onActivity?.('agent_retrying')
           await this.buildRetryDelay(CODEX_BUILD_RETRY_DELAY_MS, buildSignal)
         }
       }
