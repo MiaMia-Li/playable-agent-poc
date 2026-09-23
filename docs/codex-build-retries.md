@@ -16,4 +16,6 @@ Codex 自己负责请求和流的重试。在它最终失败后，宿主只对�
 
 `tests/unit/codex-bridge-retry.test.ts` 执行实际 bootstrap 中的事件转换与运行循环，覆盖重连后成功、最终失败、流提前结束和取消。升级依赖时必须重新核对补丁及该测试，不能只删掉补丁配置。补丁改变 bootstrap 内容，因此 Harness 的 bootstrap 身份也会变化。
 
+项目通过 `package.json` 的 `packageManager` 固定 pnpm 10.28.0，GitHub CI 也读取该版本。pnpm 10 与 11 虽然都写入 `lockfileVersion: '9.0'`，但补丁记录格式不同；用 pnpm 11 更新锁文件会导致 pnpm 10 的冻结安装报 `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`。修改补丁后，先确认 `pnpm --version` 为项目固定版本，再运行 `pnpm install --lockfile-only --no-frozen-lockfile` 更新锁文件，并在干净目录中执行 `pnpm install --frozen-lockfile` 和桥接回归测试，验证实际安装的补丁。
+
 官方事件类型见 [Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)，重试层数及永久错误处理参见 [OpenAI 限流说明](https://developers.openai.com/api/docs/guides/rate-limits)。

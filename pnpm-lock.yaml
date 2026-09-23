@@ -5,7 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@ai-sdk/harness-codex@1.0.104': 3ca0a4129438dda89b22e53d6779fe2dc6adaf4cea50b51eb48c41cf51189816
+  '@ai-sdk/harness-codex@1.0.104':
+    hash: 3ca0a4129438dda89b22e53d6779fe2dc6adaf4cea50b51eb48c41cf51189816
+    path: patches/@ai-sdk__harness-codex@1.0.104.patch
 
 importers:
 

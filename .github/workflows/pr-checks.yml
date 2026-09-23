@@ -18,9 +18,8 @@ jobs:
           node-version: '26.8.1'
 
       - name: Setup pnpm
+        # 统一读取 package.json，避免本地、CI 与部署使用不同的补丁锁文件格式。
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.28.0
 
       - name: Get pnpm store directory
         shell: bash

@@ -29,7 +29,7 @@ requests for playable tasks.
 Requirements:
 
 - Node.js and Corepack
-- pnpm
+- pnpm 10.28.0 (pinned in `package.json`; use the same version locally and in CI)
 - PostgreSQL
 - Vercel Sandbox credentials
 
