@@ -16,7 +16,7 @@
     "sandbox:prepare-playable": "tsx scripts/prepare-playable-sandbox.ts",
     "check:gemini-video": "node --env-file=.env.local --import tsx scripts/check-gemini-video-analysis.ts",
     "check:gemini-slowed-clip": "node --env-file=.env.local --import tsx scripts/check-gemini-slowed-clip.ts",
-    "build": "next build --turbopack",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
