@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatWorkspace } from '@/components/playable/chat-workspace'
+import { BuildNotifications } from '@/components/playable/build-notifications'
+import { watchPlayableBuild, BUILD_WATCH_KEY } from '@/lib/playable/build-notifications'
 import { queueStorageKey } from '@/lib/playable/queued-requirements'
 
 const { push, success, error } = vi.hoisted(() => ({ push: vi.fn(), success: vi.fn(), error: vi.fn() }))
@@ -84,5 +86,42 @@ describe('queued requirements', () => {
     await screen.findByText('已收到修改')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(JSON.parse(fetchMock.mock.calls[1][1]!.body as string).baseBuildId).toBe('build-2')
+  })
+})
+
+describe('completion notifications', () => {
+  it('waits for a build outcome and retains failure when the task has already moved to confirmation', async () => {
+    vi.useFakeTimers()
+    // 后续需求已把阶段推进到待确认时，仍需用最后的构建事件区分成功与失败。
+    const events = [{ type: 'build_started' }]
+    const fetchMock = vi.fn(async () => Response.json({ task: { phase: 'awaiting_revision_confirmation' }, events }))
+    vi.stubGlobal('fetch', fetchMock)
+    watchPlayableBuild('watched')
+    render(<BuildNotifications />)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(success).not.toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(BUILD_WATCH_KEY)).toContain('watched')
+    events.push({ type: 'build_failed' })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(error).toHaveBeenCalledOnce()
+    expect(success).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(BUILD_WATCH_KEY)).toBe('[]')
+  })
+
+  it('retains a watch across navigation and notifies once when the build completes', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async () => Response.json({ task: { phase: 'ready' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    watchPlayableBuild('watched')
+    expect(sessionStorage.getItem(BUILD_WATCH_KEY)).toContain('watched')
+    render(<BuildNotifications />)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(success).toHaveBeenCalledOnce()
+    expect(sessionStorage.getItem(BUILD_WATCH_KEY)).toBe('[]')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    success.mock.calls[0][1].action.onClick()
+    expect(push).toHaveBeenCalledWith('/tasks/watched')
   })
 })

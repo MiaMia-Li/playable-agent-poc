@@ -68,6 +68,7 @@ import { GameplayTimeline, type TimelineCorrection } from './gameplay-timeline'
 import type { MarketResearchReport, ReferenceSelectionInput } from '@/lib/playable/research/schemas'
 import type { QueuedRequirement } from '@/lib/playable/queued-requirements'
 import { useQueuedRequirements } from './use-queued-requirements'
+import { BuildNotificationButton } from './build-notifications'
 
 const stages = [
   ['plan', '方案'],
@@ -1163,6 +1164,7 @@ export function ChatWorkspace({
           <p className="mt-2 text-sm" aria-live="polite">
             当前状态：{phaseNames[phase]}
           </p>
+          <BuildNotificationButton />
         </section>
 
         {(videoAnalysisStatus || videoAnalysisUnavailable || referenceVideoAwaitingAnalysis) && (
