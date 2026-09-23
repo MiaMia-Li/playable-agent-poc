@@ -1,4 +1,5 @@
 import { resolveBuildBaseline } from './build-baseline'
+import { classifyCodexFailure, codexErrorDetails } from './codex-errors'
 import { SandboxDiagnostics } from './sandbox-diagnostics'
 import { withPreviewFeedbackBridge } from './preview-feedback-bridge'
 import { createBuildRequirementContext, type BuildRequirementContext } from './build-requirement-context'
@@ -918,35 +919,12 @@ async function settleWithin(operation: Promise<void>, timeoutMs: number): Promis
 const DEFAULT_BUILD_FAILURE_MESSAGE = '试玩构建失败，请重试。'
 const QUOTA_BUILD_FAILURE_MESSAGE = 'AI 服务额度暂时不可用，请联系管理员后重试。'
 const SANDBOX_PAYMENT_BUILD_FAILURE_MESSAGE = 'Vercel Sandbox 额度不足，请升级套餐或等待额度重置后重试。'
-const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，自动重试后仍未完成，请稍后再试。'
+// 预览保存后不会重跑整次构建，因此最终文案不能一概宣称已经自动重试。
+const CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE = 'Codex 服务当前繁忙，未完成构建，请稍后再试。'
 const CODEX_AUTH_BUILD_FAILURE_MESSAGE = 'Codex API Key 无效，或当前账号没有所选模型的访问权限，请检查配置后重试。'
 const CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE = 'Codex 请求频率已达到限制，请稍后再试。'
-const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，自动重试后仍未完成，请稍后再试。'
+const CODEX_CONNECTION_BUILD_FAILURE_MESSAGE = 'Codex 连接中断，未完成构建，请稍后再试。'
 const CODEX_BUILD_FAILURE_MESSAGE = 'Agent 执行失败，未发布试玩产物。请查看构建步骤和服务端错误日志后重试。'
-
-function externalErrorText(error: unknown): string {
-  const parts: string[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = error
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    seen.add(current)
-    if (typeof current === 'string') {
-      parts.push(current)
-      break
-    }
-    if (typeof current !== 'object') break
-    const candidate = current as {
-      cause?: unknown
-      lastError?: unknown
-      message?: unknown
-      responseBody?: unknown
-    }
-    if (typeof candidate.message === 'string') parts.push(candidate.message)
-    if (typeof candidate.responseBody === 'string') parts.push(candidate.responseBody)
-    current = candidate.lastError ?? candidate.cause
-  }
-  return parts.join('\n').toLowerCase()
-}
 
 function externalResponseStatus(error: unknown): number | undefined {
   const seen = new Set<unknown>()
@@ -994,7 +972,7 @@ const HOST_CHECK_LOG_MESSAGES: Record<HostCheckReason, string> = {
 
 function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string {
   if (stage !== 'agent' || !(cause instanceof Error)) return DEFAULT_BUILD_FAILURE_MESSAGE
-  const message = externalErrorText(cause)
+  const { text: message } = codexErrorDetails(cause)
   if (
     message.includes('no credits remaining') ||
     message.includes('insufficient_quota') ||
@@ -1008,30 +986,14 @@ function buildFailureMessage(stage: ConfirmedBuildStage, cause: unknown): string
     }
     if (cause.stage === 'workspace') return '无法准备试玩构建环境，请重试。'
     if (cause.stage === 'agent') {
-      const status = externalResponseStatus(cause)
-      if (message.includes('servers are currently overloaded') || message.includes('server is overloaded')) {
-        return CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE
-      }
-      if (
-        status === 401 ||
-        status === 403 ||
-        message.includes('invalid_api_key') ||
-        message.includes('incorrect api key') ||
-        message.includes('model access')
-      ) {
-        return CODEX_AUTH_BUILD_FAILURE_MESSAGE
-      }
-      if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
-        return CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE
-      }
-      if (
-        message.includes('stream disconnected before completion') ||
-        message.includes('connection reset') ||
-        message.includes('network error') ||
-        message.includes('timed out')
-      ) {
-        return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
-      }
+      // 与构建重试共用分类，保证容量不足、限流、额度和鉴权问题的判断一致；
+      // 对外只返回固定文案，原始提供方错误继续留在私有诊断中。
+      const kind = classifyCodexFailure(cause)
+      if (kind === 'quota') return QUOTA_BUILD_FAILURE_MESSAGE
+      if (kind === 'capacity') return CODEX_OVERLOAD_BUILD_FAILURE_MESSAGE
+      if (kind === 'auth') return CODEX_AUTH_BUILD_FAILURE_MESSAGE
+      if (kind === 'rate_limit') return CODEX_RATE_LIMIT_BUILD_FAILURE_MESSAGE
+      if (kind === 'connection') return CODEX_CONNECTION_BUILD_FAILURE_MESSAGE
       if (message.includes('agent stream failed')) return 'Agent 响应流中断，未完成构建，请重试。'
       return CODEX_BUILD_FAILURE_MESSAGE
     }

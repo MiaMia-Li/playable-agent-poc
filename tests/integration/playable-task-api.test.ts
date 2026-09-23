@@ -4456,7 +4456,7 @@ describe('playable task API', () => {
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: 'build_failed',
       phase: 'failed',
-      message: 'Codex 服务当前繁忙，自动重试后仍未完成，请稍后再试。',
+      message: 'Codex 服务当前繁忙，未完成构建，请稍后再试。',
     })
     expect(JSON.stringify(harness.repository.events)).not.toContain('Reconnecting')
     expect(JSON.stringify(harness.repository.events)).not.toContain('servers are currently overloaded')
@@ -4485,9 +4485,18 @@ describe('playable task API', () => {
       message: 'Codex 请求频率已达到限制，请稍后再试。',
     },
     {
+      name: 'model capacity',
+      // 容量不足属于服务繁忙；公开失败文案不应落回通用错误或包含提供方原文。
+      failure: new PlayableBuildExecutionError(
+        'agent',
+        new Error('Selected model is at capacity. Please try a different model.'),
+      ),
+      message: 'Codex 服务当前繁忙，未完成构建，请稍后再试。',
+    },
+    {
       name: 'connection interruption',
       failure: new PlayableBuildExecutionError('agent', new Error('stream disconnected before completion')),
-      message: 'Codex 连接中断，自动重试后仍未完成，请稍后再试。',
+      message: 'Codex 连接中断，未完成构建，请稍后再试。',
     },
   ])('reports a specific safe Codex error for $name', async ({ failure, message }) => {
     const task = harness.repository.tasks.get('owned')!
