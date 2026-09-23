@@ -1,5 +1,7 @@
 'use client'
 
+import { buildBaselineLabel } from '@/lib/playable/build-baseline'
+
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { FolderUploadButton } from './folder-upload-button'
 import { BuildTimeline } from './build-timeline'
@@ -312,7 +314,14 @@ function DynamicRequestActions({
   )
 }
 
-function RevisionSummary({ revision }: { revision: RevisionPlan | RevisionProposal }) {
+function RevisionSummary({
+  revision,
+  baselineLabel,
+}: {
+  revision: RevisionPlan | RevisionProposal
+  baselineLabel?: string
+}) {
+  // 上传 HTML 也能成为修改基底，不能仅凭版本沿袭信息把它显示成基于旧产物。
   const resolved = 'baseVersion' in revision && 'targetVersion' in revision
   return (
     <section aria-label="修改计划" className="mt-4 space-y-3 rounded-xl border p-4">
@@ -321,13 +330,13 @@ function RevisionSummary({ revision }: { revision: RevisionPlan | RevisionPropos
           <h2 className="font-semibold">确认本次修改</h2>
           {resolved && (
             <p className="text-muted-foreground mt-1 text-xs">
-              基于 v{revision.baseVersion} 生成候选 v{revision.targetVersion}
+              {baselineLabel ?? `基于 v${revision.baseVersion}`} 生成候选 v{revision.targetVersion}
             </p>
           )}
         </div>
         <Badge variant="secondary">
           {revision.strategy === 'patch' ? <PencilLine aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
-          {revision.strategy === 'patch' ? '基于当前版本修改' : '从原始方案重新生成'}
+          {revision.strategy === 'patch' ? '局部修改' : '重新制作'}
         </Badge>
       </div>
       <p className="text-sm font-medium">{revision.summary}</p>
@@ -1284,7 +1293,12 @@ export function ChatWorkspace({
                     />
                   )}
                   {item.revision && (
-                    <RevisionSummary revision={index === latestProposalIndex && revision ? revision : item.revision} />
+                    <RevisionSummary
+                      revision={index === latestProposalIndex && revision ? revision : item.revision}
+                      baselineLabel={
+                        item.confirmation ? buildBaselineLabel(item.confirmation, selectedAssets) : undefined
+                      }
+                    />
                   )}
                   {item.confirmation &&
                     (index === latestProposalIndex && confirmActionVisible ? (
@@ -1429,9 +1443,7 @@ export function ChatWorkspace({
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {showsRevisionConfirmation
-                  ? `基于 v${revision?.baseVersion} → v${revision?.targetVersion} 修改计划待确认`
-                  : '最新方案待确认'}
+                {showsRevisionConfirmation ? `候选 v${revision?.targetVersion} 修改计划待确认` : '最新方案待确认'}
               </p>
               <p className="text-muted-foreground truncate text-xs">
                 {sending

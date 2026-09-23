@@ -46,11 +46,15 @@ it('preserves legacy configurations but rejects contradictory rendering choices'
     }).success,
   ).toBe(false)
 })
-it('upgrades a legacy 2D patch without losing its selected base or preserved content', () => {
+// 同一引擎升级需求只有在显式确认 regenerate 后才允许执行，校验函数不能自行改策略。
+it('rejects an incompatible patch instead of silently changing the confirmed strategy', () => {
   const { rendering: _, ...base } = confirmation
   void _
-  const result = renderingRevision(confirmation, revision, base, `canvas.getContext('2d')`)
-  expect(result).toEqual({ ...revision, strategy: 'regenerate', parameterOnly: false })
+  expect(() => renderingRevision(confirmation, revision, base, `canvas.getContext('2d')`)).toThrow(
+    'explicitly confirmed',
+  )
+  const regenerated = { ...revision, strategy: 'regenerate' as const, parameterOnly: false }
+  expect(renderingRevision(confirmation, regenerated, base)).toBe(regenerated)
   expect(renderingRevision(confirmation, revision, confirmation)).toBe(revision)
   expect(renderingChanged({ ...base } as ConfirmationProposal, confirmation)).toBe(false)
 })

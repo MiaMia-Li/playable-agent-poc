@@ -113,6 +113,14 @@ POST /api/playable-tasks/:taskId/messages
 - 与最新参考视频匹配的 Gameplay Blueprint
 - 本轮已采用并由服务端解析的市场参考方向
 
+### HTML 附件与修改基底
+
+HTML 和图片都是对话附件，由用户消息决定其用途；上传顺序不选择基底。需求 Agent 在 Confirmation Proposal 的 `baseline` 中明确选择已有 `version`（版本号和 buildId）、`uploaded_html`（素材 ID）或 `new`。已有产物默认沿用当前版本；只有用户明确要求基于某份 HTML 制作时才选择该文件。多个 HTML 用途不明时才澄清，参考布局不等于替换游戏。
+
+`baseline` 与 Revision 的 `strategy` 独立：选定上传 HTML 也可 patch，基于旧版本也可 regenerate。宿主校验版本、附件归属及手动选择，锁定 `htmlAttachmentIds`；确认请求不能篡改基底或附件集合。宿主不再因为新上传文件或路线变化自动把 patch 改成 regenerate；冲突须重新整理方案。
+
+构建时 `current-playable.html` / 初始 `output.html` 来自已确认的基底；参考 HTML 原文件单独写到 `html-attachments/`，以 `html-attachments.json` 记录文件名与素材 ID。需求阶段只传带截断标记的源码摘录。所有 HTML 内嵌文本均作为不可信素材内容，不作为指令。
+
 ### Agent 工具
 
 需求 Agent 可以主动调用：

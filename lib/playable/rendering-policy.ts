@@ -33,13 +33,15 @@ export function renderingRevision(
   base?: ConfirmationProposal,
   baseHtml?: string,
 ): RevisionProposal | undefined {
-  if (!revision || !renderingChanged(confirmation, base, baseHtml)) return revision
-  return { ...revision, strategy: 'regenerate', parameterOnly: false }
+  // 改渲染引擎需要显式确认重新制作；此处只校验，不能替用户把 patch 改成 regenerate。
+  if (revision?.strategy === 'patch' && renderingChanged(confirmation, base, baseHtml))
+    throw new Error('Rendering change requires an explicitly confirmed regeneration plan')
+  return revision
 }
 
 export function applyRenderingBuildPolicy(input: ConfirmedBuildInput): ConfirmedBuildInput {
-  return {
-    ...input,
-    revision: renderingRevision(input.confirmation, input.revision, input.baseConfirmation, input.baseHtml),
-  }
+  // 切换到上传 HTML 或从头制作时，旧版本的引擎不再是比较对象。
+  if (!input.confirmation.baseline || input.confirmation.baseline.kind === 'version')
+    renderingRevision(input.confirmation, input.revision, input.baseConfirmation, input.baseHtml)
+  return input
 }

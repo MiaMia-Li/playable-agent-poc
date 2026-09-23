@@ -1,3 +1,4 @@
+import { resolveBuildBaseline } from './build-baseline'
 import { SandboxDiagnostics } from './sandbox-diagnostics'
 import { createBuildRequirementContext, type BuildRequirementContext } from './build-requirement-context'
 import { loadTaskImports, importedSourceEvidence, attachImportedManifest, bindImportedResources } from './task-imports'
@@ -21,6 +22,7 @@ import type { ArtifactStore } from './artifact-store'
 import {
   PlayableAgentError,
   type PlayableAgentAdapter,
+  type ConfirmedBuildInput,
   type PlayableBuildAsset,
   type PlayableValidationSummary,
 } from './playable-agent-adapter'
@@ -1273,14 +1275,32 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
       artifactStore,
     )
     if (imports.summaries.some((summary) => summary.issues.length)) throw new Error('Imported resources are incomplete')
+    // 只展开确认快照中的 HTML 原件；之后上传的文件不会进入正在执行的构建。
+    const htmlAttachments: NonNullable<ConfirmedBuildInput['htmlAttachments']> = []
+    for (const assetId of sanitizedConfirmation.htmlAttachmentIds ?? []) {
+      const asset = buildStoredAssets.find((item) => item.id === assetId)
+      if (!asset) throw new Error('HTML attachment is missing')
+      const summary = imports.summaries.find((item) => item.assetId === assetId)
+      const entry = imports.files.find((item) => item.path === `${summary?.root}/${summary?.entrypoint}`)
+      const stream = asset.slot === 'sourceHtml' ? await artifactStore.get(asset.storageKey) : undefined
+      if (!stream && !entry) throw new Error('HTML attachment is missing')
+      htmlAttachments.push({ assetId, filename: asset.filename, bytes: entry?.bytes ?? (await readAll(stream!)) })
+    }
     let baseHtml: string | undefined
     let baseConfirmation: ConfirmationProposal | undefined
     let reusableScenarios: { preview: string; full: string } | undefined
-    if (sanitizedConfirmation.sourceTemplateId && revision?.strategy !== 'patch') {
+    const baseline = sanitizedConfirmation.baseline
+    if (
+      sanitizedConfirmation.sourceTemplateId &&
+      (baseline ? baseline.kind === 'new' : revision?.strategy !== 'patch')
+    ) {
       baseHtml = await readFile(sourceTemplateFile(sanitizedConfirmation.sourceTemplateId), 'utf8')
     }
-    // 首次构建或重新生成从上传源码开始；patch 必须保留选定历史产物中已经完成的修改。
-    if (sanitizedConfirmation.sourceHtmlAssetId && revision?.strategy !== 'patch') {
+    // 显式基底决定读取哪份源码，patch/regenerate 只决定修改范围；兼容旧方案原有执行规则。
+    if (
+      sanitizedConfirmation.sourceHtmlAssetId &&
+      (baseline ? baseline.kind === 'uploaded_html' : revision?.strategy !== 'patch')
+    ) {
       const source = (await repository.listAssets(task.id, task.userId)).find(
         (asset) =>
           asset.id === sanitizedConfirmation.sourceHtmlAssetId && ['sourceHtml', 'assetPackage'].includes(asset.slot),
@@ -1297,9 +1317,12 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
         baseHtml = new TextDecoder().decode(await readAll(stream))
       }
     }
-    if (revision?.strategy === 'patch') {
+    if (baseline?.kind === 'version' || (!baseline && revision?.strategy === 'patch')) {
       stage = 'base_artifact'
-      const baseBuild = await repository.findBuild(task.id, revision.baseBuildId)
+      const baseBuild = await repository.findBuild(
+        task.id,
+        baseline?.kind === 'version' ? baseline.buildId : revision!.baseBuildId,
+      )
       if (!baseBuild || !baseBuild.artifactKey) {
         throw new Error('Revision base artifact is missing')
       }
@@ -1484,6 +1507,7 @@ export async function runConfirmedBuild(dependencies: ConfirmedBuildDependencies
           activitySecrets,
         ),
       ...(referenceImages.length ? { referenceImages } : {}),
+      ...(htmlAttachments.length ? { htmlAttachments } : {}),
       ...(referenceKeyframes.length ? { referenceKeyframes } : {}),
       ...(revision ? { revision } : {}),
       ...(baseHtml ? { baseHtml } : {}),
@@ -2377,28 +2401,40 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 referenceToolCache.set(`read_version:${lockedRevisionBase.version}`, lockedRevisionBase.buildId)
               let completedMarketResearch: MarketResearchReport | undefined
               const imports = await loadTaskImports(assets, dependencies.artifactStore)
-              // 先由宿主解析包入口并选定基底，再把源码作为证据提供给需求 Agent。
-              const sourceAsset = selectSourceHtml(
+              // 附件与基底独立：读取对话 HTML，不按上传时间选择实现。
+              let sourceAsset = selectSourceHtml(
                 assets,
                 attachedAssetIds,
                 access.task.requirementBrief?.sourceHtmlAssetId ?? access.task.confirmation?.sourceHtmlAssetId,
                 imports.summaries.filter((item) => item.entrypoint).map((item) => item.assetId),
               )
-              let sourceHtml: AgentInput['sourceHtml']
-              if (sourceAsset) {
-                const summary = imports.summaries.find((item) => item.assetId === sourceAsset.id)
+              // 从当前及历史消息恢复可用附件，不能把任务里未进入对话的 HTML 自动当作需求。
+              const conversationHtmlIds = new Set([
+                ...previousTurns.flatMap((turn) => turn.attachments.map((asset) => asset.id)),
+                ...attachedAssetIds,
+                ...(access.task.confirmation?.htmlAttachmentIds ?? []),
+                ...(sourceAsset ? [sourceAsset.id] : []),
+              ])
+              const htmlAssets = assets.filter(
+                (asset) =>
+                  conversationHtmlIds.has(asset.id) &&
+                  (asset.slot === 'sourceHtml' ||
+                    imports.summaries.some((item) => item.assetId === asset.id && item.entrypoint)),
+              )
+              const htmlAttachments: NonNullable<AgentInput['htmlAttachments']> = []
+              for (const asset of htmlAssets) {
+                const summary = imports.summaries.find((item) => item.assetId === asset.id)
                 const entry = imports.files.find((item) => item.path === `${summary?.root}/${summary?.entrypoint}`)
                 const stream =
-                  sourceAsset.slot === 'assetPackage'
-                    ? undefined
-                    : await dependencies.artifactStore.get(sourceAsset.storageKey)
-                if (!stream && !entry) throw new Error('Uploaded HTML source is missing')
-                sourceHtml = {
-                  assetId: sourceAsset.id,
-                  filename: sourceAsset.filename,
+                  asset.slot === 'assetPackage' ? undefined : await dependencies.artifactStore.get(asset.storageKey)
+                if (!stream && !entry) throw new Error('Uploaded HTML attachment is missing')
+                htmlAttachments.push({
+                  assetId: asset.id,
+                  filename: asset.filename,
                   ...versionSourceForAgent(entry?.bytes ?? (await readAll(stream!)), apiKey),
-                }
+                })
               }
+              const sourceHtml = htmlAttachments.find((attachment) => attachment.assetId === sourceAsset?.id)
               const agentReply = await dependencies.agent.proposeConfirmation(
                 {
                   taskId: access.task.id,
@@ -2418,6 +2454,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                   assets: assets.map(safeAsset),
                   attachedAssetIds,
                   sourceHtml,
+                  htmlAttachments,
                   importedAssets: imports.summaries,
                   importedSourceFiles: importedSourceEvidence(imports.files).map((file) => ({
                     ...file,
@@ -2522,9 +2559,52 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 })
                 return
               }
+              // 在写入 brief/确认方案前校验真实基底，失败时不能留下已被隐式切换的源码绑定。
+              let selectedBaseline: ConfirmationProposal['baseline']
+              let baselineTemplateId = selectedSourceTemplate(access.task)
+              if (validatedReply.kind === 'confirmation' || validatedReply.kind === 'revision') {
+                stage = 'revision_validation'
+                selectedBaseline = resolveBuildBaseline({
+                  proposed: validatedReply.confirmation.baseline,
+                  builds,
+                  latestArtifactKey: access.task.latestArtifactKey,
+                  htmlAttachmentIds: htmlAssets.map((asset) => asset.id),
+                  requestedBaseVersion:
+                    lockedRevisionBase?.version ??
+                    (validatedReply.kind === 'revision' ? validatedReply.revision.requestedBaseVersion : undefined),
+                  lockedBase: lockedRevisionBase,
+                  existingSourceId: sourceAsset?.id,
+                })
+                const selectedBuildId = selectedBaseline.kind === 'version' ? selectedBaseline.buildId : undefined
+                const base = builds.find((build) => build.id === selectedBuildId)
+                if (
+                  selectedBaseline.kind === 'version' &&
+                  base?.artifactKey !== access.task.latestArtifactKey &&
+                  referenceToolCache.get(`read_version:${selectedBaseline.version}`) !== selectedBaseline.buildId
+                )
+                  throw new Error('Revision base version must be read before confirmation')
+                // 选历史版本时恢复该版本的来源信息，而不是沿用最新版本或最新上传文件的来源。
+                const sourceId =
+                  selectedBaseline.kind === 'uploaded_html'
+                    ? selectedBaseline.assetId
+                    : base?.confirmation.sourceHtmlAssetId
+                sourceAsset = selectSourceHtml(
+                  assets,
+                  [],
+                  sourceId,
+                  imports.summaries.filter((item) => item.entrypoint).map((item) => item.assetId),
+                )
+                if (base) baselineTemplateId = base.confirmation.sourceTemplateId
+                // 已有游戏明确选择从头制作时，不再自动套回它的原始模板。
+                if (selectedBaseline.kind === 'new' && access.task.latestArtifactKey) baselineTemplateId = null
+                validatedReply.confirmation.baseline = selectedBaseline
+                validatedReply.confirmation.htmlAttachmentIds = htmlAssets.map((asset) => asset.id)
+                if (validatedReply.kind === 'revision' && selectedBaseline.kind === 'version')
+                  validatedReply.revision.requestedBaseVersion = selectedBaseline.version
+              }
               const fallbackBrief = access.task.requirementBrief ?? createRequirementBrief(access.task.prompt)
               const nextBrief = sanitizeRequirementBrief(validatedReply.brief ?? fallbackBrief, [apiKey])
-              const templateId = selectedSourceTemplate(access.task)
+              const templateId = baselineTemplateId
               delete nextBrief.sourceTemplateId
               if (templateId !== undefined) nextBrief.sourceTemplateId = templateId
               // 覆盖模型返回的绑定字段，使 Requirement Brief 与后续确认方案使用同一组真实素材。
@@ -2636,12 +2716,11 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 // 基准版本校验失败需要重新选择版本，不能误报为刷新即可解决的状态冲突。
                 stage = 'revision_validation'
                 if (!access.task.latestArtifactKey) throw new Error('Task phase conflict')
-                let revision = resolveRevisionProposal({
+                const revision = resolveRevisionProposal({
                   plan: lockedRevisionBase
                     ? {
                         ...validatedReply.revision,
                         requestedBaseVersion: lockedRevisionBase.version,
-                        strategy: 'patch',
                       }
                     : validatedReply.revision,
                   builds,
@@ -2664,12 +2743,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
                 ) {
                   throw new Error('Revision base version must be read before confirmation')
                 }
-                revision =
+                if (selectedBaseline?.kind === 'version')
                   renderingRevision(
                     validated,
                     revision,
                     builds.find((build) => build.id === revision.baseBuildId)?.confirmation,
-                  ) ?? revision
+                  )
                 stage = 'phase_transition'
                 const transitioned = await dependencies.repository.setAwaitingRevision(
                   access.task.id,
@@ -2964,7 +3043,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       try {
         sanitized = sanitizeConfirmation(
           bindSourceTemplate(
-            { ...parsed.data, referenceImages: access.task.confirmation?.referenceImages },
+            {
+              ...parsed.data,
+              referenceImages: access.task.confirmation?.referenceImages,
+              baseline: access.task.confirmation?.baseline,
+              htmlAttachmentIds: access.task.confirmation?.htmlAttachmentIds,
+            },
             parsed.data.sourceTemplateId !== undefined
               ? parsed.data.sourceTemplateId
               : selectedSourceTemplate(access.task),
@@ -2973,7 +3057,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       } catch {
         return jsonError(400, 'Invalid confirmation')
       }
-      // 确认请求可编辑需求，但不能替换服务端已选定的源码或导入集合。
+      // 确认请求可编辑需求，但基底、HTML/图片附件快照、源码来源和导入集合必须沿用服务端方案。
       sanitized = bindSourceHtml(sanitized, access.task.confirmation?.sourceHtmlAssetId)
       sanitized.importedAssetIds = access.task.confirmation?.importedAssetIds
       delete sanitized.resourceBindings
@@ -3031,6 +3115,12 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       }
       sanitized = bindImageAttachmentResources(sanitized, assets)
       if (
+        sanitized.htmlAttachmentIds?.some(
+          (id) => !assets.some((asset) => asset.id === id && ['sourceHtml', 'assetPackage'].includes(asset.slot)),
+        )
+      )
+        return jsonError(409, 'HTML 附件已删除，请重新整理需求')
+      if (
         sanitized.referenceImages?.some(
           (image) => !assets.some((asset) => asset.id === image.assetId && asset.slot === 'referenceImage'),
         )
@@ -3058,7 +3148,7 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
       // the same rule so an exact route can never claim to match the reference.
       sanitized = applyVisualDirection(sanitized, { hasReferenceVisuals: Boolean(gameplayBlueprint) })
 
-      if (revision?.strategy === 'patch') {
+      if (revision?.strategy === 'patch' && (!sanitized.baseline || sanitized.baseline.kind === 'version')) {
         const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
         // 源码素材变化也属于基底变化，不能把旧产物的 patch 套到另一份 HTML 上。
         const previousTemplate =
@@ -3066,16 +3156,19 @@ export function createPlayableTaskHandlers(dependencies: HandlerDependencies) {
           baseBuild?.confirmation.sourceTemplateId ??
           baseBuild?.confirmation.mode
         const nextTemplate = sanitized.sourceHtmlAssetId ?? sanitized.sourceTemplateId ?? sanitized.mode
+        // 路线变化会让已确认的局部修改失效，返回冲突而不是暗中扩大成重新制作。
         if (baseBuild && previousTemplate !== nextTemplate) {
-          if (revision.baseSelection === 'manual')
-            return jsonError(409, 'Selected base version requires the same implementation route')
-          revision = { ...revision, strategy: 'regenerate' }
+          return jsonError(409, '修改基底或实现方式已变化，请在对话中重新整理修改计划')
         }
       }
 
-      if (revision) {
+      if (revision && (!sanitized.baseline || sanitized.baseline.kind === 'version')) {
         const baseBuild = await dependencies.repository.findBuild(access.task.id, revision.baseBuildId)
-        revision = renderingRevision(sanitized, revision, baseBuild?.confirmation)
+        try {
+          renderingRevision(sanitized, revision, baseBuild?.confirmation)
+        } catch {
+          return jsonError(409, '渲染方式与已确认的修改策略冲突，请重新整理修改计划')
+        }
       }
       if (revision)
         revision = {

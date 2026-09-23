@@ -387,6 +387,13 @@ describe('CodexCliPlayableAgent', () => {
       expect(new Uint8Array(await readFile(path.join(invocation.workspace, 'reference-images/1.png')))).toEqual(
         new Uint8Array([1, 2]),
       )
+      // 参考 HTML 原件独立落盘，CLI 通道应能读取它而不把它自动设为游戏基底。
+      const htmlFiles = JSON.parse(await readFile(path.join(invocation.workspace, 'html-attachments.json'), 'utf8'))
+      expect(htmlFiles).toEqual([{ assetId: 'layout', filename: 'layout.html', path: 'html-attachments/1.html' }])
+      expect(await readFile(path.join(invocation.workspace, htmlFiles[0].path), 'utf8')).toBe(
+        '<html>Layout reference</html>',
+      )
+      expect(invocation.prompt).toContain('Do not copy a reference HTML wholesale')
       const resources = await readFile(path.join(invocation.workspace, 'asset-manifest.json'), 'utf8')
       expect(resources).not.toContain('reference-images')
       expect(JSON.parse(resources).assets[0]).toMatchObject({
@@ -427,6 +434,13 @@ describe('CodexCliPlayableAgent', () => {
       onActivity,
       apiKey: 'local-marker',
       confirmation: proposal,
+      htmlAttachments: [
+        {
+          assetId: 'layout',
+          filename: 'layout.html',
+          bytes: new TextEncoder().encode('<html>Layout reference</html>'),
+        },
+      ],
       referenceImages: [
         {
           assetId: 'ref',

@@ -9,7 +9,7 @@ The platform invokes this entry after configuration approval. Read confirmed-con
 asset-manifest.json, revision-plan.json and gameplay-blueprint.json when present.
 Implement confirmed input, state transitions and ending in output.html, either directly
 or by bundling source modules with the shared build tool.
-For patches, preserve current-playable.html as the baseline. A confirmed rendering or physics
+The confirmed baseline is independent of revision strategy. When confirmed-config.json.baseline selects a version or uploaded_html, use current-playable.html and the seeded output.html as the starting point for both patch and regenerate. Read html-attachments.json when present; those files are ordinary conversation attachments, used only for their confirmed purpose. A layout reference must not replace the current game. For patches, preserve current-playable.html as the baseline. A confirmed rendering or physics
 upgrade permits replacing the old implementation while retaining confirmed content. A legacy Mahjong mode
 is scaffold metadata, not the requested gameplay. Do not run the Mahjong builder.
 

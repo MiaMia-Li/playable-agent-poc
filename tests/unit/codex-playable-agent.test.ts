@@ -383,6 +383,30 @@ describe('CodexPlayableAgent', () => {
     )
   })
 
+  // 即使保留原模板来源，重新制作的实际起点也应是选定版本，不能退回模板原件。
+  it('keeps a confirmed version as the baseline during regeneration even with a template origin', () => {
+    const prompt = createCodexBuildPrompt(
+      'freeform',
+      {
+        id: 'revision',
+        baseBuildId: 'v2',
+        baseVersion: 2,
+        targetVersion: 3,
+        strategy: 'regenerate',
+        summary: 'Redesign the layout',
+        changes: ['Layout'],
+        preserved: ['Gameplay'],
+      },
+      'dragon_slots',
+      'perspective_3d',
+      { baseline: { kind: 'version', buildId: 'v2', version: 2 } },
+    )
+    expect(prompt).toContain('current-playable.html')
+    expect(prompt).toContain('Do not copy a reference HTML wholesale')
+    expect(prompt).toContain('including for regenerate')
+    expect(prompt).not.toContain('already seeded from that source')
+  })
+
   it('tells patch revisions to preserve the final artifact and use adapted validation', () => {
     const prompt = createCodexBuildPrompt('approximate', {
       id: 'revision-1',

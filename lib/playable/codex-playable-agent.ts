@@ -4,7 +4,7 @@ import {
   type RequirementDiagnosticStage,
 } from './requirement-diagnostics'
 import { IMPORTED_ASSETS_PROMPT } from './task-imports'
-import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT } from './source-html'
+import { SOURCE_HTML_REQUIREMENT_PROMPT, SOURCE_HTML_BUILD_PROMPT, HTML_ATTACHMENTS_BUILD_PROMPT } from './source-html'
 import { RENDERING_BUILD_PROMPT, applyRenderingBuildPolicy } from './rendering-policy'
 import { NATIVE_TEMPLATE_UI_PROMPT } from './native-template-ui'
 import { REFERENCE_IMAGES_BUILD_PROMPT } from './reference-images'
@@ -194,6 +194,7 @@ async function createProposal(
     requirementBrief: input.brief ?? null,
     uploadedAssets: input.assets ?? [],
     sourceHtml: input.sourceHtml ?? null,
+    htmlAttachments: input.htmlAttachments ?? [],
     importedAssets: input.importedAssets ?? [],
     importedSourceFiles: input.importedSourceFiles ?? [],
     importedAssetsInstructions: IMPORTED_ASSETS_PROMPT,
@@ -349,6 +350,7 @@ export async function executeBuildAgent(
   /** From `referenceVisualsBuildPrompt`; sent in every phase, since the self-comparison follows acceptance. */
   visualPrompt = '',
   sourceHtmlAssetId?: string,
+  baseline?: ConfirmedBuildInput['confirmation']['baseline'],
 ) {
   const validationEnabled = isPlayableSandboxValidationEnabled()
   const skill = await loadSkill(skillRoot, {
@@ -379,6 +381,7 @@ export async function executeBuildAgent(
           BUILD_REQUIREMENT_CONTEXT_PROMPT,
           PLAYABLE_TOOLS_PROMPT,
           SOURCE_HTML_BUILD_PROMPT,
+          HTML_ATTACHMENTS_BUILD_PROMPT,
           IMPORTED_ASSETS_PROMPT,
           ...(sourceTemplateId || sourceHtmlAssetId ? [] : [RENDERING_BUILD_PROMPT]),
           NATIVE_TEMPLATE_UI_PROMPT,
@@ -395,6 +398,7 @@ export async function executeBuildAgent(
                   : createCodexBuildPrompt(route, revision, sourceTemplateId, mode, {
                       validationEnabled,
                       sourceHtmlAssetId,
+                      baseline,
                     }),
         ]
           .filter(Boolean)
@@ -457,9 +461,23 @@ export function createCodexBuildPrompt(
   revision?: RevisionProposal,
   sourceTemplateId?: ConfirmedBuildInput['confirmation']['sourceTemplateId'],
   mode?: ConfirmedBuildInput['confirmation']['mode'],
-  options: { validationEnabled?: boolean; sourceHtmlAssetId?: string } = {},
+  options: {
+    validationEnabled?: boolean
+    sourceHtmlAssetId?: string
+    baseline?: ConfirmedBuildInput['confirmation']['baseline']
+  } = {},
 ): string {
   const validationEnabled = options.validationEnabled ?? true
+  // 版本基底优先于原始模板来源；即使重新制作，也必须保留该版本已完成的改动作为起点。
+  if (options.baseline?.kind === 'version')
+    return [
+      HTML_ATTACHMENTS_BUILD_PROMPT,
+      'Read SKILL.md, confirmed-config.json, revision-plan.json, asset-manifest.json and current-playable.html. Apply the confirmed revision plan to the seeded output.html; preserve everything listed as unchanged.',
+      ...codexValidationInstructions(
+        buildValidationCommand({ routing: { match: route, confidence: 1, differences: [] }, sourceTemplateId }),
+        validationEnabled,
+      ),
+    ].join('\n')
   // 上传 HTML 的修改指令优先于模板和重新生成路径，防止原实现被默认脚手架覆盖。
   if (options.sourceHtmlAssetId)
     return [
@@ -559,6 +577,7 @@ export class CodexPlayableAgent implements PlayableAgentAdapter {
                 patch: input.revision?.strategy === 'patch',
               }),
               input.confirmation.sourceHtmlAssetId,
+              input.confirmation.baseline,
             ),
           skillRoot: this.skillRoot,
           abortSignal: options?.abortSignal,

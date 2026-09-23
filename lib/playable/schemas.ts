@@ -575,12 +575,24 @@ function validateRenderingDecision(
     })
 }
 
+// 基底与修改策略分别确认；上传附件本身不选择基底。
+export const buildBaselineSchema = z.union([
+  z.strictObject({ kind: z.literal('version'), buildId: z.string().min(1), version: z.number().int().positive() }),
+  z.strictObject({ kind: z.literal('uploaded_html'), assetId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal('new') }),
+])
+export type BuildBaseline = z.infer<typeof buildBaselineSchema>
+
 export const confirmationProposalSchema = z
   .strictObject({
+    // 旧记录可缺省或为 null；新方案在提交给用户前由宿主解析成真实基底。
+    baseline: buildBaselineSchema.nullable().optional(),
     rendering: renderingDecisionSchema.optional(),
     // 宿主绑定的源码素材 ID（也可指向带 HTML 入口的压缩包），以及确认时锁定的导入集合。
     sourceHtmlAssetId: z.string().min(1).max(200).optional(),
     importedAssetIds: z.array(z.string().min(1).max(200)).optional(),
+    // 冻结本次构建可读取的 HTML 附件集合，不表示这些文件都是实现基底。
+    htmlAttachmentIds: z.array(z.string().min(1).max(200)).optional(),
     // 宿主解析的字段级来源；模型不能伪造源 HTML 或压缩包内路径。
     resourceBindings: resourceBindingsSchema.optional(),
     referenceImages: z.array(referenceImageEvidenceSchema).optional(),
@@ -599,6 +611,7 @@ export const confirmationProposalSchema = z
 
 export const generatedConfirmationProposalSchema = z
   .strictObject({
+    baseline: buildBaselineSchema.nullable().optional(),
     rendering: renderingDecisionSchema.optional(),
     routing: routingDecisionSchema,
     presentation: confirmationPresentationSchema,

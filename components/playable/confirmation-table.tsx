@@ -1,5 +1,7 @@
 'use client'
 
+import { buildBaselineLabel } from '@/lib/playable/build-baseline'
+
 import { nativeTemplateUiPolicy, NATIVE_END_CARD_TREATMENT } from '@/lib/playable/native-template-ui'
 import { useId, useRef, useState } from 'react'
 import { CheckCircle2, ImagePlus, Loader2, Video } from 'lucide-react'
@@ -243,9 +245,15 @@ export function ConfirmationTable({
                     : '实现方式'}
               </th>
               <td className="space-y-2 px-3 py-2">
+                {/* baseline 表示实际修改起点；sourceHtmlAssetId 可能只是该版本的原始来源。 */}
+                {proposal.baseline && (
+                  <p className="text-sm font-medium">修改基底：{buildBaselineLabel(proposal, uploadedAssets)}</p>
+                )}
                 {proposal.sourceHtmlAssetId ? (
                   <>
-                    <Badge variant="secondary">基于上传 HTML 修改</Badge>
+                    <Badge variant="secondary">
+                      {proposal.baseline?.kind === 'version' ? '保留版本原有实现' : '基于上传 HTML 修改'}
+                    </Badge>
                     <p className="text-muted-foreground text-xs">
                       {uploadedAssets.find((asset) => asset.id === proposal.sourceHtmlAssetId)?.filename ??
                         '已确认的 HTML 源文件'}
